@@ -1,0 +1,28 @@
+# Stage 3 — oracle upper bound on the FULL benchmark (Kaya, real 7B).
+# Feeds exactly the gold evidence_pages. Sanity: oracle accuracy MUST exceed the
+# no-retrieval baseline; the gap is the study's headline framing number.
+name: oracle-7b-image
+seed: 0
+
+data:
+  name: mmlongbench-doc
+  slice: full
+
+representation:
+  parser: pymupdf4llm
+  chunking: page
+  dpi: 144
+
+retrieval:
+  method: oracle
+  top_k: 8           # recall bookkeeping only (oracle recall is 1.0 by design)
+
+generation:
+  modality: image
+  generator: kaya_vlm
+  model_id: Qwen/Qwen2.5-VL-7B-Instruct
+  max_new_tokens: 256
+  temperature: 0.0
+
+judge:
+  type: rule

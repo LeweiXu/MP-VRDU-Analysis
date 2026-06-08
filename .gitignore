@@ -216,3 +216,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- MP-VRDU project ---
+results/
+data/
+*.jsonl
+# model weights / caches
+*.safetensors
+*.bin
+weights/
+
+# repo-local model/dataset cache (HF_HOME, torch hub)
+.cache/
+
+# SLURM job logs
+logs/

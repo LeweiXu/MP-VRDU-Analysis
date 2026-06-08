@@ -1,0 +1,15 @@
+# Sub-study B — Tesseract OCR parser (the OCR comparison point; from rendered
+# images). Same retriever + generation as the other subB twins.
+name: subB-dense-tesseract-text
+seed: 0
+data: {name: mmlongbench-doc, slice: full}
+representation: {parser: tesseract, chunking: page, dpi: 200}
+retrieval:
+  method: dense
+  top_k: 4
+  embedding_model: sentence-transformers/all-mpnet-base-v2
+generation:
+  modality: text
+  generator: kaya_vlm
+  model_id: Qwen/Qwen2.5-VL-7B-Instruct
+judge: {type: rule}

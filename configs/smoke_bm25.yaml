@@ -1,0 +1,10 @@
+# Local offline smoke for the retrieval + analysis path: synthetic data, BM25,
+# mock generator. Exercises Stage-4 retrieval recall and the full pipeline
+# without a GPU. NEVER report numbers from this run.
+name: smoke-bm25
+seed: 0
+data: {name: synthetic, slice: dev}
+representation: {parser: pymupdf, chunking: page, dpi: 96}
+retrieval: {method: bm25, top_k: 2}
+generation: {modality: text, generator: mock, mock_mode: gold}
+judge: {type: rule}

@@ -1,0 +1,16 @@
+# Sub-study A — hybrid (RRF over sparse + dense), image block. Built LAST.
+name: subA-hybrid-image
+seed: 0
+data: {name: mmlongbench-doc, slice: full}
+representation: {parser: pymupdf4llm, chunking: page, dpi: 144}
+retrieval:
+  method: hybrid
+  hybrid_methods: [bm25, dense]
+  rrf_k: 60
+  top_k: 4
+  embedding_model: sentence-transformers/all-mpnet-base-v2
+generation:
+  modality: image
+  generator: kaya_vlm
+  model_id: Qwen/Qwen2.5-VL-7B-Instruct
+judge: {type: rule}

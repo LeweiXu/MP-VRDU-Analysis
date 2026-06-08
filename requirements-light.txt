@@ -1,0 +1,14 @@
+# Light/local env — plumbing, data layer, metrics, tests. No GPU, no big models.
+# Sufficient for Stages 0-1 and all local plumbing tests of Stages 2-3.
+PyMuPDF>=1.24            # fitz: PDF rendering + native text (AGPL-3.0; see context.md)
+pymupdf4llm>=0.0.17      # markdown extraction (Stage 5 default parser)
+PyYAML>=6.0              # config loading
+numpy>=1.26
+pandas>=2.0              # read the MMLongBench-Doc HF parquet
+pyarrow>=15.0            # parquet engine for pandas
+pytest>=8.0
+huggingface_hub>=0.23    # dataset download (run where internet exists)
+rank-bm25>=0.2.2         # Stage 4 BM25 (CPU, local)
+scikit-learn>=1.4        # Stage 4 TF-IDF + cosine (CPU, local)
+pytesseract>=0.3.10      # Stage 5 Tesseract parser (needs the tesseract binary)
+matplotlib>=3.8          # Stage 7 figures (CPU, local)

@@ -1,0 +1,14 @@
+# Sub-study A — dense text retrieval (SentenceTransformers), image block.
+name: subA-dense-image
+seed: 0
+data: {name: mmlongbench-doc, slice: full}
+representation: {parser: pymupdf4llm, chunking: page, dpi: 144}
+retrieval:
+  method: dense
+  top_k: 4
+  embedding_model: sentence-transformers/all-mpnet-base-v2
+generation:
+  modality: image
+  generator: kaya_vlm
+  model_id: Qwen/Qwen2.5-VL-7B-Instruct
+judge: {type: rule}

@@ -1,0 +1,13 @@
+[project]
+name = "mpvrdu"
+version = "0.0.1"
+description = "Component-analysis harness for Multi-Page Visually Rich Document Understanding"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["mpvrdu"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]          # make `import mpvrdu` work without installing
+testpaths = ["tests"]
+addopts = "-q"

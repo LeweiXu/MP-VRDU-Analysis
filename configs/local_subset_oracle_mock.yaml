@@ -1,0 +1,11 @@
+# Local sanity on the REAL MMLongBench-Doc subset: oracle pages + mock(gold).
+# Proves the real-data plumbing (parquet schema, real PDF rendering, scoring)
+# works. Mock(gold) just returns gold, so accuracy ~1.0 by construction — this
+# tests the harness, not a model. NEVER report these numbers.
+name: local-subset-oracle-mock
+seed: 0
+data: {name: mmlongbench-doc, slice: data/mmlongbench_subset}
+representation: {parser: pymupdf4llm, chunking: page, dpi: 120}
+retrieval: {method: oracle, top_k: 8}
+generation: {modality: image, generator: mock, mock_mode: gold}
+judge: {type: rule}

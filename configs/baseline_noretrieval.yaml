@@ -1,0 +1,29 @@
+# Stage 2 — no-retrieval lower bound on the FULL benchmark (Kaya, real 7B).
+# Feeds the first-N pages to the frozen generator. This is the floor every
+# retrieval method is measured against.
+name: baseline-noretrieval-7b-image
+seed: 0
+
+data:
+  name: mmlongbench-doc
+  slice: full
+
+representation:
+  parser: pymupdf4llm
+  chunking: page
+  dpi: 144
+
+retrieval:
+  method: none
+  no_retrieval_pages: 10
+  top_k: 10           # recall bookkeeping only
+
+generation:
+  modality: image
+  generator: kaya_vlm
+  model_id: Qwen/Qwen2.5-VL-7B-Instruct
+  max_new_tokens: 256
+  temperature: 0.0
+
+judge:
+  type: rule          # swap to llm (fixed model) for headline numbers; declare it
