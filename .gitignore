@@ -232,5 +232,8 @@ weights/
 # SLURM job logs
 logs/
 
+# kaya/sync_kaya.sh state
+.kaya_last_job
+
 AGENTS.md
 CLAUDE.md
