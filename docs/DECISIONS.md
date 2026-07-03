@@ -250,6 +250,12 @@ one Qwen3-VL size at a time.
   downloader for layout/table-related models under `.cache/`. Later stages
   should not add ad hoc setup steps without updating this config-driven
   prestage path.
+- PaddleOCR 3.1.0 must be paired with PaddleX 3.1.x. An unpinned transitive
+  install pulled `paddlex==3.7.2`, whose `PaddlePredictorOption` constructor is
+  keyword-only and breaks PaddleOCR 3.1.0's `PaddlePredictorOption(model_name,
+  ...)` call during prestage warmup. `requirements.txt` now pins
+  `paddlex[ie,multimodal,ocr]>=3.1.0,<3.2.0`, and `kaya/prestage.py` fails
+  early with a version diagnostic if the old environment has not been rebuilt.
 - The Stage 2 data layer normalises MMLongBench `evidence_pages` from one-based
   source page numbers to zero-based internal page indices. The original row is
   retained in `Question.raw_fields` for audit/debugging. Rendered PNGs are
@@ -260,3 +266,91 @@ one Qwen3-VL size at a time.
 - Updated tests and docs so future stages invoke Kaya through
   `envs/mpvrdu/bin/python -m kaya.kaya run|submit|watch ...`, not
   `scripts/kaya/*.sh` or task-specific `kaya.py` subcommands.
+
+## 2026-07-03 Prestage idempotency fix
+
+- `kaya/prestage.py` previously called Hugging Face's network API on every
+  rerun even when a model snapshot or MMLongBench file was already fully
+  staged, which made re-running the full prestage command slow and
+  unnecessary once a machine already had everything. Fixed in
+  `kaya/download_hf.py`:
+  - `snapshot()` (used for both reasoner and retrieval model weights) now
+    first probes the Hub cache with `snapshot_download(local_files_only=True)`
+    before doing anything else. That call raises if any file for the
+    requested revision is missing, so a successful return proves the
+    snapshot is complete and no HTTP request was made; only a cache miss
+    falls through to the real (network) download path. `--force-download`
+    bypasses the probe as before.
+  - `stage_mmlongbench_from_hub()` now checks each parquet/PDF target with a
+    new `target_is_staged()` helper (file or valid symlink, non-zero size)
+    before downloading it, and skips per-file downloads that are already
+    staged. The one remaining network call is the initial `list_repo_files`
+    listing (filenames only, no data transfer), which is needed to know what
+    the dataset currently contains.
+  - Both skip paths are unit-tested by mocking `huggingface_hub.snapshot_download`
+    and by exercising `target_is_staged()` against real/empty/missing/valid-symlink/
+    broken-symlink files; no dedicated `tests/` module was added since this is
+    a login-node-only script with no CI path to it, matching the existing
+    `download_hf.py` test coverage level.
+
+## 2026-07-03 Kaya orphaned-process / hang fix
+
+- Diagnosed a real hang on `envs/mpvrdu/bin/python -m kaya.kaya run
+  kaya/prestage.py -- --skip-dataset`: two stale processes from earlier Kaya
+  sessions (a manual `download_hf.py --dataset ... --stage-mmlongbench` from
+  Stage 1.5 live validation, and an interrupted `kaya.kaya run
+  kaya/prestage.py -- --skip-models` from the same day) were still alive on
+  the login node, hours after being started, each with sockets stuck in
+  `CLOSE-WAIT` (the HF CDN peer had closed the connection but the client's
+  blocking socket read never returned, since `huggingface_hub`'s requests
+  session sets no read timeout). One held the MMLongBench dataset's Hub cache
+  lock; its `.incomplete` blob was stalled at exactly 31,841,340 bytes, the
+  same corrupted-size symptom already logged here for `mi_phone.pdf` during
+  Stage 1.5, i.e. a recurring Xet/Hub consistency bug on Kaya's network, not
+  new. Both processes had in fact already died on their own by the time they
+  were killed, apparently reaped once the kernel's default TCP keepalive
+  (~2h) finally noticed the dead peer.
+- Root cause for why they survived a local interrupt at all: `kaya/kaya.py`'s
+  `ssh_script()` ran every remote command as `ssh <alias> bash --login -s`
+  with no pseudo-terminal. Without a pty, OpenSSH has no controlling-terminal
+  session to hang up when the local client disconnects, so it does not
+  signal the remote process group at all; a plain piped `bash --login -lc
+  ...` orphan just keeps running on the login node indefinitely, regardless
+  of whether the local `kaya.py run` was interrupted or the network dropped.
+  Reproduced and confirmed directly: killing the local ssh client for a
+  `sleep 60 &`-backgrounded remote script left the remote `sleep` process
+  alive.
+- Fixed in `kaya/kaya.py`:
+  - `ssh_script()` gained an `interruptible: bool` flag. When set, the script
+    is staged as a remote file (via the existing `write_remote_file`) and run
+    as `ssh -tt` (forced pty) with `ServerAliveInterval=15
+    ServerAliveCountMax=3` keepalives, instead of being piped over stdin.
+    Running from a file rather than piping over stdin avoids the classic pty
+    echo problem (a pty would otherwise echo piped stdin script text back
+    into captured output). `handle_run` (the long-running, foreground,
+    interruptible login-node execution path used by `prestage.py` and
+    friends) now passes `interruptible=True`; `submit_remote_sbatch` and
+    `ensure_remote_dirs` are left on the fast, non-pty, stdin-piped path
+    since they are short, deterministic, and (for `submit_remote_sbatch`)
+    depend on clean unmerged stdout for job-id parsing, which a pty session
+    would risk polluting.
+  - Added `guard_process_group()`, which prepends `trap 'kill -- -$$
+    2>/dev/null || true' HUP TERM INT` (deliberately **not** `EXIT`) to every
+    remote script as a backstop, so a hangup/interrupt signal reaching the
+    remote shell kills its whole process group, including any synchronous
+    foreground child. Trapping `EXIT` too was tried first and is wrong: it
+    fires the same self-kill on a normal, successful exit, which sends the
+    already-exiting shell a self-inflicted `SIGTERM` and turns a clean run
+    into a spurious SSH exit-255 failure. Caught by reproducing manually
+    before it shipped.
+  - Added `ConnectTimeout=10` to the `wait_for_job` SLURM polling `ssh`
+    calls so a dropped connection during a long `squeue`/`sacct` poll loop
+    fails fast on the next iteration instead of hanging indefinitely.
+  - Verified end to end: a `sleep 60 &`-backgrounded remote script started
+    through the new `interruptible=True` path, interrupted locally with
+    SIGTERM after 4s, left no remote `sleep` process behind. A real
+    `kaya.py run kaya/prestage.py -- --skip-dataset` afterwards completed
+    cleanly (all 7 model repos already cached, correctly skipped; dataset
+    skipped as requested) and then correctly failed fast, not hung, on the
+    pre-existing PaddleOCR/PaddleX version mismatch noted in the Stage 1.5
+    log, which the remote env has not yet been rebuilt to pick up.

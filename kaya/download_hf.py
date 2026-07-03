@@ -124,12 +124,34 @@ def snapshot(
     force_download: bool = False,
     max_workers: int = 8,
 ) -> Path:
-    """Download a Hugging Face snapshot and return its local path."""
+    """Download a Hugging Face snapshot and return its local path.
+
+    Skips the network entirely when the revision is already fully cached, by
+    probing the Hub cache with `local_files_only=True` first. That call
+    raises if any file is missing, so a successful return means the snapshot
+    is complete and no HTTP request is needed.
+    """
 
     os.environ.setdefault("HF_HOME", str(cache_dir))
     os.environ.setdefault("HF_XET_CACHE", str(cache_dir / "xet"))
     print_hf_diagnostics(cache_dir)
     from huggingface_hub import snapshot_download
+
+    if not force_download:
+        try:
+            cached_path = Path(
+                snapshot_download(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    revision=revision,
+                    cache_dir=str(cache_dir),
+                    local_files_only=True,
+                )
+            )
+            print(f"[download_hf] {repo_id} already cached locally, skipping download -> {cached_path}")
+            return cached_path
+        except Exception:
+            pass
 
     kwargs = {
         "repo_id": repo_id,
@@ -357,6 +379,12 @@ def stage_mmlongbench(snapshot_dir: Path, data_dir: Path, copy: bool) -> Path:
     return target_root
 
 
+def target_is_staged(target: Path) -> bool:
+    """Return whether a staged file already exists locally with content."""
+
+    return target.is_file() and target.stat().st_size > 0
+
+
 def target_name(filename: str, prefixes: Iterable[str]) -> str:
     """Return the flattened staging filename, dropping known repo subdirs."""
 
@@ -412,8 +440,13 @@ def stage_mmlongbench_from_hub(
     )
 
     total = len(selected)
+    skipped = 0
     for index, filename in enumerate(parquet_files, start=1):
         target = data_target / target_name(filename, ("data",))
+        if not force_download and target_is_staged(target):
+            print(f"[download_hf] file {index}/{total} parquet {filename} already staged -> {target}, skipping")
+            skipped += 1
+            continue
         print(f"[download_hf] file {index}/{total} parquet {filename} -> {target}")
         link_or_copy_or_stream(
             repo_id,
@@ -428,6 +461,10 @@ def stage_mmlongbench_from_hub(
     for offset, filename in enumerate(pdf_files, start=1):
         index = len(parquet_files) + offset
         target = docs_target / target_name(filename, ("documents", "pdfs"))
+        if not force_download and target_is_staged(target):
+            print(f"[download_hf] file {index}/{total} pdf {filename} already staged -> {target}, skipping")
+            skipped += 1
+            continue
         print(f"[download_hf] file {index}/{total} pdf {filename} -> {target}")
         link_or_copy_or_stream(
             repo_id,
@@ -439,6 +476,7 @@ def stage_mmlongbench_from_hub(
             copy,
             force_download,
         )
+    print(f"[download_hf] mmlongbench staging skipped {skipped}/{total} already-staged file(s)")
 
     return target_root
 

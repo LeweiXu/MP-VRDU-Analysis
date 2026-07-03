@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
+import importlib.metadata
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -92,6 +94,26 @@ def warm_paddleocr_cache() -> None:
     """Initialise PaddleOCR so its detection/recognition models are downloaded."""
 
     from paddleocr import PaddleOCR
+    from paddlex.inference import PaddlePredictorOption
+
+    signature = inspect.signature(PaddlePredictorOption)
+    supports_model_name = any(
+        param.name == "model_name"
+        and param.kind
+        in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+        for param in signature.parameters.values()
+    ) or any(param.kind is inspect.Parameter.VAR_POSITIONAL for param in signature.parameters.values())
+    if not supports_model_name:
+        versions = {
+            name: importlib.metadata.version(name)
+            for name in ("paddleocr", "paddlex", "paddlepaddle")
+        }
+        raise RuntimeError(
+            "PaddleOCR/PaddleX version mismatch: "
+            f"PaddlePredictorOption signature is {signature}, versions={versions}. "
+            "Run `envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py` "
+            "so requirements.txt pins `paddlex[ie,multimodal,ocr]>=3.1.0,<3.2.0`."
+        )
 
     PaddleOCR(
         use_doc_orientation_classify=False,
@@ -162,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         model_ids = args.model_id or list(config.raw["models"])
         print(f"[prestage] staging {len(model_ids)} reasoner model(s): {', '.join(model_ids)}")
         for model_id in model_ids:
-            print(f"[prestage] downloading reasoner model {model_id}")
+            print(f"[prestage] checking reasoner model {model_id}")
             path = snapshot(
                 model_id,
                 "model",
@@ -182,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(retrieval_model_ids)} retrieval model(s): {', '.join(retrieval_model_ids)}"
         )
         for model_id in retrieval_model_ids:
-            print(f"[prestage] downloading retrieval model {model_id}")
+            print(f"[prestage] checking retrieval model {model_id}")
             path = snapshot(
                 model_id,
                 "model",

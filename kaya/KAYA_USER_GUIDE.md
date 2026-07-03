@@ -84,6 +84,10 @@ PaddleOCR and Docling caches are warmed under `.cache/`. `hf_xet` is installed
 for Xet-backed cache downloads. `HF_TOKEN` is read from local `.env` and
 forwarded to the remote login-node process. `.env` itself is never rsynced.
 
+If prestage fails in PaddleOCR with a `PaddlePredictorOption` `TypeError`, rerun
+`envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py` first. The env needs
+the PaddleX 3.1 pin from `requirements.txt`.
+
 ## kaya.py Commands
 
 Runner options come before the program path. Everything after the program path,

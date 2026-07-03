@@ -219,6 +219,9 @@ jobs offline.
 - HF asks to download on compute: run `kaya/prestage.py` on login first, then
   keep GPU jobs offline.
 - Xet warning says `hf_xet` missing: rerun setup after requirements update.
+- PaddleOCR `PaddlePredictorOption` TypeError during prestage: the remote env
+  has an incompatible transitive PaddleX; rerun `kaya/setup_env.py` so the
+  `paddlex>=3.1,<3.2` pin is applied.
 - No SLURM logs: ensure `logs/` exists and the `.sbatch` output paths point
   there.
 - SLURM rejects partition/GRES/account: inspect `sinfo`, `scontrol show

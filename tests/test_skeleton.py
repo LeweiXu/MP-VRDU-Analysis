@@ -134,3 +134,10 @@ def test_data_package_is_code_not_artifacts() -> None:
     assert (ROOT / "data/loader.py").is_file()
     assert (ROOT / "data/render.py").is_file()
     assert (ROOT / ".data").is_dir()
+
+
+def test_paddlex_is_pinned_for_paddleocr_api() -> None:
+    """PaddleOCR 3.1 uses the PaddleX 3.1 predictor-option constructor."""
+    requirements = (ROOT / "requirements.txt").read_text()
+    assert "paddleocr==3.1.0" in requirements
+    assert "paddlex[ie,multimodal,ocr]>=3.1.0,<3.2.0" in requirements

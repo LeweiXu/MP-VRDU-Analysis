@@ -19,6 +19,9 @@ from pathlib import Path
 from typing import Any
 
 
+SSH_KEEPALIVE_OPTS = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
+
+
 LOCAL_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = Path(__file__).with_name("config.json")
 HEADER_PREFIX = "# kaya:"
@@ -94,14 +97,55 @@ def run_local(
     )
 
 
-def ssh_script(config: KayaConfig, script: str, *, capture: bool = False) -> subprocess.CompletedProcess[str]:
-    """Run a login-shell script on Kaya via stdin.
+def guard_process_group(script: str) -> str:
+    """Prepend a trap that kills the whole remote process group on interrupt.
 
-    Passing the script on stdin avoids exposing token-bearing exports in the
-    local process command line.
+    A bare `bash --login -s` child is not a session leader, so OpenSSH has
+    nothing to hang up when the client disconnects and orphaned grandchildren
+    (e.g. a Python download) keep running on the login node indefinitely.
+    This trap is a backstop: if the shell itself is interrupted or hung up
+    while a foreground child is still running, it kills its own process
+    group (which any synchronous foreground child shares). It deliberately
+    does NOT trap EXIT: doing so would fire this same kill on a normal,
+    successful exit too, sending the shell itself a self-inflicted SIGTERM
+    right as it's finishing cleanly, which turns a successful run into an
+    apparent SSH failure (exit 255) instead of a clean 0.
     """
 
-    return run_local(["ssh", config.ssh_alias, "bash", "--login", "-s"], input_text=script, capture=capture)
+    return "\n".join(["trap 'kill -- -$$ 2>/dev/null || true' HUP TERM INT", script])
+
+
+def ssh_script(
+    config: KayaConfig,
+    script: str,
+    *,
+    capture: bool = False,
+    interruptible: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run a login-shell script on Kaya.
+
+    By default the script is piped over stdin to a plain (non-pty) shell,
+    which is fine for short, deterministic commands whose stdout may need
+    clean parsing (e.g. an sbatch job id). Set `interruptible=True` for
+    longer-running foreground work (see `handle_run`): the script is staged
+    as a remote file and executed under a real pty (`ssh -tt`) plus SSH
+    keepalives, so a local Ctrl-C (or a dead connection) reliably tears down
+    the whole remote process tree instead of leaving it orphaned. A pty is
+    required for this because OpenSSH only sends a hangup to the process
+    group of a pty-attached session, not a plain piped exec; running the
+    script from a file (rather than piping it over stdin) avoids the pty
+    echoing the script text back into captured output.
+    """
+
+    wrapped = guard_process_group(script)
+    if not interruptible:
+        return run_local(["ssh", config.ssh_alias, "bash", "--login", "-s"], input_text=wrapped, capture=capture)
+
+    remote_path = f"{config.remote_path('logs')}/run_{int(time.time())}_{id(script) % 100000}.sh"
+    write_remote_file(config, remote_path, wrapped)
+    remote_command = f"bash --login {quote(remote_path)}; rc=$?; rm -f {quote(remote_path)}; exit $rc"
+    command = ["ssh", "-tt", *SSH_KEEPALIVE_OPTS, config.ssh_alias, remote_command]
+    return run_local(command, capture=capture)
 
 
 def load_dotenv(path: Path) -> dict[str, str]:
@@ -462,7 +506,7 @@ def wait_for_job(config: KayaConfig, job_id: str) -> None:
     print(f"Waiting for job {job_id} to leave the queue...")
     while True:
         result = subprocess.run(
-            ["ssh", config.ssh_alias, f"squeue -h -j {quote(job_id)}"],
+            ["ssh", "-o", "ConnectTimeout=10", config.ssh_alias, f"squeue -h -j {quote(job_id)}"],
             text=True,
             capture_output=True,
             check=False,
@@ -473,6 +517,8 @@ def wait_for_job(config: KayaConfig, job_id: str) -> None:
     subprocess.run(
         [
             "ssh",
+            "-o",
+            "ConnectTimeout=10",
             config.ssh_alias,
             f"sacct -j {quote(job_id)} --format=JobID,JobName,State,Elapsed,ExitCode --noheader",
         ],
@@ -552,7 +598,7 @@ def handle_run(config: KayaConfig, args: argparse.Namespace) -> None:
             shell_join(command),
         ]
     )
-    ssh_script(config, script)
+    ssh_script(config, script, interruptible=True)
 
 
 def submit_python(
