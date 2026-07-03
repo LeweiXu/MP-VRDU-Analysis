@@ -217,9 +217,13 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+.codex/
+.agents/
+
 # --- MP-VRDU project ---
 results/
-data/
+envs/
+.data/
 *.jsonl
 # model weights / caches
 *.safetensors
@@ -234,6 +238,7 @@ logs/
 
 # kaya/sync_kaya.sh state
 .kaya_last_job
+scripts/kaya/.kaya_last_job
 
 AGENTS.md
 CLAUDE.md

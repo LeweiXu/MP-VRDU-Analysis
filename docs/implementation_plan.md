@@ -14,14 +14,17 @@
 1. At the start of every stage, (re-)read this file in full and the relevant parts of
    `PROJECT_SPEC.md`, `dataset_profile.md`, and `context.md`.
 2. Implement exactly the one stage named, nothing from later stages.
-3. Produce the stage's **deliverables, docs, and tests**; run the tests; report results.
+3. Produce the stage's **deliverables, docs, and tests**; update
+   `docs/implementation_changes.md` with implementation-relevant deviations, migrations, and
+   operational notes from the run; run the tests; report results.
 4. **Stop at the human checkpoint.** Summarise what was built, what the tests showed, and any
    surprises that should change later stages.
 5. After the human approves, run `/compact`, then begin the next stage from step 1.
 
 **Why staged + compact.** Each stage is self-contained and re-readable from this plan plus the
 code already on disk. Do not rely on un-compacted conversational memory: if a decision matters
-for a later stage, write it into code comments or `docs/DECISIONS.md` (created in Stage 0).
+for a later stage, write it into code comments, `docs/DECISIONS.md`, or
+`docs/implementation_changes.md` (both created in Stage 0).
 
 **Golden rules.**
 - **Skeleton before tools.** Stages 1–3 define interfaces and a runnable end-to-end stub.
@@ -87,10 +90,23 @@ Data flows: a `Question` (from the data layer) is resolved to pages by an `Input
 encoded by a `Representation`, answered by a `Reasoner`, and scored by a `Judge`. A `Retriever`
 and a `DocTypeClassifier` are covariates that feed/annotate the flow.
 
+**The working directory is the `mpvrdu/` repo root.** The tree below is rooted there. Everything
+the project produces or downloads (datasets, model weights, HF cache, the conda env, results,
+logs) lives under this root, so the whole project is one portable, self-contained directory: you
+can rsync it to another machine and run. Documentation lives in `docs/`; standalone operational
+scripts (dataset profiling, Kaya sync) live in `scripts/`. The git-ignored artifact dirs below
+(`.cache/`, `.data/`, `envs/`, `results/`, `logs/`) hold the heavy, machine-specific stuff and are
+also excluded from the Kaya rsync (see section 2b), so each machine keeps its own native copy.
+
 ```
-mpvrdu/
+mpvrdu/                 # == the working directory / repo root
+  .cache/              # HF_HOME + torch hub                  (git-ignored, rsync-excluded)
+  .data/               # datasets + rendered pages            (git-ignored, rsync-excluded)
+  envs/                # conda env(s) for the pipeline        (git-ignored, rsync-excluded)
+  results/             # cached predictions + table CSVs      (git-ignored, rsync-excluded)
+  logs/                # SLURM + application logs             (git-ignored)
   __init__.py
-  config.py            # ExperimentConfig dataclass; paths, model spec, k values, margins
+  config.py            # ExperimentConfig dataclass; root-relative paths, model spec, k values, margins
   schema.py            # Question, PageSet, Payload, Prediction, Score — the data contracts
   data/
     __init__.py
@@ -132,12 +148,23 @@ mpvrdu/
     run_probe.py       # Stage 1 feasibility probes
     run_experiment.py  # main entry: config -> cached predictions
     build_tables.py    # cached predictions -> result CSVs
+scripts/               # standalone ops utilities (not imported by the package)
+  profile_datasets.py  # table-readiness profile of the 5 datasets (existing)
+  dataset_stats.py     # full per-dataset statistics -> md + csv (existing prep script)
+  kaya/                # Kaya HPC tooling for the pipeline (adapted from the kaya/ demo kit)
+    env.sh             # KAYA_* vars + load_modules/activate_env/set_offline
+    sync_kaya.sh       # push/pull/submit/watch/run over ssh+rsync (the only thing run LOCAL)
+    setup_env.sh       # build the conda env on Kaya's login node from requirements.txt
+    prestage.sh        # stage Qwen3-VL sizes + MMLongBench-Doc into .cache (login node)
+    download_hf.py     # ad-hoc HF model/dataset fetch into .cache
+    gpu_test.sbatch    # CUDA smoke test (compute node)
+    run_experiment.sbatch  # wraps cli/run_experiment.py on a compute node
 docs/
   DECISIONS.md         # running log of fixed decisions (created Stage 0)
   ARCHITECTURE.md      # how the tree maps to the paper (created Stage 3)
+  KAYA.md              # canonical Kaya runbook for the pipeline (created Stage 0)
 tests/
   ...                  # one test module per stage
-results/               # gitignored; cached predictions (jsonl) + table CSVs
 ```
 
 **Interface stability.** `schema.py`, the ABCs in `pipeline/` and `covariates/`, and the
@@ -155,6 +182,52 @@ build, reasoner generation, retrieval, judge score) is keyed by a deterministic 
 inputs (including the model spec) and written to `results/cache/`. Re-running is idempotent and
 resumable — the only way the multi-condition sweep is affordable.
 
+**Root-relative paths (the thing that makes local == Kaya).** `config.py` derives `root` = the
+repo root (walk up from `__file__`) and defaults every path under it: `hf_home=<root>/.cache`,
+`data_dir=<root>/.data`, `results_dir=<root>/results`, `env_dir=<root>/envs`. No absolute machine
+paths appear in code. Because the layout is identical on both machines, the same config runs
+locally or on a Kaya compute node with no path edits, and the cache/results produced in either
+place are mergeable.
+
+---
+
+## 2b. Local vs Kaya execution
+
+The pipeline runs the same way in two places. Local is for editing and small/cheap runs; Kaya is
+for the GPU-heavy grid. The two-machine model (adapted from the reference `kaya/` kit's README)
+is the thing to internalise; the mechanics live in `scripts/kaya/`.
+
+**Two machines, two node types.**
+- **Local** (this repo): edit and run here. Small samples, the API backend, or whatever local GPU
+  you have. Everything is root-relative so the repo is fully self-contained.
+- **Kaya login node** (`ssh kaya`): has internet, no GPU. Builds the conda env
+  (`setup_env.sh`) and stages models/datasets into `<root>/.cache` (`prestage.sh` /
+  `download_hf.py`). `module`/`load_modules` need a login shell (`bash -lc "'…'"`).
+- **Kaya compute node** (via `sbatch`/`srun`): has the GPU, no internet. Pipeline `*.sbatch` jobs
+  call `set_offline` so HF reads the pre-staged `.cache` instead of phoning home.
+
+**The flow (driven entirely from Local via `scripts/kaya/sync_kaya.sh`).**
+- `sync_kaya.sh push` rsyncs the repo to `$KAYA_REMOTE_DIR` under `/group`, **excluding
+  `.cache/ .data/ envs/ results/ logs/ .git`** — env, weights, and datasets are rebuilt/staged on Kaya, never
+  copied (they are platform/CUDA-specific and huge). Only code crosses the wire.
+- `sync_kaya.sh run <job.sbatch> [args]` = push + submit + wait + pull. `pull` brings `results/`
+  and `logs/` back into the local root. One-time env/model setup is a login-node step
+  (`setup_env.sh`, `prestage.sh`), run once via `ssh kaya bash -lc "'…'"`.
+
+**Path mapping (same relative layout both sides).** `HF_HOME=<root>/.cache`,
+`data_dir=<root>/.data`, conda env at `<root>/envs/mpvrdu`,
+`KAYA_REMOTE_DIR=$MYGROUP/mpvrdu` (`$MYGROUP=/group/<project>/<user>`).
+
+**Kaya rules to honor (non-negotiable).**
+- Never hand-edit the remote mirror — `push` is `rsync --delete` and will overwrite/delete it.
+- `logs/` must exist before `sbatch` (SLURM opens `logs/%x_%j.{out,err}` up front); `push`
+  creates it.
+- Anything touching `module`/`load_modules` needs a **login shell** (`bash -lc`).
+- Heavy artifacts (`.cache`, `.data`, `envs`) stay off the rsync path; download/build/stage them
+  on Kaya.
+- Confirm Kaya's module names, CUDA version, and GPU partition before relying on them (they
+  drift); record what you find in `docs/DECISIONS.md`.
+
 ---
 
 ## Stage 0 — Repository skeleton and conventions
@@ -167,16 +240,42 @@ resumable — the only way the multi-condition sweep is affordable.
 - `requirements.txt` pinned for the V100/CUDA target: torch, vllm or transformers, pymupdf,
   paddleocr + paddlepaddle, docling, rank-bm25, FlagEmbedding (BGE), colpali-engine, datasets,
   huggingface_hub, pillow, numpy, scipy, pandas, requests (API backend), pytest. Declare only.
+- Conda env at `<root>/envs/mpvrdu`, created from `requirements.txt` (locally; recreated on Kaya
+  by `scripts/kaya/setup_env.sh`). The env lives under the root like every other artifact.
+- `scripts/kaya/` — the pipeline's Kaya tooling, adapted from the reference `kaya/` demo kit but
+  retargeted to this repo and the root-relative layout:
+  - `env.sh`: `KAYA_*` vars with `KAYA_REMOTE_DIR=$MYGROUP/mpvrdu`, `HF_HOME` and the conda env
+    pointed at the mirror's `.cache`/`envs`; the `load_modules` / `activate_env` / `set_offline`
+    functions.
+  - `sync_kaya.sh`: push (excluding `.cache .data envs results logs .git`) / pull (`results logs`)
+    / submit / watch / run.
+  - `setup_env.sh` (build env from `requirements.txt`), `prestage.sh` (stage the Qwen3-VL sizes +
+    MMLongBench-Doc into `.cache`), `download_hf.py` (ad-hoc fetch).
+  - Stub `gpu_test.sbatch` and `run_experiment.sbatch` (wraps `cli/run_experiment.py`), each
+    sourcing `env.sh` + `load_modules` + `activate_env` (+ `set_offline` for the pipeline job).
+- `docs/KAYA.md`: the canonical Kaya runbook for the pipeline (two-machine model, one-time
+  login-node setup, day-to-day push/run/pull loop, common failures), written against the current
+  plan. Do **not** touch `kaya/` — it stays as the standalone reference kit; its
+  `kaya_cheatsheet.md` documents an older design and is not used.
 - `docs/DECISIONS.md` seeded with the fixed decisions here and in `PROJECT_SPEC.md` (single
-  dataset, Qwen3-VL family + sizes, swappable backends, modality-boundary rule), plus an "Open
-  items (Stage 1 confirms)" section.
-- `.gitignore` (`results/`, model caches, `__pycache__`), short `README.md`.
+  dataset, Qwen3-VL family + sizes, swappable backends, modality-boundary rule, root-relative
+  self-contained layout, local/Kaya execution model), plus an "Open items (Stage 1 confirms)"
+  section.
+- `.gitignore` (confirm `results/ .data/ .cache/ logs/` present; add `envs/`; plus model caches,
+  `__pycache__`; store downloaded datasets/renders under `.data/`, not `data/`), short
+  `README.md`.
+- `docs/implementation_changes.md` created and updated for this run. Every later run appends
+  implementation-relevant changes, deviations from the plan, migrations, and operational notes.
 
-**Docs.** `README.md`, `docs/DECISIONS.md`.
+**Docs.** `README.md`, `docs/DECISIONS.md`, `docs/KAYA.md`,
+`docs/implementation_changes.md`.
 
-**Tests.** `tests/test_skeleton.py::test_tree_imports` — every module imports without error.
+**Tests.** `tests/test_skeleton.py::test_tree_imports` — every module imports without error;
+`test_kaya_env` sanity-checks `scripts/kaya/env.sh` (paths resolve under the root, rsync excludes
+cover the heavy dirs).
 
-**Checkpoint.** Human confirms tree and dependency choices.
+**Checkpoint.** Human confirms tree, dependency choices, and the Kaya path mapping / rsync
+excludes in `scripts/kaya/env.sh`.
 
 ---
 
@@ -212,8 +311,17 @@ Findings written to `docs/DECISIONS.md`.
    human approval) the text/in-between/visual spectrum mapping. Record the proposal; do not
    finalise in code.
 
-**Docs.** "Stage 1 findings" in `docs/DECISIONS.md`: one verdict per probe and any consequent
-change to later stages.
+**Where each probe runs.** The code-only probes (1 loader, 2 scanned-vs-born-digital, 3 in-page
+boxes, 6 unanswerable count, 7 doc_type distribution) run locally. The GPU-dependent probes
+(4 model-family load/generate + 32B feasibility, 5 vision-retrieval ColPali/ColQwen memory) run on
+a Kaya **compute** node via `scripts/kaya/sync_kaya.sh run <probe>.sbatch`, following the Kaya
+rules in section 2b (models pre-staged into `.cache` on the login node first; `set_offline` in the
+job). Record the confirmed Kaya module / CUDA / partition names in `docs/DECISIONS.md` alongside
+the probe verdicts. (`cli/run_probe.py` exposes each probe so the sbatch wrapper just calls the
+GPU ones.)
+
+**Docs.** "Stage 1 findings" in `docs/DECISIONS.md`: one verdict per probe, the Kaya
+module/CUDA/partition names, and any consequent change to later stages.
 
 **Tests.** `tests/test_probes.py` — each probe runs on a tiny sample without raising; verdict
 objects have expected fields.
@@ -280,12 +388,17 @@ well-typed rows before any real tool or model exists.
   well-typed result row. Implement the **caching contract** here (deterministic key including
   model spec; jsonl cache; resumable).
 - `config.py`: `ExperimentConfig` (dataset fixed to MMLongBench-Doc; model spec; conditions;
-  k in {1,3,5}; burying levels; representations; sufficiency margin; paths).
+  k in {1,3,5}; burying levels; representations; sufficiency margin). Paths are **root-relative**:
+  a derived `root` (walk up from `__file__`) with `hf_home=<root>/.cache`, `data_dir=<root>/.data`,
+  `results_dir=<root>/results`, `env_dir=<root>/envs` — no absolute machine paths, so the same
+  config runs local or on Kaya (section 2b).
 - `cli/run_experiment.py`: wire config -> orchestrator over a tiny sample end to end, on stubs.
 
 **Docs.** `docs/ARCHITECTURE.md`: tree ↔ paper-stage mapping, ABC signatures, the `ModelInput`
-contract and how it enables the swap, the caching contract, and an explicit **frozen interfaces**
-list.
+contract and how it enables the swap, the caching contract, the root-relative path convention and
+local/Kaya execution model (section 2b) with the `scripts/kaya/` layout, and an explicit **frozen
+interfaces** list. (Per the global rule, once `ARCHITECTURE.md` exists, later structural changes to
+it are a confirm-first step, not a silent edit.)
 
 **Tests.** `tests/test_pipeline_skeleton.py` — orchestrator runs end-to-end on stubs for every
 (condition × representation) combo and emits a valid `Score`; cache hit on re-run (idempotency);
@@ -447,7 +560,11 @@ aggregation over cached pieces.
   RQ table skeletons in `tables/`.
 
 **Docs.** `docs/RUNBOOK.md`: exact commands to (re)produce each table, expected runtime/cost, and
-which conditions feed which RQ.
+which conditions feed which RQ. For each table-producing run, give both the local invocation and
+the Kaya one (`scripts/kaya/sync_kaya.sh run run_experiment.sbatch <config>`); note that the
+resumable cache plus the root-relative `results/` dir make local and Kaya runs interchangeable and
+their outputs mergeable (pull Kaya `results/` back and rebuild tables locally). Cross-link
+`docs/KAYA.md` for the setup details.
 
 **Tests.** `tests/test_runner_tables.py` — runner produces the expected cell set for a tiny config
 (no missing/extra conditions); frontier rule picks the right column on constructed inputs; each

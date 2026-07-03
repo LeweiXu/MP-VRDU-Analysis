@@ -1,0 +1,102 @@
+dataset,label_bucket,field,class,n_questions,n_documents
+MMLongBench-Doc,document,doc_type,Research report / Introduction,293,34
+MMLongBench-Doc,document,doc_type,Academic paper,204,26
+MMLongBench-Doc,document,doc_type,Guidebook,156,22
+MMLongBench-Doc,document,doc_type,Tutorial/Workshop,139,17
+MMLongBench-Doc,document,doc_type,Financial report,117,11
+MMLongBench-Doc,document,doc_type,Brochure,101,15
+MMLongBench-Doc,document,doc_type,Administration/Industry file,81,10
+MMLongBench-Doc,question,answer_format,Int,290,114
+MMLongBench-Doc,question,answer_format,Str,250,113
+MMLongBench-Doc,question,answer_format,None,244,112
+MMLongBench-Doc,question,answer_format,Float,160,55
+MMLongBench-Doc,question,answer_format,List,147,83
+MMLongBench-Doc,question,evidence_sources,Pure-text (Plain-text),298,100
+MMLongBench-Doc,question,evidence_sources,Figure,293,96
+MMLongBench-Doc,question,evidence_sources,(none),254,112
+MMLongBench-Doc,question,evidence_sources,Table,218,82
+MMLongBench-Doc,question,evidence_sources,Chart,178,62
+MMLongBench-Doc,question,evidence_sources,Generalized-text (Layout),119,59
+MMLongBench-Doc,hop,evidence_pages,single (1 page),485,132
+MMLongBench-Doc,hop,evidence_pages,multi (2 pages),247,110
+MMLongBench-Doc,hop,evidence_pages,zero (0 pages),246,112
+MMLongBench-Doc,hop,evidence_pages,multi (3 pages),40,35
+MMLongBench-Doc,hop,evidence_pages,multi (4 pages),22,20
+MMLongBench-Doc,hop,evidence_pages,multi (5 pages),14,13
+MMLongBench-Doc,hop,evidence_pages,multi (6 pages),12,11
+MMLongBench-Doc,hop,evidence_pages,multi (10 pages),6,6
+MMLongBench-Doc,hop,evidence_pages,multi (7 pages),5,5
+MMLongBench-Doc,hop,evidence_pages,multi (8 pages),5,5
+MMLongBench-Doc,hop,evidence_pages,multi (13 pages),2,2
+MMLongBench-Doc,hop,evidence_pages,multi (9 pages),2,2
+MMLongBench-Doc,hop,evidence_pages,multi (12 pages),2,2
+MMLongBench-Doc,hop,evidence_pages,multi (21 pages),1,1
+MMLongBench-Doc,hop,evidence_pages,multi (15 pages),1,1
+MMLongBench-Doc,hop,evidence_pages,multi (24 pages),1,1
+LongDocURL,question,question_type,extract,1243,316
+LongDocURL,question,question_type,extract_fig2tab,231,60
+LongDocURL,question,question_type,topic2title,201,34
+LongDocURL,question,question_type,calculate,145,69
+LongDocURL,question,question_type,summary2title,137,64
+LongDocURL,question,question_type,summary2tab,126,46
+LongDocURL,question,question_type,count,117,95
+LongDocURL,question,question_type,compare,112,87
+LongDocURL,question,question_type,summarize,13,13
+LongDocURL,question,task_tag,Understanding,1243,316
+LongDocURL,question,task_tag,Locating,695,177
+LongDocURL,question,task_tag,Reasoning,387,195
+LongDocURL,question,answer_format,String,941,312
+LongDocURL,question,answer_format,List,757,241
+LongDocURL,question,answer_format,Integer,431,197
+LongDocURL,question,answer_format,Float,185,76
+LongDocURL,question,answer_format,None,11,11
+LongDocURL,question,evidence_sources,Text,994,305
+LongDocURL,question,evidence_sources,Table,871,208
+LongDocURL,question,evidence_sources,Layout,779,243
+LongDocURL,question,evidence_sources,Figure,548,155
+LongDocURL,question,evidence_sources,Others,8,5
+LongDocURL,hop,start_end_idx,multi (2 pages),2325,396
+CUAD,question,clause_category,Document Name,510,510
+CUAD,question,clause_category,Parties,510,510
+CUAD,question,clause_category,Agreement Date,510,510
+CUAD,question,clause_category,Effective Date,510,510
+CUAD,question,clause_category,Expiration Date,510,510
+CUAD,question,clause_category,Renewal Term,510,510
+CUAD,question,clause_category,Notice Period To Terminate Renewal,510,510
+CUAD,question,clause_category,Governing Law,510,510
+CUAD,question,clause_category,Most Favored Nation,510,510
+CUAD,question,clause_category,Non-Compete,510,510
+CUAD,question,clause_category,Exclusivity,510,510
+CUAD,question,clause_category,No-Solicit Of Customers,510,510
+CUAD,question,clause_category,Competitive Restriction Exception,510,510
+CUAD,question,clause_category,No-Solicit Of Employees,510,510
+CUAD,question,clause_category,Non-Disparagement,510,510
+CUAD,question,clause_category,Termination For Convenience,510,510
+CUAD,question,clause_category,Rofr/Rofo/Rofn,510,510
+CUAD,question,clause_category,Change Of Control,510,510
+CUAD,question,clause_category,Anti-Assignment,510,510
+CUAD,question,clause_category,Revenue/Profit Sharing,510,510
+CUAD,question,clause_category,Price Restrictions,510,510
+CUAD,question,clause_category,Minimum Commitment,510,510
+CUAD,question,clause_category,Volume Restriction,510,510
+CUAD,question,clause_category,Ip Ownership Assignment,510,510
+CUAD,question,clause_category,Joint Ip Ownership,510,510
+CUAD,question,clause_category,License Grant,510,510
+CUAD,question,clause_category,Non-Transferable License,510,510
+CUAD,question,clause_category,Affiliate License-Licensor,510,510
+CUAD,question,clause_category,Affiliate License-Licensee,510,510
+CUAD,question,clause_category,Unlimited/All-You-Can-Eat-License,510,510
+CUAD,question,clause_category,Irrevocable Or Perpetual License,510,510
+CUAD,question,clause_category,Source Code Escrow,510,510
+CUAD,question,clause_category,Post-Termination Services,510,510
+CUAD,question,clause_category,Audit Rights,510,510
+CUAD,question,clause_category,Uncapped Liability,510,510
+CUAD,question,clause_category,Cap On Liability,510,510
+CUAD,question,clause_category,Liquidated Damages,510,510
+CUAD,question,clause_category,Warranty Duration,510,510
+CUAD,question,clause_category,Insurance,510,510
+CUAD,question,clause_category,Covenant Not To Sue,510,510
+CUAD,question,clause_category,Third Party Beneficiary,510,510
+SlideVQA,hop,evidence_pages,single (1 page),1648,400
+SlideVQA,hop,evidence_pages,multi (2 pages),562,250
+SlideVQA,hop,evidence_pages,multi (3 pages),5,5

@@ -1,0 +1,6 @@
+dataset,records_scanned,n_documents,doc_id_field,chars_avg,chars_min,chars_max,chars_median,chars_n,words_avg,words_min,words_max,words_median,words_n,pages_avg,pages_min,pages_max,pages_median,pages_n,pages_source,doc_label_fields,question_label_fields,n_hop_classes,unanswerable_field,unanswerable_count,error
+MMLongBench-Doc,1091,135,doc_id,,,,,,,,,,,48.3,9,468,28,135,local PDFs (PyMuPDF),doc_type,answer_format;evidence_sources,16,answer=='Not answerable',244,
+LongDocURL,2325,396,doc_no,,,,,,,,,,,85.6,51,149,78.0,396,page field,,question_type;task_tag;answer_format;evidence_sources,1,answer=='Not answerable',8,
+CUAD,20910,510,title,52563.0,645,338211,33143.0,510,,,,,,,,,,,,,clause_category,,is_impossible,14208,
+DocFinQA,922,922,,554533.9,165236,1595159,433593.0,922,,,,,,,,,,,,,,,,0,
+SlideVQA,2215,400,deck_name,,,,,,,,,,,,,,,,,,,3,,0,
