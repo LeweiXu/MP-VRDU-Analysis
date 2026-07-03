@@ -14,7 +14,8 @@ runner are intentionally filled in by later stages after the human checkpoints.
 - `docs/PROJECT_SPEC.md` defines what the experiments measure.
 - `docs/implementation_plan.md` defines the staged build order.
 - `docs/DECISIONS.md` records fixed decisions and stage findings.
-- `kaya/` contains the Kaya config, Python sync/job runner, and Kaya guides.
+- `kaya/` contains the Kaya config, generic Python sync/run/submit runner,
+  task scripts, and Kaya guides.
 - `kaya/KAYA_USER_GUIDE.md` is the human-facing Kaya quick guide.
 - `kaya/KAYA_AGENT_GUIDE.md` is the agent-facing definitive Kaya operations guide.
 

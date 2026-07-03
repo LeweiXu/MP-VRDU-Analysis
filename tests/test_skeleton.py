@@ -48,6 +48,10 @@ MODULES = [
     "kaya",
     "kaya.kaya",
     "kaya.download_hf",
+    "kaya.setup_env",
+    "kaya.prestage",
+    "kaya.gpu_test",
+    "kaya.run_probe",
 ]
 
 
@@ -71,8 +75,9 @@ def test_kaya_config_paths_are_root_relative() -> None:
     assert config.remote_path("data") == f"{config.remote_root}/.data"
     assert config.remote_path("results") == f"{config.remote_root}/results"
     assert config.remote_path("logs") == f"{config.remote_root}/logs"
-    assert config.raw["hf"]["disable_xet"] is True
-    assert config.raw["hf"]["max_workers"] == 1
+    assert config.raw["hf"]["max_workers"] == 8
+    assert config.raw["secrets"]["env_file"] == ".env"
+    assert "HF_TOKEN" in config.raw["secrets"]["forward"]
     assert "account" in config.raw["slurm"]
     assert "qos" in config.raw["slurm"]
 
@@ -81,12 +86,42 @@ def test_kaya_config_excludes_heavy_dirs() -> None:
     """Rsync excludes protect machine-local artifacts from cross-machine copies."""
     config = json.loads((ROOT / "kaya/config.json").read_text())
     excludes = set(config["rsync_excludes"])
-    for excluded in [".git/", ".cache/", ".data/", "envs/", "results/", "logs/"]:
+    for excluded in [".git/", ".env", ".cache/", ".data/", "envs/", "results/", "logs/"]:
         assert excluded in excludes
 
     assert not (ROOT / "scripts/kaya").exists()
     assert (ROOT / "kaya/KAYA_AGENT_GUIDE.md").is_file()
     assert (ROOT / "kaya/KAYA_USER_GUIDE.md").is_file()
+
+
+def test_kaya_python_header_parsing(tmp_path: Path) -> None:
+    """Runnable Kaya Python files can declare default execution settings."""
+    from kaya.kaya import parse_kaya_header, resolve_run_settings
+
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "\n".join(
+            [
+                '"""demo"""',
+                "# kaya: target=gpu",
+                "# kaya: env=true",
+                "# kaya: offline=true",
+                "# kaya: job-name=demo_job",
+                "print('ok')",
+            ]
+        )
+    )
+
+    assert parse_kaya_header(script)["target"] == "gpu"
+    settings = resolve_run_settings(script)
+    assert settings.target == "gpu"
+    assert settings.activate_env is True
+    assert settings.offline is True
+    assert settings.job_name == "demo_job"
+
+    override = resolve_run_settings(script, target_override="login", offline_override=False)
+    assert override.target == "login"
+    assert override.offline is False
 
 
 def test_data_package_is_code_not_artifacts() -> None:

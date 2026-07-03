@@ -1,7 +1,9 @@
-"""Python CLI for syncing and running MP-VRDU jobs on Kaya.
+"""Small Kaya execution wrapper for MP-VRDU.
 
-All site-specific names live in `kaya/config.json`. The CLI uses SSH, rsync,
-and SLURM but avoids shell-side project configuration files.
+The runner owns only common mechanics: sync the repository, prepare the remote
+shell environment, run Python files on the login node, submit Python or sbatch
+files to SLURM, wait for jobs, and pull logs/results. Task-specific work lives
+in separate runnable files under `kaya/`.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import argparse
 import json
 import shlex
 import subprocess
+import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +21,9 @@ from typing import Any
 
 LOCAL_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = Path(__file__).with_name("config.json")
+HEADER_PREFIX = "# kaya:"
+BOOL_TRUE = {"1", "true", "yes", "y", "on"}
+BOOL_FALSE = {"0", "false", "no", "n", "off"}
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,16 @@ class KayaConfig:
         return list(self.raw["rsync_excludes"])
 
 
+@dataclass(frozen=True)
+class RunSettings:
+    """Resolved execution hints for a runnable Python file."""
+
+    target: str
+    activate_env: bool
+    offline: bool
+    job_name: str | None = None
+
+
 def load_config(path: Path = DEFAULT_CONFIG) -> KayaConfig:
     """Load the static Kaya JSON configuration."""
 
@@ -61,7 +77,12 @@ def strip_separator(args: list[str]) -> list[str]:
     return args[1:] if args and args[0] == "--" else args
 
 
-def run_local(command: list[str], *, input_text: str | None = None, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def run_local(
+    command: list[str],
+    *,
+    input_text: str | None = None,
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
     """Run a local command, raising on failure."""
 
     return subprocess.run(
@@ -74,10 +95,50 @@ def run_local(command: list[str], *, input_text: str | None = None, capture: boo
 
 
 def ssh_script(config: KayaConfig, script: str, *, capture: bool = False) -> subprocess.CompletedProcess[str]:
-    """Run a login-shell script on Kaya."""
+    """Run a login-shell script on Kaya via stdin.
 
-    remote_command = "bash --login -lc " + quote(script)
-    return run_local(["ssh", config.ssh_alias, remote_command], capture=capture)
+    Passing the script on stdin avoids exposing token-bearing exports in the
+    local process command line.
+    """
+
+    return run_local(["ssh", config.ssh_alias, "bash", "--login", "-s"], input_text=script, capture=capture)
+
+
+def load_dotenv(path: Path) -> dict[str, str]:
+    """Parse simple KEY=VALUE lines from a local .env file."""
+
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            values[key] = value
+    return values
+
+
+def secret_exports(config: KayaConfig, *, include: bool) -> list[str]:
+    """Return token exports from the configured local .env file."""
+
+    if not include:
+        return []
+    secrets = dict(config.raw.get("secrets", {}))
+    env_file = LOCAL_ROOT / secrets.get("env_file", ".env")
+    names = list(secrets.get("forward", ["HF_TOKEN"]))
+    dotenv = load_dotenv(env_file)
+    exports: list[str] = []
+    for name in names:
+        value = dotenv.get(name)
+        if value:
+            exports.append(f"export {name}={quote(value)}")
+    return exports
 
 
 def ensure_remote_dirs(config: KayaConfig) -> None:
@@ -133,11 +194,12 @@ def module_commands(config: KayaConfig) -> list[str]:
     return commands
 
 
-def exports(config: KayaConfig, *, offline: bool) -> list[str]:
+def artifact_exports(config: KayaConfig, *, offline: bool) -> list[str]:
     """Return root-relative artifact environment exports generated from config."""
 
     cache = config.remote_path("cache")
     values = {
+        "PYTHONPATH": config.remote_root,
         "HF_HOME": cache,
         "HF_DATASETS_CACHE": f"{cache}/datasets",
         "TORCH_HOME": f"{cache}/torch",
@@ -164,14 +226,21 @@ def activate_env_commands(config: KayaConfig) -> list[str]:
     ]
 
 
-def remote_prelude(config: KayaConfig, *, activate: bool, offline: bool) -> str:
+def remote_prelude(
+    config: KayaConfig,
+    *,
+    activate: bool,
+    offline: bool,
+    include_secrets: bool = False,
+) -> str:
     """Build the standard remote shell prelude for login or compute commands."""
 
     lines = [
         "set -euo pipefail",
         f"cd {quote(config.remote_root)}",
         *module_commands(config),
-        *exports(config, offline=offline),
+        *artifact_exports(config, offline=offline),
+        *secret_exports(config, include=include_secrets and not offline),
     ]
     if activate:
         lines.extend(activate_env_commands(config))
@@ -184,88 +253,109 @@ def shell_join(command: list[str]) -> str:
     return " ".join(quote(part) for part in command)
 
 
-def run_login(config: KayaConfig, command: list[str], *, activate: bool = True, offline: bool = False) -> None:
-    """Run code directly on Kaya's login node."""
+def parse_bool(value: str, *, field: str) -> bool:
+    """Parse a Kaya header boolean."""
 
-    if not command:
-        raise SystemExit("run-login requires a command after --")
-    script = "\n".join([remote_prelude(config, activate=activate, offline=offline), shell_join(command)])
-    ssh_script(config, script)
-
-
-def setup_env(config: KayaConfig, *, do_push: bool = True) -> None:
-    """Build or update the conda environment on Kaya's login node."""
-
-    if do_push:
-        push(config)
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            f"cd {quote(config.remote_root)}",
-            *module_commands(config),
-            *exports(config, offline=False),
-            f"mkdir -p {quote(Path(config.remote_path('env')).parent)} {quote(config.remote_path('cache'))}",
-            f"if [[ ! -d {quote(config.remote_path('env') + '/conda-meta')} ]]; then conda create -p {quote(config.remote_path('env'))} python={quote(config.raw['python_version'])} -y; fi",
-            *activate_env_commands(config),
-            "python -m pip install --upgrade pip wheel setuptools",
-            f"python -m pip install --extra-index-url {quote(config.raw['pip']['torch_index_url'])} -r {quote(config.remote_root + '/requirements.txt')}",
-            "python -m pip check",
-            "python -c \"import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)\"",
-        ]
-    )
-    ssh_script(config, script)
+    normalized = value.strip().lower()
+    if normalized in BOOL_TRUE:
+        return True
+    if normalized in BOOL_FALSE:
+        return False
+    raise ValueError(f"invalid boolean for {field}: {value!r}")
 
 
-def prestage(config: KayaConfig, *, model_ids: list[str], stage_dataset: bool, do_push: bool = True) -> None:
-    """Download model snapshots and stage MMLongBench on Kaya's login node."""
+def parse_kaya_header(path: Path, *, max_lines: int = 40) -> dict[str, str]:
+    """Parse `# kaya: key=value` hints from the top of a Python script."""
 
-    if do_push:
-        push(config)
-    hf = dict(config.raw.get("hf", {}))
-    hf_args = ["--max-workers", str(hf.get("max_workers", 1))]
-    if not hf.get("disable_xet", True):
-        hf_args.append("--enable-xet")
-    commands: list[str] = []
-    for model_id in model_ids:
-        commands.append(
-            shell_join(
-                [
-                    "python",
-                    "kaya/download_hf.py",
-                    "--model",
-                    model_id,
-                    "--cache-dir",
-                    config.remote_path("cache"),
-                    *hf_args,
-                ]
-            )
-        )
-    if stage_dataset:
-        commands.append(
-            shell_join(
-                [
-                    "python",
-                    "kaya/download_hf.py",
-                    "--dataset",
-                    config.raw["datasets"]["mmlongbench"],
-                    "--cache-dir",
-                    config.remote_path("cache"),
-                    "--data-dir",
-                    config.remote_path("data"),
-                    "--stage-mmlongbench",
-                    *hf_args,
-                ]
-            )
-        )
-    script = "\n".join(
-        [
-            remote_prelude(config, activate=True, offline=False),
-            f"mkdir -p {quote(config.remote_path('cache'))} {quote(config.remote_path('data'))}",
-            *commands,
-            f"du -sh {quote(config.remote_path('cache'))} {quote(config.remote_path('data'))} 2>/dev/null || true",
-        ]
-    )
-    ssh_script(config, script)
+    hints: dict[str, str] = {}
+    if path.suffix != ".py" or not path.is_file():
+        return hints
+    for index, line in enumerate(path.read_text(errors="replace").splitlines()):
+        if index >= max_lines:
+            break
+        stripped = line.strip()
+        if not stripped.startswith(HEADER_PREFIX):
+            continue
+        payload = stripped[len(HEADER_PREFIX) :].strip()
+        if "=" not in payload:
+            continue
+        key, value = payload.split("=", 1)
+        hints[key.strip().lower().replace("_", "-")] = value.strip()
+    return hints
+
+
+def resolve_run_settings(
+    path: Path | None,
+    *,
+    target_override: str = "auto",
+    activate_override: bool | None = None,
+    offline_override: bool | None = None,
+    default_target: str = "login",
+) -> RunSettings:
+    """Resolve execution settings from Python headers and CLI overrides."""
+
+    header = parse_kaya_header(path) if path else {}
+    target = header.get("target", default_target)
+    if target_override != "auto":
+        target = target_override
+    if target not in {"login", "gpu"}:
+        raise ValueError(f"invalid target {target!r}; expected login or gpu")
+
+    activate = True
+    if "env" in header:
+        activate = parse_bool(header["env"], field="env")
+    if activate_override is not None:
+        activate = activate_override
+
+    offline = target == "gpu"
+    if "offline" in header:
+        offline = parse_bool(header["offline"], field="offline")
+    if offline_override is not None:
+        offline = offline_override
+
+    return RunSettings(target=target, activate_env=activate, offline=offline, job_name=header.get("job-name"))
+
+
+def local_source_path(value: str) -> Path | None:
+    """Return a repo-local source path if `value` names one."""
+
+    path = Path(value)
+    if not path.is_absolute():
+        path = LOCAL_ROOT / path
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(LOCAL_ROOT)
+    except (FileNotFoundError, ValueError):
+        return None
+    return resolved if resolved.exists() else None
+
+
+def remote_source_path(config: KayaConfig, local_path: Path) -> str:
+    """Map a local repo source file to its path inside the Kaya mirror."""
+
+    rel = local_path.resolve().relative_to(LOCAL_ROOT).as_posix()
+    return f"{config.remote_root}/{rel}"
+
+
+def python_module_name(local_path: Path) -> str | None:
+    """Return a repo-local Python module name when the path is importable."""
+
+    if local_path.suffix != ".py":
+        return None
+    rel = local_path.resolve().relative_to(LOCAL_ROOT).with_suffix("")
+    parts = rel.parts
+    if not parts or any(not part.isidentifier() for part in parts):
+        return None
+    return ".".join(parts)
+
+
+def python_command(config: KayaConfig, local_path: Path, args: list[str]) -> list[str]:
+    """Build a remote Python command for a repo-local file."""
+
+    module_name = python_module_name(local_path)
+    if module_name:
+        return ["python", "-m", module_name, *args]
+    return ["python", remote_source_path(config, local_path), *args]
 
 
 def write_remote_file(config: KayaConfig, remote_path: str, content: str) -> None:
@@ -275,46 +365,94 @@ def write_remote_file(config: KayaConfig, remote_path: str, content: str) -> Non
     run_local(["ssh", config.ssh_alias, command], input_text=content)
 
 
-def slurm_script(config: KayaConfig, args: argparse.Namespace, command: list[str]) -> str:
-    """Build an sbatch script for a Python-managed compute job."""
+def slurm_options(config: KayaConfig, args: argparse.Namespace, *, job_name: str) -> list[str]:
+    """Return sbatch CLI options from config plus explicit overrides."""
 
     slurm = config.slurm
-    partition = args.partition or slurm["partition"]
-    gres = args.gres or slurm["gres"]
-    cpus = args.cpus_per_task or slurm["cpus_per_task"]
-    mem = args.mem or slurm["mem"]
-    time_limit = args.time or slurm["time"]
-    job_name = args.job_name
-    logs_dir = config.remote_path("logs")
-    account = args.account if getattr(args, "account", None) is not None else slurm.get("account")
-    qos = args.qos if getattr(args, "qos", None) is not None else slurm.get("qos")
-    optional_directives = []
+    options = [
+        f"--job-name={job_name}",
+        f"--partition={args.partition or slurm['partition']}",
+        f"--gres={args.gres or slurm['gres']}",
+        f"--nodes={slurm['nodes']}",
+        f"--ntasks={slurm['ntasks']}",
+        f"--cpus-per-task={args.cpus_per_task or slurm['cpus_per_task']}",
+        f"--mem={args.mem or slurm['mem']}",
+        f"--time={args.time or slurm['time']}",
+    ]
+    account = args.account if args.account is not None else slurm.get("account")
+    qos = args.qos if args.qos is not None else slurm.get("qos")
     if account:
-        optional_directives.append(f"#SBATCH --account={account}")
+        options.append(f"--account={account}")
     if qos:
-        optional_directives.append(f"#SBATCH --qos={qos}")
-    return "\n".join(
+        options.append(f"--qos={qos}")
+    return options
+
+
+def explicit_sbatch_options(args: argparse.Namespace) -> list[str]:
+    """Return only SLURM options explicitly supplied for an existing sbatch file."""
+
+    mapping = [
+        ("job_name", "job-name"),
+        ("partition", "partition"),
+        ("gres", "gres"),
+        ("account", "account"),
+        ("qos", "qos"),
+        ("cpus_per_task", "cpus-per-task"),
+        ("mem", "mem"),
+        ("time", "time"),
+    ]
+    options: list[str] = []
+    for attr, option in mapping:
+        value = getattr(args, attr)
+        if value is not None:
+            options.append(f"--{option}={value}")
+    return options
+
+
+def generated_python_sbatch(
+    config: KayaConfig,
+    args: argparse.Namespace,
+    local_path: Path,
+    script_args: list[str],
+    settings: RunSettings,
+) -> tuple[str, str]:
+    """Build a generated sbatch wrapper for a Python source file."""
+
+    job_name = args.job_name or settings.job_name or local_path.stem.replace("_", "-")
+    logs_dir = config.remote_path("logs")
+    command = python_command(config, local_path, script_args)
+    directives = slurm_options(config, args, job_name=job_name)
+    content = "\n".join(
         [
             "#!/bin/bash --login",
-            f"#SBATCH --job-name={job_name}",
-            f"#SBATCH --partition={partition}",
-            f"#SBATCH --gres={gres}",
-            *optional_directives,
-            f"#SBATCH --nodes={slurm['nodes']}",
-            f"#SBATCH --ntasks={slurm['ntasks']}",
-            f"#SBATCH --cpus-per-task={cpus}",
-            f"#SBATCH --mem={mem}",
-            f"#SBATCH --time={time_limit}",
+            *[f"#SBATCH {option}" for option in directives],
             f"#SBATCH --output={logs_dir}/%x_%j.out",
             f"#SBATCH --error={logs_dir}/%x_%j.err",
             "",
-            remote_prelude(config, activate=True, offline=not args.no_offline),
+            remote_prelude(config, activate=settings.activate_env, offline=settings.offline),
             "echo \"[job] host=$(hostname) pwd=$(pwd)\"",
             "echo \"[job] command: " + shell_join(command).replace('"', '\\"') + "\"",
             shell_join(command),
             "",
         ]
     )
+    return job_name, content
+
+
+def submit_remote_sbatch(
+    config: KayaConfig,
+    remote_sbatch: str,
+    sbatch_args: list[str],
+    program_args: list[str],
+) -> str:
+    """Submit an existing remote sbatch file and return the job id."""
+
+    command = ["sbatch", "--parsable", *sbatch_args, remote_sbatch, *program_args]
+    result = ssh_script(config, f"cd {quote(config.remote_root)}\n{shell_join(command)}", capture=True)
+    job_id = result.stdout.strip()
+    (LOCAL_ROOT / ".kaya_last_job").write_text(job_id + "\n")
+    print(f"Submitted job {job_id}")
+    return job_id
 
 
 def wait_for_job(config: KayaConfig, job_id: str) -> None:
@@ -343,143 +481,238 @@ def wait_for_job(config: KayaConfig, job_id: str) -> None:
     )
 
 
-def print_log_tails(config: KayaConfig, job_name: str, job_id: str, lines: int) -> None:
-    """Print local copies of a job's stdout/stderr tails."""
+def last_job_id() -> str:
+    """Return the locally remembered Kaya job id."""
+
+    path = LOCAL_ROOT / ".kaya_last_job"
+    if not path.is_file():
+        raise SystemExit("no job id supplied and .kaya_last_job does not exist")
+    return path.read_text().strip()
+
+
+def print_log_tails(config: KayaConfig, job_id: str, lines: int, *, job_name: str | None = None) -> None:
+    """Print local stdout/stderr tails for logs matching a SLURM job id."""
 
     simple_job_id = job_id.split(";", 1)[0]
     logs_dir = LOCAL_ROOT / config.raw["paths"]["logs"]
-    for suffix in ("out", "err"):
-        path = logs_dir / f"{job_name}_{simple_job_id}.{suffix}"
-        if not path.exists():
+    candidates: list[Path] = []
+    if job_name:
+        candidates.extend([logs_dir / f"{job_name}_{simple_job_id}.out", logs_dir / f"{job_name}_{simple_job_id}.err"])
+    candidates.extend(sorted(logs_dir.glob(f"*_{simple_job_id}.out")))
+    candidates.extend(sorted(logs_dir.glob(f"*_{simple_job_id}.err")))
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen or not path.exists():
             continue
+        seen.add(path)
         print(f"\n===== {path} =====")
         content = path.read_text(errors="replace").splitlines()
         for line in content[-lines:]:
             print(line)
 
 
-def run_gpu(config: KayaConfig, args: argparse.Namespace, command: list[str]) -> str:
-    """Submit a compute-node job, optionally wait, pull logs, and print tails."""
+def handle_watch(config: KayaConfig, args: argparse.Namespace) -> None:
+    """Wait for a SLURM job, pull artifacts, and print log tails."""
 
-    if not command:
-        raise SystemExit("run-gpu requires a command after --")
+    job_id = args.job_id or last_job_id()
+    wait_for_job(config, job_id)
+    if not args.no_pull:
+        pull(config)
+    print_log_tails(config, job_id, args.tail_lines, job_name=args.job_name)
+
+
+def handle_run(config: KayaConfig, args: argparse.Namespace) -> None:
+    """Run a Python file or command on login, or dispatch a Python file to GPU."""
+
+    target = local_source_path(args.program)
+    forwarded = strip_separator(args.program_args)
+    settings = resolve_run_settings(
+        target,
+        target_override=args.target,
+        activate_override=args.activate_env,
+        offline_override=args.offline,
+        default_target="login",
+    )
     if not args.no_push:
         push(config)
-    timestamp = int(time.time())
-    script_remote = f"{config.remote_path('logs')}/generated_{args.job_name}_{timestamp}.sbatch"
-    write_remote_file(config, script_remote, slurm_script(config, args, command))
-    submit = ssh_script(
-        config,
-        f"cd {quote(config.remote_root)} && sbatch --parsable {quote(script_remote)}",
-        capture=True,
+    if settings.target == "gpu":
+        if target is None or target.suffix != ".py":
+            raise SystemExit("run --target gpu requires a repo-local .py file")
+        submit_python(config, args, target, forwarded, settings)
+        return
+    command = python_command(config, target, forwarded) if target and target.suffix == ".py" else [args.program, *forwarded]
+    script = "\n".join(
+        [
+            remote_prelude(
+                config,
+                activate=settings.activate_env,
+                offline=settings.offline,
+                include_secrets=True,
+            ),
+            shell_join(command),
+        ]
     )
-    job_id = submit.stdout.strip()
-    print(f"Submitted job {job_id}")
-    (LOCAL_ROOT / ".kaya_last_job").write_text(job_id + "\n")
+    ssh_script(config, script)
+
+
+def submit_python(
+    config: KayaConfig,
+    args: argparse.Namespace,
+    local_path: Path,
+    program_args: list[str],
+    settings: RunSettings,
+) -> str:
+    """Generate and submit an sbatch wrapper for a Python source file."""
+
+    job_name, content = generated_python_sbatch(config, args, local_path, program_args, settings)
+    script_remote = f"{config.remote_path('logs')}/generated_{job_name}_{int(time.time())}.sbatch"
+    write_remote_file(config, script_remote, content)
+    job_id = submit_remote_sbatch(config, script_remote, [], [])
     if not args.no_wait:
         wait_for_job(config, job_id)
         if not args.no_pull:
             pull(config)
-            print_log_tails(config, args.job_name, job_id, args.tail_lines)
+        print_log_tails(config, job_id, args.tail_lines, job_name=job_name)
     return job_id
 
 
-def run_probe(config: KayaConfig, args: argparse.Namespace) -> None:
-    """Run `cli.run_probe` on Kaya login or compute."""
+def handle_submit(config: KayaConfig, args: argparse.Namespace) -> None:
+    """Submit a Python file through a generated wrapper, or an existing sbatch file."""
 
-    probe_args = ["python", "-m", "cli.run_probe", args.probe]
-    if args.heavy:
-        probe_args.append("--run-heavy")
-    if args.json:
-        probe_args.append("--json")
-    for model_id in args.model_id or []:
-        probe_args.extend(["--model-id", model_id])
-    probe_args.extend(strip_separator(args.extra))
-
-    if args.target == "login":
-        if not args.no_push:
-            push(config)
-        run_login(config, probe_args, activate=True, offline=args.offline)
+    local_path = local_source_path(args.program)
+    if local_path is None:
+        raise SystemExit(f"submit requires a repo-local .py or .sbatch file: {args.program}")
+    if local_path.suffix not in {".py", ".sbatch"}:
+        raise SystemExit("submit supports only .py and .sbatch files")
+    forwarded = strip_separator(args.program_args)
+    if not args.no_push:
+        push(config)
+    if local_path.suffix == ".sbatch":
+        job_name = args.job_name or local_path.stem
+        job_id = submit_remote_sbatch(
+            config,
+            remote_source_path(config, local_path),
+            explicit_sbatch_options(args),
+            forwarded,
+        )
+        if not args.no_wait:
+            wait_for_job(config, job_id)
+            if not args.no_pull:
+                pull(config)
+            print_log_tails(config, job_id, args.tail_lines, job_name=job_name)
         return
-
-    gpu_args = argparse.Namespace(
-        job_name=args.job_name,
-        partition=args.partition,
-        gres=args.gres,
-        account=args.account,
-        qos=args.qos,
-        cpus_per_task=args.cpus_per_task,
-        mem=args.mem,
-        time=args.time,
-        no_offline=args.no_offline,
-        no_push=args.no_push,
-        no_wait=args.no_wait,
-        no_pull=args.no_pull,
-        tail_lines=args.tail_lines,
+    settings = resolve_run_settings(
+        local_path,
+        target_override="gpu",
+        activate_override=args.activate_env,
+        offline_override=args.offline,
+        default_target="gpu",
     )
-    run_gpu(config, gpu_args, probe_args)
+    submit_python(config, args, local_path, forwarded, settings)
+
+
+def add_common_run_args(parser: argparse.ArgumentParser) -> None:
+    """Add options shared by `run` and Python `submit`."""
+
+    env_group = parser.add_mutually_exclusive_group()
+    env_group.add_argument("--env", dest="activate_env", action="store_true", default=None, help="activate the configured Kaya conda environment")
+    env_group.add_argument("--no-env", dest="activate_env", action="store_false", help="do not activate the configured Kaya conda environment")
+    online_group = parser.add_mutually_exclusive_group()
+    online_group.add_argument("--offline", dest="offline", action="store_true", default=None, help="force Hugging Face offline mode")
+    online_group.add_argument("--online", dest="offline", action="store_false", help="allow online Hugging Face access and forward configured secrets on login jobs")
+
+
+def add_slurm_args(parser: argparse.ArgumentParser) -> None:
+    """Add SLURM options for generated Python jobs and sbatch overrides."""
+
+    parser.add_argument("--job-name", help="SLURM job name for generated Python jobs; explicit override for .sbatch")
+    parser.add_argument("--partition", help="SLURM partition for generated Python jobs; explicit override for .sbatch")
+    parser.add_argument("--gres", help="SLURM generic resource request for generated Python jobs; explicit override for .sbatch")
+    parser.add_argument("--account", help="SLURM account/allocation for generated Python jobs; explicit override for .sbatch")
+    parser.add_argument("--qos", help="SLURM QOS for generated Python jobs; explicit override for .sbatch")
+    parser.add_argument("--cpus-per-task", type=int, help="CPUs per task for generated Python jobs; explicit override for .sbatch")
+    parser.add_argument("--mem", help="memory request, e.g. 64G, for generated Python jobs; explicit override for .sbatch")
+    parser.add_argument("--time", help="wall time, e.g. 00:30:00, for generated Python jobs; explicit override for .sbatch")
+
+
+def add_job_lifecycle_args(parser: argparse.ArgumentParser) -> None:
+    """Add common sync/wait/log options."""
+
+    parser.add_argument("--no-push", action="store_true", help="do not rsync the repo before running/submitting")
+    parser.add_argument("--no-wait", action="store_true", help="submit and return immediately")
+    parser.add_argument("--no-pull", action="store_true", help="do not pull logs/results after the job exits")
+    parser.add_argument("--tail-lines", type=int, default=120, help="number of log lines to print after a waited job")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser = argparse.ArgumentParser(
+        description="Sync this repo to Kaya and run login-node or SLURM jobs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """\
+            Runner options come before the program path. Everything after the
+            program path, usually separated with --, is forwarded to the script.
+
+            Examples:
+              python -m kaya.kaya show-config
+              python -m kaya.kaya push
+              python -m kaya.kaya run kaya/setup_env.py
+              python -m kaya.kaya run kaya/prestage.py -- --skip-models
+              python -m kaya.kaya run kaya/run_probe.py -- loader --json
+              python -m kaya.kaya submit --time 00:05:00 kaya/gpu_test.py
+              python -m kaya.kaya submit kaya/example.sbatch -- --script-arg value
+              python -m kaya.kaya watch
+
+            Python files may declare defaults in header comments:
+              # kaya: target=login|gpu
+              # kaya: env=true|false
+              # kaya: offline=true|false
+              # kaya: job-name=optional_name
+            """
+        ),
+    )
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="path to Kaya JSON config")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("show-config")
-    sub.add_parser("push")
-    sub.add_parser("pull")
+    sub.add_parser("show-config", help="print the resolved static Kaya config")
+    sub.add_parser("push", help="rsync source to Kaya remote_root using configured excludes")
+    sub.add_parser("pull", help="pull remote logs/ and results/ back to the local repo")
 
-    setup = sub.add_parser("setup-env")
-    setup.add_argument("--no-push", action="store_true")
+    run = sub.add_parser(
+        "run",
+        help="run a Python file or command on the login node, or a header-selected GPU Python file",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Everything after -- is forwarded to the Python file or command.",
+    )
+    run.add_argument("--target", choices=["auto", "login", "gpu"], default="auto", help="execution target; auto reads a Python header and otherwise uses login")
+    add_common_run_args(run)
+    add_slurm_args(run)
+    add_job_lifecycle_args(run)
+    run.add_argument("program", help="repo-local .py file to run, or a command name for login-node execution")
+    run.add_argument("program_args", nargs=argparse.REMAINDER, help="arguments forwarded after --")
 
-    prestage_parser = sub.add_parser("prestage")
-    prestage_parser.add_argument("--no-push", action="store_true")
-    prestage_parser.add_argument("--skip-dataset", action="store_true")
-    prestage_parser.add_argument("--skip-models", action="store_true")
-    prestage_parser.add_argument("--model-id", action="append")
+    submit = sub.add_parser(
+        "submit",
+        help="submit a repo-local .py file via a generated sbatch wrapper, or submit an existing .sbatch file",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Everything after -- is forwarded to the Python script or sbatch file.\n"
+            "For .py files, omitted SLURM options come from kaya/config.json.\n"
+            "For .sbatch files, only explicitly supplied SLURM options are passed as overrides."
+        ),
+    )
+    add_common_run_args(submit)
+    add_slurm_args(submit)
+    add_job_lifecycle_args(submit)
+    submit.add_argument("program", help="repo-local .py or .sbatch file")
+    submit.add_argument("program_args", nargs=argparse.REMAINDER, help="arguments forwarded after --")
 
-    login = sub.add_parser("run-login")
-    login.add_argument("--no-push", action="store_true")
-    login.add_argument("--no-activate", action="store_true")
-    login.add_argument("--offline", action="store_true")
-    login.add_argument("remote_command", nargs=argparse.REMAINDER)
-
-    gpu = sub.add_parser("run-gpu")
-    add_gpu_args(gpu, default_job_name="mpvrdu_job")
-    gpu.add_argument("remote_command", nargs=argparse.REMAINDER)
-
-    probe = sub.add_parser("run-probe")
-    probe.add_argument("probe", choices=["list", "local", "all", "loader", "scanned", "boxes", "model-family", "retrieval", "unanswerable", "doc-type"])
-    probe.add_argument("--target", choices=["login", "gpu"], default="gpu")
-    probe.add_argument("--heavy", action="store_true")
-    probe.add_argument("--json", action="store_true")
-    probe.add_argument("--model-id", action="append")
-    probe.add_argument("--offline", action="store_true", help="use HF offline mode on login-node probe")
-    add_gpu_args(probe, default_job_name="mpvrdu_probe")
-    probe.add_argument("extra", nargs=argparse.REMAINDER)
-
-    gpu_test = sub.add_parser("gpu-test")
-    add_gpu_args(gpu_test, default_job_name="mpvrdu_gpu_test")
-
+    watch = sub.add_parser("watch", help="wait for a job id, pull logs/results, and print matching log tails")
+    watch.add_argument("job_id", nargs="?", help="SLURM job id; defaults to .kaya_last_job")
+    watch.add_argument("--job-name", help="job name used in logs/<job>_<id>.out matching")
+    watch.add_argument("--no-pull", action="store_true", help="do not pull logs/results before printing tails")
+    watch.add_argument("--tail-lines", type=int, default=120, help="number of log lines to print")
     return parser
-
-
-def add_gpu_args(parser: argparse.ArgumentParser, *, default_job_name: str) -> None:
-    """Add common compute-node options to a subparser."""
-
-    parser.add_argument("--job-name", default=default_job_name)
-    parser.add_argument("--partition")
-    parser.add_argument("--gres")
-    parser.add_argument("--account")
-    parser.add_argument("--qos")
-    parser.add_argument("--cpus-per-task", type=int)
-    parser.add_argument("--mem")
-    parser.add_argument("--time")
-    parser.add_argument("--no-offline", action="store_true")
-    parser.add_argument("--no-push", action="store_true")
-    parser.add_argument("--no-wait", action="store_true")
-    parser.add_argument("--no-pull", action="store_true")
-    parser.add_argument("--tail-lines", type=int, default=120)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -492,34 +725,12 @@ def main(argv: list[str] | None = None) -> int:
         push(config)
     elif args.command == "pull":
         pull(config)
-    elif args.command == "setup-env":
-        setup_env(config, do_push=not args.no_push)
-    elif args.command == "prestage":
-        model_ids = [] if args.skip_models else (args.model_id or list(config.raw["models"]))
-        prestage(config, model_ids=model_ids, stage_dataset=not args.skip_dataset, do_push=not args.no_push)
-    elif args.command == "run-login":
-        if not args.no_push:
-            push(config)
-        run_login(
-            config,
-            strip_separator(args.remote_command),
-            activate=not args.no_activate,
-            offline=args.offline,
-        )
-    elif args.command == "run-gpu":
-        run_gpu(config, args, strip_separator(args.remote_command))
-    elif args.command == "run-probe":
-        run_probe(config, args)
-    elif args.command == "gpu-test":
-        run_gpu(
-            config,
-            args,
-            [
-                "python",
-                "-c",
-                "import torch; print('torch', torch.__version__); print('cuda available', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')",
-            ],
-        )
+    elif args.command == "run":
+        handle_run(config, args)
+    elif args.command == "submit":
+        handle_submit(config, args)
+    elif args.command == "watch":
+        handle_watch(config, args)
     return 0
 
 

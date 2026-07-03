@@ -18,8 +18,11 @@
     "torch_index_url": "https://download.pytorch.org/whl/cu126"
   },
   "hf": {
-    "disable_xet": true,
-    "max_workers": 1
+    "max_workers": 8
+  },
+  "secrets": {
+    "env_file": ".env",
+    "forward": ["HF_TOKEN"]
   },
   "slurm": {
     "partition": "gpu",
@@ -35,6 +38,7 @@
   },
   "rsync_excludes": [
     ".git/",
+    ".env",
     ".cache/",
     ".data/",
     "envs/",

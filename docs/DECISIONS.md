@@ -148,8 +148,8 @@ cli.run_probe local --json` against `.data/mmlongbench`.
 GPU follow-up commands after the repo, data, and models are staged on Kaya:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run-probe model-family --target gpu --heavy --json
-envs/mpvrdu/bin/python -m kaya.kaya run-probe retrieval --target gpu --heavy --json
+envs/mpvrdu/bin/python -m kaya.kaya submit kaya/run_probe.py -- model-family --run-heavy --json
+envs/mpvrdu/bin/python -m kaya.kaya submit kaya/run_probe.py -- retrieval --run-heavy --json
 ```
 
 If the all-size model probe is too large for one job, pass `--model-id` to test
@@ -186,28 +186,64 @@ one Qwen3-VL size at a time.
 - Replaced shell-environment-driven Kaya operations with `kaya/kaya.py`, a
   Python CLI that reads static site/project settings from `kaya/config.json`.
   Durable values such as SSH alias, remote root, modules, SLURM defaults, model
-  IDs, dataset IDs, and rsync excludes now live on disk in that config file.
+  IDs, dataset IDs, secret-forwarding rules, and rsync excludes now live on
+  disk in that config file.
+- Simplified `kaya/kaya.py` to a generic runner with `show-config`, `push`,
+  `pull`, `run`, `submit`, and `watch`. Task-specific operations now live in
+  runnable scripts under `kaya/`: `setup_env.py`, `prestage.py`,
+  `gpu_test.py`, and `run_probe.py`.
+- Python runnable scripts can declare `# kaya:` headers for default target,
+  conda activation, HF offline mode, and job name. Existing `.sbatch` files are
+  supported directly and are the foundation for future stage jobs; the `.sbatch`
+  file owns its own SLURM directives and shell setup unless explicit
+  `kaya.py submit` SLURM overrides are supplied.
+- Generated login/GPU Python executions export `PYTHONPATH=<remote_root>` so
+  repo packages import correctly when Python files are executed by path. Custom
+  `.sbatch` files should set their own `PYTHONPATH` or use module-style Python
+  invocation.
 - Added optional `slurm.account` and `slurm.qos` fields. They are blank by
   default because the earlier Kaya partition check showed `gpu` access by group
   membership rather than a required explicit account flag; if Kaya rejects a job
   for accounting, set these fields or pass `--account`/`--qos`.
-- Added `kaya/download_hf.py` for login-node Hugging Face staging. It downloads
-  model snapshots into `.cache/` and stages MMLongBench-Doc into
-  `.data/mmlongbench/{data,documents}` using symlinks from the HF cache, which
-  matches the local loader/probe layout.
-- Live Kaya validation completed before the final downloader patch:
-  `push`, `run-login --no-activate --no-push -- pwd`, and
+- Added `kaya/download_hf.py` for login-node Hugging Face staging. It uses
+  `huggingface_hub.snapshot_download` for model snapshots, downloads cached
+  files into `.cache/`, and stages MMLongBench-Doc file-by-file into
+  `.data/mmlongbench/{data,documents}` using symlinks from the HF cache when
+  possible. This matches the local loader/probe layout while making individual
+  dataset file failures visible.
+- Added `hf_xet` to requirements after Kaya reported that Xet storage was
+  enabled but `hf_xet` was missing. The earlier `HF_HUB_DISABLE_XET=1` fallback
+  is no longer the intended path. `HF_TOKEN` is read from the root `.env` file
+  and forwarded only to online login-node runs; `.env` is excluded from rsync.
+- Live Kaya validation completed before the runner simplification:
+  `push`, old `run-login --no-activate --no-push -- pwd`, and old
   `setup-env --no-push` succeeded. The remote env was created at
   `/group/ems036/lxu/mpvrdu/envs/mpvrdu`; `pip check` reported no broken
   requirements; torch reported `2.7.0+cu126` with CUDA `12.6`.
 - Live MMLongBench prestaging initially failed in Hugging Face's Xet/ranged
   download path with consistency, HTTP 416, and file-size mismatch errors on
-  PDF files. `kaya/download_hf.py` now defaults to `HF_HUB_DISABLE_XET=1`,
-  serial downloads (`hf.max_workers=1`), and a forced retry for corrupted
-  partial downloads. This patched path passed local CLI/tests but still needs a
-  Kaya rerun; the remote sync/rerun was blocked by the tool's escalation usage
-  limit in this session.
+  PDF files. A temporary Xet-disable workaround was superseded by the decision
+  to install/use `hf_xet` and keep all downloads through the Hugging Face Hub
+  package interface. A later rerun still exposed stale partial Hub/Xet state
+  (`416 Client Error` and Xet file-size mismatch), so `kaya/download_hf.py` now
+  prints the active `huggingface_hub`/`hf_xet` versions, token/cache settings,
+  and exact repo/file being fetched. Model snapshots purge incomplete files,
+  lock files, the repo-specific Hub cache, and likely Xet cache directories
+  before a serial `force_download=True` retry. MMLongBench staging lists the
+  repo and downloads parquet/PDF files one at a time with per-file retries; if a
+  single file still fails Hub cache consistency checks, it streams that file via
+  Hugging Face's filesystem interface into `.data/mmlongbench`.
+- Kaya dataset-only prestaging now passes with
+  `envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-models`.
+  The live rerun staged 1 parquet and 135 PDFs. `mi_phone.pdf` still failed the
+  normal Hub cache consistency check twice (`24877442` expected vs `31841340`
+  bytes received), then staged successfully through the HfFileSystem fallback.
+  A login-node loader verification also passed:
+  `envs/mpvrdu/bin/python -m kaya.kaya run --no-push kaya/run_probe.py -- loader --json`
+  loaded 1,091 records, resolved 9/9 sample PDFs, and reported no sample PDF
+  misses.
 - Added `kaya/KAYA_AGENT_GUIDE.md` as the definitive agent-facing Kaya guide and
   `kaya/KAYA_USER_GUIDE.md` as the user-facing quick guide.
 - Updated tests and docs so future stages invoke Kaya through
-  `envs/mpvrdu/bin/python -m kaya.kaya ...`, not `scripts/kaya/*.sh`.
+  `envs/mpvrdu/bin/python -m kaya.kaya run|submit|watch ...`, not
+  `scripts/kaya/*.sh` or task-specific `kaya.py` subcommands.

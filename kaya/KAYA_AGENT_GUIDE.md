@@ -1,160 +1,217 @@
 # Kaya HPC Agent Guide
 
-This is the canonical operational guide for agents working on MP-VRDU with
+This is the canonical operational guide for agents working on MP-VRDU on UWA
 Kaya. All Kaya-specific scripts, configuration, and documentation live in this
 `kaya/` directory.
 
-## Current Contract
+## Mental Model
 
-- Local machine: edit code, run tests, and launch Kaya actions.
-- Kaya login node: reachable as SSH alias `kaya`; has internet; no GPU. Use it
-  for conda environment setup and Hugging Face dataset/model staging.
-- Kaya compute node: reached through SLURM; has GPU; should run offline against
-  pre-staged `.cache/` and `.data/` assets.
-- Remote mirror: configured in `kaya/config.json` as
-  `/group/ems036/lxu/mpvrdu`.
-- Root-relative artifacts on both machines:
-  `.cache/`, `.data/`, `envs/`, `results/`, `logs/`.
-- Code sync excludes those artifacts. Do not rsync local data, model caches,
-  environments, results, logs, or `.git/` to Kaya.
+Kaya work has three locations:
 
-## Static Configuration
+- **Local repo:** edit code, run cheap checks, and launch `kaya.py`.
+- **Kaya login node:** reached with `ssh kaya`; has internet; should not run
+  GPU/model workloads. Use it for sync checks, environment setup, and Hugging
+  Face staging.
+- **Kaya compute node:** reached through SLURM (`sbatch`/`srun`); has GPUs; may
+  have no internet. Compute jobs should read pre-staged `.cache/` and `.data/`
+  artifacts and default to Hugging Face offline mode.
 
-Use `kaya/config.json` for all site-specific values:
+The remote mirror is configured in `kaya/config.json` as
+`/group/ems036/lxu/mpvrdu`. `/group` is shared storage visible from both login
+and compute nodes, so a file staged on the login node can be read by a GPU job.
 
-- `ssh_alias`
-- `remote_root`
-- module names
-- SLURM partition/GRES/CPU/memory/time defaults
-- optional SLURM account/QOS values
-- conda Python version
-- PyTorch wheel index
-- Hugging Face prestage transport settings
-- default model and dataset IDs
-- rsync exclude patterns
+Root-relative artifacts on both machines:
 
-Do not require users or agents to export shell variables for normal operation.
-Temporary CLI overrides are acceptable for one command, but durable values
-belong in `kaya/config.json`.
+- `.cache/`: Hugging Face, torch, and pip caches.
+- `.data/`: downloaded datasets and rendered artifacts.
+- `envs/mpvrdu`: conda environment on that machine.
+- `results/`: experiment outputs pulled back from Kaya.
+- `logs/`: SLURM stdout/stderr and generated runner scripts.
 
-## Python CLI
+`push` excludes `.git/`, `.env`, `.cache/`, `.data/`, `envs/`, `results/`, and
+`logs/`. Never depend on local datasets, weights, results, or secrets being
+copied to Kaya.
 
-Run all Kaya operations from the local repo root:
+## SLURM and sbatch
+
+Kaya uses SLURM to schedule compute-node work. The core commands are:
+
+- `sbatch job.sbatch`: submit a batch job.
+- `squeue -u $USER`: show queued/running jobs.
+- `sacct -j <jobid> --format=JobID,JobName,State,Elapsed,ExitCode`: show final
+  accounting.
+- `scancel <jobid>`: cancel a job.
+
+An `.sbatch` file is a shell script with `#SBATCH` directives before commands.
+Typical directives:
+
+```bash
+#!/bin/bash --login
+#SBATCH --job-name=mpvrdu_job
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=02:00:00
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+```
+
+Important details:
+
+- `--partition=gpu --gres=gpu:1` requests one GPU on the configured GPU
+  partition.
+- `--account` and `--qos` are optional in `kaya/config.json`; leave blank unless
+  SLURM rejects jobs for accounting.
+- `logs/` must exist before submission because SLURM opens output files before
+  executing the script.
+- Anything using `module` should run in a login shell (`#!/bin/bash --login` or
+  `bash --login`).
+- Existing `.sbatch` files are authoritative. If a future stage needs a custom
+  job, create an `.sbatch` file and submit it through `kaya.py`. Explicit
+  `kaya.py submit --time ... --partition ... job.sbatch` options are passed to
+  `sbatch` as deliberate overrides.
+- `kaya.py` submits `.sbatch` files from the remote repo root. Custom `.sbatch`
+  files should `cd "$SLURM_SUBMIT_DIR"` and set `PYTHONPATH="$SLURM_SUBMIT_DIR"`
+  if they execute repo files by path.
+
+## Static Config
+
+Use `kaya/config.json` for durable site/project values:
+
+- SSH alias and remote root.
+- module names.
+- root-relative artifact paths.
+- conda Python version and PyTorch wheel index.
+- SLURM defaults and optional account/QOS.
+- Hugging Face download concurrency.
+- model and dataset IDs.
+- rsync excludes.
+- local secret forwarding rules.
+
+`HF_TOKEN` is read from the root `.env` file locally and forwarded only into
+online login-node runs, such as `kaya/prestage.py`. `.env` is excluded from
+rsync and should never be copied to Kaya.
+
+## kaya.py Contract
+
+`kaya.py` is intentionally small. It owns only common execution mechanics:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya show-config
 envs/mpvrdu/bin/python -m kaya.kaya push
 envs/mpvrdu/bin/python -m kaya.kaya pull
+envs/mpvrdu/bin/python -m kaya.kaya run <program> -- <args>
+envs/mpvrdu/bin/python -m kaya.kaya submit <file.py|file.sbatch> -- <args>
+envs/mpvrdu/bin/python -m kaya.kaya watch [job_id]
 ```
 
-The CLI uses SSH, rsync, and SLURM. It generates small remote shell scripts from
-the static JSON config. Generated SLURM scripts are written under the remote
-`logs/` directory and are not source files.
-
-## Setup Flow
-
-1. Push code:
-
-   ```bash
-   envs/mpvrdu/bin/python -m kaya.kaya push
-   ```
-
-2. Build/update the Kaya conda environment on the login node:
-
-   ```bash
-   envs/mpvrdu/bin/python -m kaya.kaya setup-env
-   ```
-
-3. Stage models and MMLongBench-Doc on the login node:
-
-   ```bash
-   envs/mpvrdu/bin/python -m kaya.kaya prestage
-   ```
-
-`prestage` downloads model snapshots into `.cache/` and stages MMLongBench into
-`.data/mmlongbench/{data,documents}` using symlinks from the HF cache. This is
-required because `cli.run_probe` and later loaders read the root-relative
-`.data/` layout, not only Hugging Face's cache layout.
-
-Kaya defaults to `hf.disable_xet=true` and `hf.max_workers=1` in
-`kaya/config.json`. The first live MMLongBench staging attempt hit HF/Xet
-partial download and range-size errors, so login-node prestaging now prefers
-plain HTTP and serial downloads unless the config is deliberately changed.
-
-For a smaller first pass, stage one model:
+It does not contain task-specific subcommands. Setup, prestage, GPU smoke, and
+probe commands are separate runnable scripts:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya prestage --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py
+envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-models
+envs/mpvrdu/bin/python -m kaya.kaya run kaya/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 kaya/gpu_test.py
+envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --job-arg value
 ```
 
-## Running Code
+Python runnable files can declare defaults in their header:
 
-Login-node command:
-
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya run-login -- python -m cli.run_probe loader --json
+```python
+# kaya: target=login
+# kaya: env=true
+# kaya: offline=false
+# kaya: job-name=optional_name
 ```
 
-GPU command:
+Supported header keys:
 
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya run-gpu --job-name mpvrdu_probe --time 00:10:00 -- python -m cli.run_probe retrieval --json
-```
+- `target=login|gpu`: `run` executes on login or submits a generated GPU job.
+- `env=true|false`: activate `envs/mpvrdu`.
+- `offline=true|false`: set Hugging Face offline variables.
+- `job-name=name`: default SLURM job name for generated Python jobs.
 
-Convenience probe command:
+CLI flags override headers.
 
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya run-probe loader --target login --json
-envs/mpvrdu/bin/python -m kaya.kaya run-probe retrieval --target gpu --heavy --json
-```
+## Command Semantics
 
-`run-gpu` and GPU-target `run-probe`:
+`push`:
 
-- push code unless `--no-push` is provided;
-- write a generated sbatch script under remote `logs/`;
-- submit with `sbatch --parsable`;
-- wait for the job unless `--no-wait` is provided;
-- pull `results/` and `logs/` unless `--no-pull` is provided;
-- print local log tails.
+- Creates remote root and artifact dirs.
+- Runs `rsync -az --delete` from local repo root to Kaya remote root.
+- Applies configured excludes, including `.env`, `.cache`, `.data`, `envs`,
+  `results`, and `logs`.
+- Remote-only source edits are not preserved. Treat local as authoritative.
 
-Funding/accounting: `kaya/config.json` currently leaves `slurm.account` and
-`slurm.qos` empty, so jobs use the user's default eligible Kaya association on
-the `gpu` partition. If SLURM rejects a job for accounting, set those config
-fields or pass `--account ... --qos ...` on the command.
+`pull`:
 
-## Stage 1.5 Validation Commands
+- Pulls remote `logs/` and `results/` into local `logs/` and `results/`.
+- Does not pull `.cache`, `.data`, or `envs`.
 
-After `setup-env` and `prestage`, use:
+`run`:
 
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya run-probe loader --target login --json
-envs/mpvrdu/bin/python -m kaya.kaya gpu-test
-envs/mpvrdu/bin/python -m kaya.kaya run-probe model-family --target gpu --heavy --json --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya run-probe retrieval --target gpu --heavy --json
-```
+- Pushes by default.
+- Runs a repo-local `.py` file or a command on the login node by default.
+- If a `.py` header or `--target gpu` selects GPU, it generates an sbatch
+  wrapper and submits it.
+- For online login jobs, forwards configured secrets such as `HF_TOKEN`.
 
-If model probing all sizes in one job is too large, run one `--model-id` per
-job. Record module/CUDA/partition findings and failures in `docs/DECISIONS.md`.
+`submit`:
+
+- Pushes by default.
+- For `.py` files, generates an sbatch wrapper with config/CLI SLURM defaults.
+- For `.sbatch` files, submits the file with any explicit SLURM overrides. The
+  file owns its own setup, environment activation, output paths, and offline
+  mode. It should set `PYTHONPATH` if it runs repo files by path.
+- Waits, pulls logs/results, and prints log tails unless `--no-wait` or
+  `--no-pull` is provided.
+
+`watch`:
+
+- Waits on a supplied job id or `.kaya_last_job`.
+- Pulls logs/results unless `--no-pull`.
+- Prints matching `logs/*_<jobid>.out` and `.err` tails.
+
+## Hugging Face Staging
+
+Use `kaya/prestage.py` on the login node. It calls
+`huggingface_hub.snapshot_download` for model snapshots and Hugging Face file
+APIs for file-by-file MMLongBench staging; no direct URL downloader should be
+added. The project depends on `hf_xet` so Xet-backed cache downloads use the
+Hugging Face/Xet client. `HF_TOKEN` is read from local `.env` and exported only
+for online login-node execution.
+
+MMLongBench is intentionally staged file-by-file because Kaya showed repeatable
+Hub cache consistency errors on individual PDFs. The staging script prints the
+dataset repo, file counts, each file path, and the active `huggingface_hub` /
+`hf_xet` versions. If a single file still fails Hub cache consistency checks
+after retry, it is streamed through Hugging Face's filesystem interface into
+`.data/mmlongbench`.
+
+Compute-node jobs should not download. Stage assets first, then run compute
+jobs offline.
 
 ## Safety Rules
 
-- Never hand-edit the remote mirror; `push` owns it and uses `rsync --delete`.
-- Never store code under `.data/`, `.cache/`, `envs/`, `results/`, or `logs/`.
-- Never depend on local `.data/` being copied to Kaya.
-- Compute jobs should stay offline by default. Use `--no-offline` only for a
-  deliberate diagnostic job.
-- Anything that must survive future stages goes in source code,
-  `kaya/config.json`, this guide, `kaya/KAYA_USER_GUIDE.md`, or
-  `docs/DECISIONS.md`.
+- Keep all Kaya-specific source/config/docs under `kaya/`.
+- Do not reintroduce `scripts/kaya/` or `docs/KAYA.md`.
+- Do not put code, secrets, or generated results in `.cache`, `.data`, `envs`,
+  `results`, or `logs`.
+- Do not hand-edit the remote mirror; `push` uses `rsync --delete`.
+- Record persistent operational findings in `docs/DECISIONS.md`.
 
-## Common Failure Modes
+## Common Failures
 
-- `module: command not found`: the SSH command did not run as a login shell.
-  The Python CLI uses `bash --login -lc`; do not replace that lightly.
-- `conda activate` fails: run `setup-env`; check the Anaconda module in
-  `kaya/config.json`.
-- HF asset missing on compute: run `prestage` on the login node first.
-- Probe cannot find PDFs: confirm `.data/mmlongbench/data` and
-  `.data/mmlongbench/documents` exist on Kaya. `prestage` should create them.
-- SLURM rejects partition/GRES: update `kaya/config.json` after confirming Kaya's
-  current GPU partition and request syntax.
+- `module: command not found`: use a login shell.
+- `conda activate` fails: run `kaya/setup_env.py` and check module names.
+- HF asks to download on compute: run `kaya/prestage.py` on login first, then
+  keep GPU jobs offline.
+- Xet warning says `hf_xet` missing: rerun setup after requirements update.
+- No SLURM logs: ensure `logs/` exists and the `.sbatch` output paths point
+  there.
+- SLURM rejects partition/GRES/account: inspect `sinfo`, `scontrol show
+  partition gpu`, and update `kaya/config.json`.
