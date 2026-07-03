@@ -1,0 +1,55 @@
+{
+  "ssh_alias": "kaya",
+  "remote_root": "/group/ems036/lxu/mpvrdu",
+  "python_version": "3.11",
+  "modules": [
+    {"name": "gcc/9.4.0", "optional": true},
+    {"name": "Anaconda3/2024.06", "optional": false},
+    {"name": "cuda/12.6.3", "optional": false}
+  ],
+  "paths": {
+    "cache": ".cache",
+    "data": ".data",
+    "env": "envs/mpvrdu",
+    "results": "results",
+    "logs": "logs"
+  },
+  "pip": {
+    "torch_index_url": "https://download.pytorch.org/whl/cu126"
+  },
+  "hf": {
+    "disable_xet": true,
+    "max_workers": 1
+  },
+  "slurm": {
+    "partition": "gpu",
+    "gres": "gpu:1",
+    "account": "",
+    "qos": "",
+    "nodes": 1,
+    "ntasks": 1,
+    "cpus_per_task": 8,
+    "mem": "64G",
+    "time": "02:00:00",
+    "poll_seconds": 10
+  },
+  "rsync_excludes": [
+    ".git/",
+    ".cache/",
+    ".data/",
+    "envs/",
+    "results/",
+    "logs/",
+    "__pycache__/",
+    "*.pyc"
+  ],
+  "models": [
+    "Qwen/Qwen3-VL-2B-Instruct",
+    "Qwen/Qwen3-VL-4B-Instruct",
+    "Qwen/Qwen3-VL-8B-Instruct",
+    "Qwen/Qwen3-VL-32B-Instruct"
+  ],
+  "datasets": {
+    "mmlongbench": "yubo2333/MMLongBench-Doc"
+  }
+}

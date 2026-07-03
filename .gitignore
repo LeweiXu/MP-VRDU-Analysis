@@ -238,7 +238,8 @@ logs/
 
 # kaya/sync_kaya.sh state
 .kaya_last_job
-scripts/kaya/.kaya_last_job
+kaya/.kaya_last_job
+kaya/config.local.json
 
 AGENTS.md
 CLAUDE.md

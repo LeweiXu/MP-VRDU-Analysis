@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import importlib
-import os
-import subprocess
+import json
 from pathlib import Path
 
 
@@ -46,6 +45,9 @@ MODULES = [
     "cli.run_probe",
     "cli.run_experiment",
     "cli.build_tables",
+    "kaya",
+    "kaya.kaya",
+    "kaya.download_hf",
 ]
 
 
@@ -56,52 +58,35 @@ def test_tree_imports() -> None:
         assert module.__doc__
 
 
-def test_kaya_env_paths_are_root_relative() -> None:
-    """Kaya env defaults place all artifacts under the remote repo mirror."""
-    command = (
-        "source scripts/kaya/env.sh; "
-        "printf '%s\\n' "
-        "\"MPVRDU_ROOT=$MPVRDU_ROOT\" "
-        "\"KAYA_REMOTE_DIR=$KAYA_REMOTE_DIR\" "
-        "\"HF_HOME=$HF_HOME\" "
-        "\"KAYA_ENV=$KAYA_ENV\" "
-        "\"KAYA_DATA_DIR=$KAYA_DATA_DIR\" "
-        "\"KAYA_RESULTS_DIR=$KAYA_RESULTS_DIR\" "
-        "\"KAYA_LOGS_DIR=$KAYA_LOGS_DIR\""
-    )
-    clean_env = {
-        "HOME": os.environ.get("HOME", ""),
-        "PATH": os.environ.get("PATH", ""),
-        "KAYA_USER": "user",
-        "KAYA_PROJECT": "project",
-    }
-    result = subprocess.run(
-        ["bash", "-lc", command],
-        cwd=ROOT,
-        check=True,
-        text=True,
-        capture_output=True,
-        env=clean_env,
-    )
-    values = dict(line.split("=", 1) for line in result.stdout.splitlines())
+def test_kaya_config_paths_are_root_relative() -> None:
+    """Kaya config places all remote artifacts under one mirror root."""
+    from kaya.kaya import load_config
 
-    assert values["MPVRDU_ROOT"] == str(ROOT)
-    assert values["KAYA_REMOTE_DIR"] == "/group/project/user/mpvrdu"
-    assert values["HF_HOME"] == f'{values["KAYA_REMOTE_DIR"]}/.cache'
-    assert values["KAYA_ENV"] == f'{values["KAYA_REMOTE_DIR"]}/envs/mpvrdu'
-    assert values["KAYA_DATA_DIR"] == f'{values["KAYA_REMOTE_DIR"]}/.data'
-    assert values["KAYA_RESULTS_DIR"] == f'{values["KAYA_REMOTE_DIR"]}/results'
-    assert values["KAYA_LOGS_DIR"] == f'{values["KAYA_REMOTE_DIR"]}/logs'
+    config = load_config(ROOT / "kaya/config.json")
+
+    assert config.ssh_alias == "kaya"
+    assert config.remote_root == "/group/ems036/lxu/mpvrdu"
+    assert config.remote_path("cache") == f"{config.remote_root}/.cache"
+    assert config.remote_path("env") == f"{config.remote_root}/envs/mpvrdu"
+    assert config.remote_path("data") == f"{config.remote_root}/.data"
+    assert config.remote_path("results") == f"{config.remote_root}/results"
+    assert config.remote_path("logs") == f"{config.remote_root}/logs"
+    assert config.raw["hf"]["disable_xet"] is True
+    assert config.raw["hf"]["max_workers"] == 1
+    assert "account" in config.raw["slurm"]
+    assert "qos" in config.raw["slurm"]
 
 
-def test_kaya_sync_excludes_heavy_dirs() -> None:
+def test_kaya_config_excludes_heavy_dirs() -> None:
     """Rsync excludes protect machine-local artifacts from cross-machine copies."""
-    sync_script = (ROOT / "scripts/kaya/sync_kaya.sh").read_text()
-    for excluded in ['".git/"', '".cache/"', '".data/"', '"envs/"', '"results/"', '"logs/"']:
-        assert f"--exclude {excluded}" in sync_script
+    config = json.loads((ROOT / "kaya/config.json").read_text())
+    excludes = set(config["rsync_excludes"])
+    for excluded in [".git/", ".cache/", ".data/", "envs/", "results/", "logs/"]:
+        assert excluded in excludes
 
-    assert 'KAYA_RESULTS_DIR/" "$ROOT/results/"' in sync_script
-    assert 'KAYA_LOGS_DIR/" "$ROOT/logs/"' in sync_script
+    assert not (ROOT / "scripts/kaya").exists()
+    assert (ROOT / "kaya/KAYA_AGENT_GUIDE.md").is_file()
+    assert (ROOT / "kaya/KAYA_USER_GUIDE.md").is_file()
 
 
 def test_data_package_is_code_not_artifacts() -> None:

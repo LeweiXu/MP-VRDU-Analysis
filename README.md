@@ -14,8 +14,9 @@ runner are intentionally filled in by later stages after the human checkpoints.
 - `docs/PROJECT_SPEC.md` defines what the experiments measure.
 - `docs/implementation_plan.md` defines the staged build order.
 - `docs/DECISIONS.md` records fixed decisions and stage findings.
-- `docs/KAYA.md` is the Kaya runbook for the pipeline mirror.
-- `scripts/kaya/` contains the local-to-Kaya sync/setup/job wrappers.
+- `kaya/` contains the Kaya config, Python sync/job runner, and Kaya guides.
+- `kaya/KAYA_USER_GUIDE.md` is the human-facing Kaya quick guide.
+- `kaya/KAYA_AGENT_GUIDE.md` is the agent-facing definitive Kaya operations guide.
 
 All machine-specific artifacts stay under the repository root and are ignored:
 `.cache/`, `.data/`, `envs/`, `results/`, and `logs/`. The `data/` directory
