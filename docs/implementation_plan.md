@@ -399,12 +399,25 @@ and Kaya probe results before Stage 2.
 ## Stage 2 — Data layer (records + rendering)
 
 **Goal.** One normalised question representation and the PDF→pages utilities shared by
-representation and retrieval.
+representation and retrieval, plus the complete Kaya setup/prestage barrier for all later stages.
+After Stage 2, later stages should not require new ad hoc environment setup or one-off downloads;
+new artifacts must be added to `kaya/config.json` + `kaya/prestage.py` here first.
 
 **Build.**
+- Expand `kaya/prestage.py` from "Qwen weights + MMLongBench" into the full downstream artifact
+  staging command:
+  - Qwen3-VL reasoner weights: 2B, 4B, 8B, 32B.
+  - text retrieval weights: BGE (`BAAI/bge-small-en-v1.5`).
+  - vision retrieval weights: ColPali/ColQwen (`vidore/colpali-v1.3`,
+    `vidore/colqwen2-v1.0`, `vidore/colqwen2.5-v0.2`).
+  - non-HF tool caches/warmups needed later by text/layout stages: PaddleOCR and Docling, with
+    cache env vars rooted under `.cache/`.
+  - keep smaller switches (`--skip-models`, `--skip-reasoner-models`, `--skip-retrieval-models`,
+    `--skip-tool-caches`, repeated `--model-id`, repeated `--retrieval-model-id`) so probes can
+    stage cheap subsets without changing config.
 - `schema.py`: core dataclasses (frozen where sensible):
   - `Question` (id, doc_id, question, gold_answer, answer_format, doc_type, evidence_pages,
-    evidence_sources, hop (derived from `len(evidence_pages)`: single=1, multi>=2),
+    evidence_sources, hop (derived from `len(evidence_pages)`: none=0, single=1, multi>=2),
     is_unanswerable (from `"Not answerable"`), raw_fields).
   - `PageSet` (page indices + provenance: oracle / retrieved / full / buried).
   - `Page` (index, lazy image handle, text spans) — produced by `render.py`.
@@ -415,13 +428,14 @@ representation and retrieval.
   the shared substrate for both the representation channels and the retrievers.
 
 **Docs.** `schema.py` docstring enumerating every field and its MMLongBench-Doc source. Short
-`docs/DATA.md`.
+`docs/DATA.md`. Update `docs/DECISIONS.md` with the expanded Stage 2 setup contract.
 
 **Tests.** `tests/test_data.py` — load N questions; assert invariants (hop matches evidence-page
 count; unanswerable flag correct; gold pages within page range; render yields a `Page` with image
-or text).
+or text). Extend Kaya config tests so retrieval model IDs and tool-cache warmups are pinned.
 
-**Checkpoint.** Human confirms the normalised schema before interfaces depend on it.
+**Checkpoint.** Human confirms the normalised schema and the full Kaya prestage inventory before
+interfaces depend on it.
 
 ---
 

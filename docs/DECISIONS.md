@@ -242,6 +242,19 @@ one Qwen3-VL size at a time.
   `envs/mpvrdu/bin/python -m kaya.kaya run --no-push kaya/run_probe.py -- loader --json`
   loaded 1,091 records, resolved 9/9 sample PDFs, and reported no sample PDF
   misses.
+- Stage 2 is now also the full setup/prestage barrier for later stages. In
+  addition to Qwen3-VL reasoner weights and MMLongBench, `kaya/prestage.py`
+  stages BGE (`BAAI/bge-small-en-v1.5`), ColPali/ColQwen
+  (`vidore/colpali-v1.3`, `vidore/colqwen2-v1.0`,
+  `vidore/colqwen2.5-v0.2`), warms PaddleOCR, and uses Docling's model
+  downloader for layout/table-related models under `.cache/`. Later stages
+  should not add ad hoc setup steps without updating this config-driven
+  prestage path.
+- The Stage 2 data layer normalises MMLongBench `evidence_pages` from one-based
+  source page numbers to zero-based internal page indices. The original row is
+  retained in `Question.raw_fields` for audit/debugging. Rendered PNGs are
+  cached under `results/cache/renders/`, not `.data/`, so they are reproducible
+  compute artifacts rather than dataset source files.
 - Added `kaya/KAYA_AGENT_GUIDE.md` as the definitive agent-facing Kaya guide and
   `kaya/KAYA_USER_GUIDE.md` as the user-facing quick guide.
 - Updated tests and docs so future stages invoke Kaya through

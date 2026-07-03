@@ -4,10 +4,10 @@ This repository implements the staged empirical pipeline described in
 `docs/implementation_plan.md` for the MP-VRDU representation and deployment
 study.
 
-Stage 0 creates the project skeleton only: importable modules, dependency
-declarations, decision/runbook docs, and Kaya orchestration scripts. The actual
-loader, schema, pipeline interfaces, tools, models, metrics, and experiment
-runner are intentionally filled in by later stages after the human checkpoints.
+Stages 0-2 now provide the project skeleton, Kaya orchestration, complete
+prestage/setup inventory, and the concrete MMLongBench data layer. Pipeline
+interfaces, tools, models, metrics, and experiment runners are filled in by the
+later stages after the human checkpoints.
 
 ## Layout
 
@@ -18,6 +18,7 @@ runner are intentionally filled in by later stages after the human checkpoints.
   task scripts, and Kaya guides.
 - `kaya/KAYA_USER_GUIDE.md` is the human-facing Kaya quick guide.
 - `kaya/KAYA_AGENT_GUIDE.md` is the agent-facing definitive Kaya operations guide.
+- `docs/DATA.md` documents the Stage 2 normalized question schema and render cache.
 
 All machine-specific artifacts stay under the repository root and are ignored:
 `.cache/`, `.data/`, `envs/`, `results/`, and `logs/`. The `data/` directory

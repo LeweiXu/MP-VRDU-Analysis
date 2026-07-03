@@ -114,6 +114,7 @@ probe commands are separate runnable scripts:
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py
 envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-models
+envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
 envs/mpvrdu/bin/python -m kaya.kaya run kaya/run_probe.py -- loader --json
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 kaya/gpu_test.py
 envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --job-arg value
@@ -184,6 +185,13 @@ APIs for file-by-file MMLongBench staging; no direct URL downloader should be
 added. The project depends on `hf_xet` so Xet-backed cache downloads use the
 Hugging Face/Xet client. `HF_TOKEN` is read from local `.env` and exported only
 for online login-node execution.
+
+Stage 2 makes prestage the complete setup barrier for later work. The configured
+inventory includes Qwen3-VL reasoners, BGE text retrieval, ColPali/ColQwen
+vision retrieval, MMLongBench, and PaddleOCR/Docling cache warmups. Use
+`--skip-reasoner-models`, `--skip-retrieval-models`, `--skip-tool-caches`,
+`--model-id`, and `--retrieval-model-id` for cheap subset checks; do not add
+one-off later-stage download commands without moving them into config/prestage.
 
 MMLongBench is intentionally staged file-by-file because Kaya showed repeatable
 Hub cache consistency errors on individual PDFs. The staging script prints the

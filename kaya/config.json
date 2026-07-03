@@ -50,9 +50,22 @@
   "models": [
     "Qwen/Qwen3-VL-2B-Instruct",
     "Qwen/Qwen3-VL-4B-Instruct",
-    "Qwen/Qwen3-VL-8B-Instruct",
-    "Qwen/Qwen3-VL-32B-Instruct"
+    "Qwen/Qwen3-VL-8B-Instruct"
   ],
+  "retrieval_models": {
+    "text": [
+      "BAAI/bge-small-en-v1.5"
+    ],
+    "vision": [
+      "vidore/colpali-v1.3",
+      "vidore/colqwen2-v1.0",
+      "vidore/colqwen2.5-v0.2"
+    ]
+  },
+  "tool_caches": {
+    "paddleocr": true,
+    "docling": true
+  },
   "datasets": {
     "mmlongbench": "yubo2333/MMLongBench-Doc"
   }

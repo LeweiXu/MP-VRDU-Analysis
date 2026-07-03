@@ -61,7 +61,8 @@ Build/update the Kaya env:
 envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py
 ```
 
-Stage the dataset and models on the login node:
+Stage the dataset, all configured model weights, and tool caches on the login
+node:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py
@@ -71,14 +72,17 @@ For a smaller first pass:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-models
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-reasoner-models --retrieval-model-id BAAI/bge-small-en-v1.5
 ```
 
 `prestage.py` uses the Hugging Face Python package. Models are downloaded as
-Hub snapshots; MMLongBench is staged file-by-file so the logs show the dataset
-repo, file counts, and each parquet/PDF path being fetched. `hf_xet` is
-installed for Xet-backed cache downloads. `HF_TOKEN` is read from local `.env`
-and forwarded to the remote login-node process. `.env` itself is never rsynced.
+Hub snapshots. This includes Qwen3-VL reasoners, BGE text retrieval, and
+ColPali/ColQwen vision retrieval. MMLongBench is staged file-by-file so the logs
+show the dataset repo, file counts, and each parquet/PDF path being fetched.
+PaddleOCR and Docling caches are warmed under `.cache/`. `hf_xet` is installed
+for Xet-backed cache downloads. `HF_TOKEN` is read from local `.env` and
+forwarded to the remote login-node process. `.env` itself is never rsynced.
 
 ## kaya.py Commands
 

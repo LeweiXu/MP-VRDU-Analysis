@@ -80,6 +80,10 @@ def test_kaya_config_paths_are_root_relative() -> None:
     assert "HF_TOKEN" in config.raw["secrets"]["forward"]
     assert "account" in config.raw["slurm"]
     assert "qos" in config.raw["slurm"]
+    assert "BAAI/bge-small-en-v1.5" in config.raw["retrieval_models"]["text"]
+    assert "vidore/colqwen2.5-v0.2" in config.raw["retrieval_models"]["vision"]
+    assert config.raw["tool_caches"]["paddleocr"] is True
+    assert config.raw["tool_caches"]["docling"] is True
 
 
 def test_kaya_config_excludes_heavy_dirs() -> None:
