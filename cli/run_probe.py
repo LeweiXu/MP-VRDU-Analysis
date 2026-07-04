@@ -1,9 +1,34 @@
-"""Stage 1 feasibility probes for MMLongBench-Doc and hardware readiness.
+"""Run Stage-1 feasibility probes for data, tools, models, and hardware.
 
-The probes are deliberately lightweight and independent. Local probes inspect
-the already-staged MMLongBench-Doc files under `.data/`; hardware probes report
-what can be checked without a GPU and leave the expensive load/generate checks
-for Kaya compute jobs.
+Purpose:
+    This CLI captures the early feasibility checks that prevent later stages
+    from depending on missing dataset fields, unavailable PDFs, unsupported
+    model APIs, or untested retrieval packages. Local probes inspect already
+    staged files under `.data/`; heavy probes are opt-in and intended for Kaya.
+
+Pipeline role:
+    Produces structured `ProbeVerdict` objects used in `docs/DECISIONS.md` to
+    decide what assumptions are safe before the MVP and full runs.
+
+CLI:
+    `python -m cli.run_probe PROBE [options]`
+
+Arguments:
+    PROBE: one of `list`, `local`, `all`, or a named probe (`loader`,
+        `scanned`, `boxes`, `unanswerable`, `doc-type`, `model-family`,
+        `retrieval`).
+    --root PATH: repository root used for relative paths.
+    --data-dir PATH: staged data root (default: `<root>/.data`).
+    --sample N: question records inspected by lightweight data probes.
+    --pdf-sample N: number of PDFs sampled by scanned/born-digital checks.
+    --max-pages-per-pdf N: pages inspected in each sampled PDF.
+    --allow-network: permit fallback dataset reads from remote sources.
+    --run-heavy: run GPU/model-loading checks instead of reporting partials.
+    --bge-model-id ID: text embedding model for retrieval heavy smoke.
+    --vision-retriever-model-id ID: ColQwen/ColPali model for heavy smoke.
+    --heavy-timeout-seconds N: timeout for each child-process heavy probe.
+    --json: print machine-readable JSON verdicts.
+    --model-id ID: repeatable override for model-family probes.
 """
 
 from __future__ import annotations

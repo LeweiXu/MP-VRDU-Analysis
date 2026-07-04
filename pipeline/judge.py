@@ -1,13 +1,18 @@
-"""Uniform judge interface for converting predictions into comparable scores.
+"""Score model predictions against gold answers through a uniform interface.
 
-Stage D of the pipeline. A `Judge` scores one `Prediction` against a `Question`'s
-gold answer, applied identically across every condition so columns are
-commensurable. In Stage 7 the real judge is just another `Reasoner` spec (from a
-different family than the evaluated model) wrapped by this protocol; the
-generate -> extract -> score logic and judge-human agreement gate live there.
+Purpose:
+    Defines Stage D of the pipeline. A `Judge` converts a `Prediction` and
+    `Question` into a comparable `Score`, keeping answer evaluation independent
+    of representation and reasoner backend.
 
-Stage 3 ships only `StubJudge`, a cheap heuristic (substring / abstention match)
-so the orchestrator emits well-typed `Score`s end to end.
+Pipeline role:
+    The orchestrator applies one judge implementation across all cells so table
+    columns are commensurable. The current stub judge supports local tests; the
+    GPT-4o-mini judge will land behind the same interface.
+
+Arguments:
+    None. This module is import-only; callers instantiate a `Judge` subclass and
+    call `score(question, prediction)`.
 """
 
 from __future__ import annotations

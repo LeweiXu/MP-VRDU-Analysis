@@ -1,4 +1,20 @@
-"""Smoke-test CUDA visibility inside the Kaya conda environment."""
+"""Smoke-test CUDA visibility inside the Kaya conda environment.
+
+Purpose:
+    Runs as a minimal SLURM GPU job to confirm that the configured conda
+    environment can import torch and see an allocated CUDA device.
+
+Pipeline role:
+    Operational sanity check before model-heavy stages. A failure means the Kaya
+    partition/GRES/module/environment configuration must be fixed before M3.
+
+CLI:
+    `python -m kaya.kaya submit kaya/gpu_test.py`
+
+Arguments:
+    None. SLURM resource overrides, if needed, are supplied to `kaya.kaya
+    submit` before the script path, not to this script.
+"""
 
 # kaya: target=gpu
 # kaya: env=true

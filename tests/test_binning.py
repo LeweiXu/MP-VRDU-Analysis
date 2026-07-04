@@ -1,4 +1,16 @@
-"""Stage M1 tests for Option-A binning, smoke corpus, and config knobs."""
+"""Test Stage-M1 Option-A binning, smoke corpus, and config knobs.
+
+Purpose:
+    Verifies all native MMLongBench doc types map to the intended v3 bins, the
+    frozen smoke corpus covers every bin, and `ExperimentConfig(smoke=True)`
+    keeps paths root-relative while selecting smoke settings.
+
+Test role:
+    Protects the stable target that all later MVP smoke stages use.
+
+Arguments:
+    None. Run with `python -m pytest tests/test_binning.py`.
+"""
 
 from __future__ import annotations
 

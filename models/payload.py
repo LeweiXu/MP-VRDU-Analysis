@@ -1,8 +1,13 @@
-"""Backend-agnostic model input container and adapter contract.
+"""Represent backend-neutral model inputs and prompt adapters.
 
-`ModelInput` is the frozen boundary that makes the reasoner family swappable.
-A `Representation` produces a `Payload` (ordered text/image parts); that payload
-maps to a `ModelInput`, and the two adapters render it for either backend:
+Purpose:
+    Provides the frozen `ModelInput` boundary that lets representation composers
+    and reasoner backends evolve independently. It preserves ordered text/image
+    parts and exposes adapters for common local and chat-API prompt shapes.
+
+Pipeline role:
+    A `Representation` produces a `Payload`; the orchestrator converts it to
+    `ModelInput`; concrete reasoners call one of the adapters:
 
 - `to_chat_messages()` -> an OpenAI/Gemini/Anthropic-style `messages` array with
   base64 `image_url` parts (the HTTP/API backend consumes this).
@@ -13,6 +18,10 @@ maps to a `ModelInput`, and the two adapters render it for either backend:
 Nothing downstream of this file knows whether the reasoner is a local checkpoint
 or a remote API. Adding a new backend (InternVL, Gemma, GPT, Gemini) means adding
 a `Reasoner` that reads one of these two adapters, not touching the pipeline.
+
+Arguments:
+    None. This module is import-only; callers instantiate `ModelInput` or use
+    `ModelInput.from_payload()`.
 """
 
 from __future__ import annotations

@@ -1,4 +1,15 @@
-"""Stage 0 skeleton and Kaya contract tests."""
+"""Test repository skeleton imports and basic Kaya configuration contracts.
+
+Purpose:
+    Verifies that placeholder packages import, required project files exist, and
+    Kaya configuration contains the expected root-relative paths and exclusions.
+
+Test role:
+    Protects the initial scaffold assumptions that later staged work builds on.
+
+Arguments:
+    None. Run with `python -m pytest tests/test_skeleton.py`.
+"""
 
 from __future__ import annotations
 

@@ -38,8 +38,10 @@ or `docs/DECISIONS.md`.
   swappable without rework.
 - **Concise, not fragmented.** Prefer a handful of cohesive modules over many tiny files. No build
   systems, no YAML/Makefiles. Configuration is plain Python (a dataclass); runs are driven by
-  small CLI scripts. Every file opens with a module docstring stating its role in the experimental
-  architecture.
+  small CLI scripts. Every Python file opens with a comprehensive module docstring that states:
+  what the file does; why it exists in the experimental architecture; its main public entry points
+  or data contracts; and, for runnable scripts/CLIs, the command form plus every accepted argument
+  (or explicitly says there are no command-line arguments for import-only modules).
 - **The code mirrors the paper.** The four pipeline stages and two covariates from
   `PROJECT_SPEC.md` are first-class objects with the same names. A reader who knows the paper
   should recognise the architecture in the file tree.

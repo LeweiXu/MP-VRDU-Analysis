@@ -63,6 +63,7 @@
     ]
   },
   "tool_caches": {
+    "marker": true,
     "paddleocr": true,
     "docling": true
   },

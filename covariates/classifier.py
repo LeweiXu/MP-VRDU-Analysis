@@ -1,13 +1,18 @@
-"""Document-type classifier interface for representation-routing covariates.
+"""Define the document-type classifier interface for routing policies.
 
-A `DocTypeClassifier` is the RQ3 routing covariate: a cheap pass that predicts a
-document's type so the runner can apply that type's representation frontier
-instead of one uniform representation. Its accuracy vs the gold `doc_type` bounds
-whether routing can pay off, so it is logged alongside routed accuracy.
+Purpose:
+    A `DocTypeClassifier` predicts a document's native type or bin so routing can
+    choose a representation recipe when labels are unavailable. Its latency and
+    accuracy are part of the RQ3 routing analysis.
 
-Stage 3 ships only `StubClassifier` (echoes the gold label at full confidence).
-The real cheap-model classifier lands in Stage 8 behind this same
-`classify(question)` signature.
+Pipeline role:
+    Policy runners call `classify(question)` and compare the prediction with the
+    gold `doc_type` / Option-A bin. `StubClassifier` echoes the gold label until
+    a cheap model classifier lands behind the same signature.
+
+Arguments:
+    None. This module is import-only; callers instantiate classifiers and call
+    `classify()`.
 """
 
 from __future__ import annotations

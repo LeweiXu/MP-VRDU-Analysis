@@ -1,37 +1,32 @@
 #!/usr/bin/env python3
-"""
-dataset_stats.py
-----------------
-The "what's actually in the data" report for all five MP-VRDU datasets, as a
-companion to `profile_datasets.py`. The profiler answers "which result tables can
-this dataset fill"; this one just dumps the descriptive statistics you'd want for a
-data section: how big the documents are, how many questions/documents there are, and
-every categorical label field with its full class breakdown, whether or not it's
-relevant to our study.
+"""Generate descriptive dataset statistics for MP-VRDU candidate datasets.
 
-It reuses the fetch layer from `profile_datasets.py` (same REGISTRY, same loaders,
-same heavy-value handling) so there's one place that knows how to pull each repo.
-This file only adds the number-crunching and the CSV/Markdown output.
+Purpose:
+    Produces the "what is actually in the data" report used by planning and
+    paper data-section work: question/document counts, document-length signals,
+    all categorical label distributions, hop classes, and unanswerable counts.
 
-A note on "document length": the five datasets don't share a unit. Contract/filing
-datasets (CUAD, DocFinQA) carry a text context, so length there is characters (and
-words when the raw string is present). Page-image datasets (MMLongBench-Doc,
-SlideVQA) have no text field, so length is pages — read from a real page field when
-one exists, or by counting the local PDFs for MMLongBench. Whatever signal a dataset
-exposes is reported and labelled; the rest show up as blank/"n/a" rather than a crash.
-Lengths are computed per distinct document (deduped by the doc-id field), not per
-question, so a 200-page doc with 30 questions counts once.
+Pipeline role:
+    Complements `scripts/profile_datasets.py`. The profiler answers which result
+    tables a dataset can support; this script writes census-style descriptive
+    statistics and CSVs. It reuses the profiler's registry/fetch layer so each
+    dataset is loaded in one consistent way.
 
-USAGE
-  python scripts/dataset_stats.py
-  python scripts/dataset_stats.py --only mmlongbench cuad --max-scan 200
-  python scripts/dataset_stats.py --out-md docs/dataset_stats.md \
-      --out-csv docs/dataset_stats.csv --out-dist-csv docs/dataset_label_distributions.csv
+Length convention:
+    Text datasets report characters/words when raw context is available.
+    Page-image datasets report pages, either from native metadata or by counting
+    local PDFs. Lengths are deduplicated per document, not per question.
 
-Outputs (defaults, all under docs/):
-  - dataset_stats.md                  human-readable, per dataset + cross-dataset summary
-  - dataset_stats.csv                 one row per dataset: scalar summary stats
-  - dataset_label_distributions.csv   long form: one row per (dataset, field, class)
+CLI:
+    `python scripts/dataset_stats.py [options]`
+
+Arguments:
+    --only KEY [KEY ...]: restrict to dataset keys from the shared registry.
+    --max-scan N: cap records per dataset; omitted means a full census.
+    --out-md PATH: Markdown report path (default: `docs/dataset_stats.md`).
+    --out-csv PATH: scalar CSV path (default: `docs/dataset_stats.csv`).
+    --out-dist-csv PATH: long-form label distribution CSV path
+        (default: `docs/dataset_label_distributions.csv`).
 """
 
 import argparse

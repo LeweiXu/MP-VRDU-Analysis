@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""
-profile_datasets.py
--------------------
-One report for all five MP-VRDU datasets. For each one it loads actual question
-records (not docs) and reports which result tables the dataset can populate:
-question-type, multi-hop, domain, evidence-page localisation, unanswerable
-(hallucination), vision, and text/layout.
+"""Profile candidate datasets for MP-VRDU table readiness.
 
-Each dataset needs a slightly different fetch because the repos are laid out
-differently. Rather than rely on `load_dataset` (which trips on loader scripts and
-PDF-only default configs), every dataset declares a `strategy` and we load it the
-way that actually works:
+Purpose:
+    Loads actual question records from each candidate dataset and reports which
+    result-table needs each dataset can support: question type, multi-hop,
+    domain/document type, evidence-page localization, unanswerable questions,
+    visual evidence, and text/layout evidence.
+
+Pipeline role:
+    Early planning utility, not part of the runtime pipeline. Its registry and
+    fetch strategies are reused by `scripts/dataset_stats.py` so dataset access
+    logic stays in one place.
+
+Fetch strategies:
 
   - parquet_hf   : QA fields live inline in HF parquet shards. Read the light
                    columns, skip heavy image/byte columns.
@@ -26,14 +28,17 @@ way that actually works:
                    as we go to bound memory.
                    -> DocFinQA
 
-Auth uses your `huggingface-cli login` token automatically.
+Auth:
+    Uses the Hugging Face token already available to `huggingface_hub`, such as
+    one created by `huggingface-cli login`.
 
-USAGE
-  python scripts/profile_datasets.py
-  python scripts/profile_datasets.py --only slidevqa cuad
-  python scripts/profile_datasets.py --max-scan 600 --out docs/dataset_profile.md
+CLI:
+    `python scripts/profile_datasets.py [options]`
 
-Outputs: docs/dataset_profile.md
+Arguments:
+    --only KEY [KEY ...]: restrict to dataset keys from `REGISTRY`.
+    --max-scan N: maximum records scanned per dataset (default: 400).
+    --out PATH: Markdown report path (default: `docs/dataset_profile.md`).
 """
 
 import argparse

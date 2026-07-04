@@ -1,20 +1,24 @@
-"""Input-conditioner interfaces for oracle, retrieved, full-document, and buried-oracle page sets.
+"""Select which document pages reach the representation stage.
 
-Stage A of the pipeline. An `InputConditioner` decides *which pages reach the
-model* for one question, returning a `PageSet` with its provenance. The four
-conditions mirror the spec's input-conditions table plus the RQ3 burying sweep:
+Purpose:
+    Defines Stage A of the pipeline. An `InputConditioner` maps a `Question` and
+    total document page count to a `PageSet` with zero-based page indices and
+    provenance. This isolates page-selection policy from rendering,
+    representation, and model code.
+
+Pipeline role:
+    The orchestrator calls `condition(question, page_count)` before rendering.
+    The built-in conditioners are:
 
 - `OracleConditioner`  -> exactly the gold evidence pages (the reasoning ceiling).
-- `RetrievedTopK`      -> top-k pages from a real `Retriever` (Stage 8; stub now).
+- `RetrievedTopK`      -> top-k pages from a `Retriever` (stub now, real later).
 - `FullDoc`            -> every page (the feed-everything baseline).
 - `BuriedOracle`       -> gold pages held present, padded with same-corpus
-                          distractor pages (how much irrelevant context the model
-                          tolerates).
+                          distractor pages (retained for optional work).
 
-`condition(question, page_count)` is the frozen signature. `page_count` is the
-document's total page count, resolved once per question by the orchestrator, so
-the full-document and burying conditions know the page range without every
-conditioner re-opening the PDF.
+Arguments:
+    None. This module is import-only; callers instantiate conditioner classes
+    and call their frozen `condition(question, page_count)` method.
 """
 
 from __future__ import annotations

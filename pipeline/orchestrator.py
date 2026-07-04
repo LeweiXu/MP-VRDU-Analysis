@@ -1,8 +1,8 @@
-"""End-to-end pipeline orchestration and result caching entry point.
+"""Run one pipeline cell end to end and maintain the result cache.
 
-The orchestrator composes the four pipeline stages for one
-`(question, condition, representation)` cell and returns a well-typed
-`ResultRow`:
+Purpose:
+    Composes the four pipeline stages for one `(question, condition,
+    representation)` cell and returns a typed `ResultRow`:
 
     conditioner (A) -> render pages -> representation (B) -> ModelInput
         -> reasoner (C) -> judge (D)
@@ -13,6 +13,10 @@ reasoner spec, judge spec, dpi) and written to a jsonl cache under
 `results/cache/`. Re-running is idempotent and resumable, which is the only way
 the multi-condition sweep is affordable. Nothing in this file knows which real
 tools or models sit behind the ABCs; swapping them never changes the run loop.
+
+Arguments:
+    None. This module is import-only; callers construct `Orchestrator(config)`
+    and call `run_cell(question, conditioner, representation)`.
 """
 
 from __future__ import annotations

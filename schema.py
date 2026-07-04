@@ -1,4 +1,16 @@
-"""Shared data contracts for questions, page sets, payloads, predictions, and scores.
+"""Define the frozen data contracts exchanged across the pipeline.
+
+Purpose:
+    Holds the canonical dataclasses for questions, selected pages, rendered page
+    content, representation payload parts, model predictions, and judge scores.
+    These contracts are the Stage-3 freeze point: later implementations fill in
+    behaviour behind them rather than changing their shape.
+
+Pipeline role:
+    `Question` comes from `data.loader`; `PageSet` is returned by input
+    conditioners; `Page`, `TextPart`, `ImagePart`, and `Payload` are produced by
+    rendering and representation composers; `Prediction` and `Score` are emitted
+    by reasoners and judges. The modality boundary is enforced here.
 
 MMLongBench-Doc source mapping for `Question`:
 
@@ -16,6 +28,9 @@ MMLongBench-Doc source mapping for `Question`:
   or `multi`.
 - `is_unanswerable` is true when the gold answer normalises to
   `"not answerable"`.
+
+Arguments:
+    None. This module is import-only and exposes dataclasses/helpers.
 """
 
 from __future__ import annotations

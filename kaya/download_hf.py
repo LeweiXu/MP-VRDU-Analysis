@@ -1,10 +1,28 @@
 """Download and stage Hugging Face assets inside the Kaya mirror.
 
-This module is used by `kaya/prestage.py` on the Kaya login node. It uses the
-official Hugging Face Hub Python package to download model snapshots into
-HF_HOME and stage MMLongBench-Doc file-by-file into the root-relative
-`.data/mmlongbench` layout expected by `cli.run_probe` and later data-loading
-stages. If HF_TOKEN is exported by the caller, the Hub client uses it.
+Purpose:
+    Provides robust Hugging Face snapshot/file staging utilities for
+    `kaya/prestage.py`, including local-cache probing, retry cleanup for partial
+    Hub/Xet state, and a file-by-file MMLongBench staging path.
+
+Pipeline role:
+    Ensures reasoner/retriever weights land in root-relative `HF_HOME` and that
+    MMLongBench appears under `.data/mmlongbench/{data,documents}` where the
+    normal loader expects it. Compute jobs then run offline from those assets.
+
+CLI:
+    `python -m kaya.download_hf (--model ID | --dataset ID) [options]`
+
+Arguments:
+    --model ID: Hugging Face model repo to snapshot.
+    --dataset ID: Hugging Face dataset repo to snapshot/stage.
+    --revision REV: optional revision for downloads.
+    --cache-dir PATH: Hugging Face cache root (default: `$HF_HOME` or `.cache`).
+    --data-dir PATH: dataset staging root (default: `.data`).
+    --force-download: force a Hub redownload.
+    --max-workers N: parallel snapshot downloads.
+    --stage-mmlongbench: expose a dataset repo in MMLongBench loader layout.
+    --copy: copy staged files instead of symlinking from the Hub cache.
 """
 
 from __future__ import annotations

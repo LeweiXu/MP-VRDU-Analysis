@@ -1,8 +1,14 @@
-"""Model registry mapping experiment model specs to reasoner backends.
+"""Resolve experiment model specs to reasoner backend instances.
 
-This is the concrete swap point named in the plan. `get_reasoner(spec)` parses a
-spec string, picks a backend, and returns a `Reasoner`; the pipeline only ever
-sees the `Reasoner` ABC and the `ModelInput` contract, never a concrete backend.
+Purpose:
+    Implements the model-family swap point named in the plan. `get_reasoner()`
+    parses a spec string, selects a backend, and returns a `Reasoner`; pipeline
+    code never imports concrete local/API backend classes directly.
+
+Pipeline role:
+    The orchestrator asks this registry for the configured reasoner. Adding
+    Qwen3-VL sizes, InternVL, or hosted comparison models should be a registry
+    change behind the frozen `Reasoner` and `ModelInput` contracts.
 
 Spec grammar: ``<family>-<size>-<backend>`` (e.g. ``qwen3vl-8b-local``,
 ``gpt4o-api``), or the literal ``stub``. Stage 3 resolves every spec to the
@@ -10,6 +16,10 @@ Spec grammar: ``<family>-<size>-<backend>`` (e.g. ``qwen3vl-8b-local``,
 (Qwen3-VL etc.) and the ``api`` backend to `APIBackend` (OpenAI / Gemini /
 Anthropic-style HTTP). Adding a family is a new registry entry; no pipeline code
 changes.
+
+Arguments:
+    None. This module is import-only; callers pass a spec string to
+    `ModelSpec.parse()` or `get_reasoner()`.
 """
 
 from __future__ import annotations

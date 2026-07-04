@@ -1,4 +1,16 @@
-"""Stage 1 feasibility probe tests on a tiny local MMLongBench fixture."""
+"""Test Stage-1 feasibility probes against a tiny local fixture.
+
+Purpose:
+    Verifies that loader, scanned-page, bbox, unanswerable, doc-type, model, and
+    retrieval probes produce stable verdicts without requiring network or GPU.
+
+Test role:
+    Protects the feasibility layer that records early assumptions in
+    `docs/DECISIONS.md`.
+
+Arguments:
+    None. Run with `python -m pytest tests/test_probes.py`.
+"""
 
 from __future__ import annotations
 

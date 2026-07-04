@@ -1,4 +1,21 @@
-"""Build or update the MP-VRDU conda environment on Kaya's login node."""
+"""Build or update the MP-VRDU conda environment on Kaya.
+
+Purpose:
+    Runs on the Kaya login node outside the project environment to create the
+    configured conda prefix and install `requirements.txt` using the configured
+    PyTorch/CUDA wheel index.
+
+Pipeline role:
+    Must be run after source sync and before prestaging or GPU jobs whenever
+    requirements change. It leaves the environment at `<remote_root>/envs/mpvrdu`
+    and prints the installed torch/CUDA versions.
+
+CLI:
+    `python -m kaya.kaya run kaya/setup_env.py -- [--skip-pip-check]`
+
+Arguments:
+    --skip-pip-check: do not run `python -m pip check` after installation.
+"""
 
 # kaya: target=login
 # kaya: env=false

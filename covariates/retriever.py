@@ -1,13 +1,19 @@
-"""Retriever interfaces for text and vision page-ranking covariates.
+"""Define page-ranking retriever interfaces for text and vision covariates.
 
-A `Retriever` is a measured covariate, not an evaluated model: it ranks a
-document's pages for a question so `RetrievedTopK` can feed a realistic page set,
-and so `metrics/retrieval.py` can score page R/P/F1 vs gold (the RQ7
-locate-vs-reason decomposition and the RQ2 retrieval-modality divergence).
+Purpose:
+    A `Retriever` ranks document pages for a question so `RetrievedTopK` can feed
+    realistic page sets instead of oracle evidence. Retrieval is measured as a
+    covariate, not treated as the reasoner itself.
 
-Stage 3 ships only `StubRetriever` (returns pages in document order). The real
-text (BM25 + BGE) and vision (ColPali/ColQwen) retrievers land in Stage 8 behind
-this same `retrieve(question, page_count, k)` signature.
+Pipeline role:
+    Input conditioning calls `retrieve(question, page_count, k)` and retrieval
+    metrics compare the returned page indices with gold evidence pages. Real
+    BM25+BGE and ColQwen implementations will replace `StubRetriever` behind the
+    same signature.
+
+Arguments:
+    None. This module is import-only; callers instantiate retriever classes and
+    call `retrieve()`.
 """
 
 from __future__ import annotations

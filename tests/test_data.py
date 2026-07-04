@@ -1,4 +1,15 @@
-"""Stage 2 data-loader and PDF-rendering tests."""
+"""Test MMLongBench loading and PDF rendering on a tiny fixture.
+
+Purpose:
+    Verifies row normalisation, evidence-page parsing, unanswerable detection,
+    PDF resolution, page rendering, and embedded text extraction.
+
+Test role:
+    Protects the data layer consumed by every later pipeline stage.
+
+Arguments:
+    None. Run with `python -m pytest tests/test_data.py`.
+"""
 
 from __future__ import annotations
 

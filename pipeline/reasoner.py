@@ -1,15 +1,22 @@
-"""Backend-agnostic reasoner interface for answering questions from model inputs.
+"""Define the backend-agnostic reasoner contract.
 
-Stage C of the pipeline. A `Reasoner` takes a `Question` and the document's
-`ModelInput` (the representation, adapted for a backend) and returns a
-`Prediction`. This ABC is the swap point: the pipeline asks the `models/`
-registry for a `Reasoner` and never imports a concrete backend, so substituting
-Qwen3-VL sizes, other open families, or a closed API is a registry change, not a
-pipeline change.
+Purpose:
+    Defines Stage C of the pipeline. A `Reasoner` takes a `Question` plus a
+    backend-neutral `ModelInput` and returns a `Prediction` with answer text and
+    cost accounting.
 
-Stage 3 ships only `StubReasoner`, which returns a fixed answer with zeroed cost
-fields. The real local (vLLM/HF) and API backends land in Stage 6 behind this
-same `answer(question, model_input)` signature.
+Pipeline role:
+    The orchestrator receives concrete reasoners from `models.get_reasoner()`
+    but depends only on this ABC. That is the model-family swap point for
+    Qwen3-VL, InternVL, local vLLM/HF backends, and future API backends.
+
+Current implementation:
+    `StubReasoner` keeps tests and cache plumbing runnable until real model
+    backends land.
+
+Arguments:
+    None. This module is import-only; callers implement or instantiate
+    `Reasoner` subclasses.
 """
 
 from __future__ import annotations

@@ -1,9 +1,33 @@
-"""Small Kaya execution wrapper for MP-VRDU.
+"""Sync the repo to Kaya and run login-node or SLURM jobs.
 
-The runner owns only common mechanics: sync the repository, prepare the remote
-shell environment, run Python files on the login node, submit Python or sbatch
-files to SLURM, wait for jobs, and pull logs/results. Task-specific work lives
-in separate runnable files under `kaya/`.
+Purpose:
+    Owns common Kaya mechanics only: source sync, remote directory setup,
+    module/env activation, secret forwarding, login-node execution, generated
+    sbatch submission, job watching, and pulling logs/results. Task-specific work
+    remains in separate runnable files under `kaya/`.
+
+Pipeline role:
+    Provides the local control plane for all Kaya operations. The core pipeline
+    never hard-codes cluster paths; this runner reads `kaya/config.json` and
+    exports root-relative artifact paths on the remote side.
+
+CLI:
+    `python -m kaya.kaya [--config PATH] COMMAND [command-options]`
+
+Arguments:
+    --config PATH: alternate Kaya JSON config (default: `kaya/config.json`).
+    COMMAND: one of `show-config`, `push`, `pull`, `run`, `submit`, `watch`.
+
+    `run` options: --target {auto,login,gpu}, --env/--no-env,
+    --offline/--online, SLURM overrides for generated GPU Python jobs,
+    --no-push, --no-wait, --no-pull, --tail-lines, PROGRAM, and forwarded
+    PROGRAM arguments after `--`.
+
+    `submit` options: --env/--no-env, --offline/--online, explicit SLURM
+    overrides, --no-push, --no-wait, --no-pull, --tail-lines, PROGRAM
+    (`.py` or `.sbatch`), and forwarded PROGRAM arguments after `--`.
+
+    `watch` options: optional JOB_ID, --job-name, --no-pull, --tail-lines.
 """
 
 from __future__ import annotations

@@ -1,4 +1,20 @@
-"""MMLongBench-Doc loader normalising raw benchmark rows into study questions."""
+"""Load MMLongBench-Doc rows and normalise them into `Question` objects.
+
+Purpose:
+    Encapsulates the source-specific parsing required for the primary v3
+    dataset: locating staged parquet/PDF files, converting pandas/numpy values
+    into plain Python values, parsing stringified evidence lists, normalising
+    one-based evidence pages to zero-based indices, and resolving source PDFs.
+
+Pipeline role:
+    Runners and smoke selectors call `load_mmlongbench()` to obtain the common
+    `schema.Question` contract. Renderers call `resolve_pdf()` to find the PDF
+    associated with each question's `doc_id`.
+
+Arguments:
+    None at the command line. Import callers pass `data_dir` and optional
+    `sample` into `load_mmlongbench()` or `load_raw_mmlongbench()`.
+"""
 
 from __future__ import annotations
 

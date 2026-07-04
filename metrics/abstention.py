@@ -1,9 +1,16 @@
-"""Abstention and hallucination metrics for unanswerable or missed-evidence cases.
+"""Detect abstention/refusal answers for unanswerable-question analysis.
 
-Stage 7 fills in the aggregate abstention-rate / hallucination-rate metrics
-(RQ5). Stage 3 defines only `is_abstention`, the pre-registered refusal-surface
-test from the Stage 1 checkpoint, because the stub judge and later metrics all
-need the same definition of "the model declined to answer".
+Purpose:
+    Centralises the pre-registered surface-form definition of "the model
+    declined to answer" so judges and later hallucination metrics do not drift.
+
+Pipeline role:
+    `StubJudge` already uses `is_abstention()`; later metrics will reuse it for
+    native-unanswerable questions and retrieval-miss hallucination rates.
+
+Arguments:
+    None. This module is import-only; callers pass prediction text to
+    `is_abstention(text)`.
 """
 
 from __future__ import annotations

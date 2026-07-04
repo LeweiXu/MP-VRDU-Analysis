@@ -1,9 +1,16 @@
-"""Stage 3 pipeline-skeleton tests.
+"""Test the frozen Stage-3 pipeline contracts on stub implementations.
 
-Exercise the frozen interfaces on stubs: the orchestrator runs end to end for
-every (condition x representation) cell and emits a valid `Score`, the cache is
-idempotent on re-run, the modality boundary is enforced, and `ModelInput`
-round-trips through both adapters.
+Purpose:
+    Exercises the orchestrator, input conditioners, representation composers,
+    model input adapters, cache keys, and modality boundary without loading real
+    tools or models.
+
+Test role:
+    Ensures later stages can fill implementations behind the frozen interfaces
+    without breaking cache resumability or payload invariants.
+
+Arguments:
+    None. Run with `python -m pytest tests/test_pipeline_skeleton.py`.
 """
 
 from __future__ import annotations

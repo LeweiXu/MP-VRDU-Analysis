@@ -1,9 +1,19 @@
-"""Option-A document-type binning for the v3 MP-VRDU study.
+"""Map native MMLongBench document types to the v3 Option-A bins.
 
-This module is the single source of truth for mapping MMLongBench-Doc's native
-`doc_type` labels into the three deployable bins used by the paper. Section-3's
-data-driven Option B may replace the body behind `doc_type_bin()`, but callers
-should keep using this function.
+Purpose:
+    Provides the single source of truth for the deployable doc-type axis used by
+    the paper: text-heavy, in-between, and visual-heavy. It also records the
+    full-corpus question/document counts used in docs and tests.
+
+Pipeline role:
+    Experiment runners, table builders, classifier evaluation, and smoke-corpus
+    checks call `doc_type_bin(doc_type)` instead of duplicating bin logic. The
+    Section-3 Option-B robustness analysis should replace only this function's
+    body behind the same signature.
+
+Arguments:
+    None. This is an import-only module; public inputs are native `doc_type`
+    strings passed to `canonical_doc_type()` or `doc_type_bin()`.
 """
 
 from __future__ import annotations

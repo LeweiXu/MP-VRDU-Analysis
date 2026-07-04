@@ -1,4 +1,20 @@
-"""PDF rendering utilities shared by representations and retrievers."""
+"""Render PDF pages and extract line-level embedded text spans.
+
+Purpose:
+    Converts source PDFs into the `schema.Page` objects consumed by
+    representation composers and retrievers. It owns page-count checks,
+    deterministic render-cache paths, PNG generation, and PyMuPDF text-span
+    extraction.
+
+Pipeline role:
+    The orchestrator resolves `Question` + `PageSet` selections into rendered
+    pages through this module. Tool implementations then read the rendered image
+    path and embedded spans from each `Page`.
+
+Arguments:
+    None. This module is import-only; callers pass PDF paths, page indices,
+    cache directories, and DPI to `render_pdf()` or `render_question_pages()`.
+"""
 
 from __future__ import annotations
 

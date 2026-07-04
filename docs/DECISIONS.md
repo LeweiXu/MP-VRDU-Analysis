@@ -548,3 +548,57 @@ document-type binning source, and the config knobs later MVP stages consume.
   layout source; PyMuPDF/Docling/PP-Structure are appendix/parser-swap paths. M1
   records the decision and keeps implementation of Marker extraction itself scoped
   to Stage M2.
+
+## 2026-07-04 Stage M2 implementation log
+
+Stage M2 added the non-reasoner tool entry points and a Kaya `--smoke` prestage
+barrier for the MVP tool chain.
+
+- **Marker primary path.** Added `marker-pdf==1.10.2` to `requirements.txt` and
+  implemented `tools.layout.marker_text()` plus `marker_bbox_json()`. The primary
+  path uses Marker per selected PDF page and emits per-page text plus serialized
+  bbox JSON (`source`, `doc_id`, `pdf_path`, `page_index`, `blocks`). `T` now
+  consumes `marker_text()` through `tools.text.text_channel()`, and `T+L` consumes
+  `marker_bbox_json()` through `tools.layout.layout_channel()`.
+- **Fallback boundary.** `marker_text()` / `marker_bbox_json()` keep a PyMuPDF
+  fallback for local tests and appendix parser-swap work, but `allow_fallback=False`
+  is used by Kaya smoke checks. A passing `kaya/prestage.py --smoke` therefore
+  proves real Marker import/model-cache/page conversion rather than silently using
+  PyMuPDF.
+- **Text tools.** `tools.text.embedded()` returns PyMuPDF embedded text from
+  rendered `Page` spans. `tools.text.ocr()` wraps PaddleOCR PP-OCRv5 with flexible
+  parsing for Paddle's result objects and an injectable engine for tests. Real
+  smoke prestage uses the default PaddleOCR engine and requires non-empty OCR text.
+- **Visual tools.** `tools.visual.full_page()` returns one `VisualArtifact` per
+  rendered page with dimensions and a patch-count token estimate. `resolution()`
+  writes scaled sibling images and recomputes the estimate. `region_crop()` records
+  `region_crop_page_fallback` because MMLongBench has page-level evidence only.
+- **Smoke prestage inventory.** `kaya/prestage.py --smoke` stages only
+  Qwen/Qwen3-VL-2B-Instruct, the configured BGE text retriever, one configured
+  ColQwen retriever, MMLongBench-Doc, and tool caches. It then verifies retrieval
+  imports plus one tiny call through PyMuPDF embedded text, PaddleOCR, Marker text,
+  Marker bbox JSON, full-page image, resolution scaling, and page-level crop
+  fallback. Full prestage still stages the broader configured inventory.
+- **Docs.** Added `docs/TOOLS.md` with each tool's role, I/O, licence note, table
+  coverage, and the Marker-primary / PyMuPDF+Docling appendix-parser distinction.
+
+## 2026-07-04 Python module documentation sweep
+
+- Tightened `docs/implementation_plan.md` so every Python file must open with a
+  comprehensive module docstring covering what the file does, why it exists in
+  the architecture, its main entry points/contracts, and either its runnable CLI
+  arguments or an explicit import-only/no-arguments note.
+- Swept the current repo Python files and expanded module docstrings accordingly,
+  including CLI/Kaya scripts, standalone dataset scripts, test modules, package
+  initializers, and placeholder modules.
+- Added `tests/test_docstrings.py` to enforce the rule for future files. The test
+  excludes artifact trees (`.cache`, `.data`, `envs`, `results`, `logs`) and
+  requires `Purpose:` and `Arguments:` sections plus a non-trivial docstring.
+
+## 2026-07-04 Marker/Pillow dependency fix
+
+- Kaya `setup_env.py` failed after M2 because `requirements.txt` pinned
+  `pillow==11.3.0` while `marker-pdf==1.10.2` requires `Pillow>=10.1.0,<11.0.0`
+  according to the package metadata and pip's resolver. Changed the project pin
+  to `pillow==10.4.0`, the latest Pillow 10.x release, so Marker can install
+  without relaxing the rest of the environment pins.

@@ -1,8 +1,13 @@
-"""Representation interfaces for text, layout, text-layout-visual, and visual payload composers.
+"""Compose rendered pages into text, layout, and visual model payloads.
 
-Stage B of the pipeline. A `Representation` encodes a set of rendered pages into
-a `Payload` for the reasoner. The four composers are the primary modality ladder
-from the spec:
+Purpose:
+    Defines Stage B of the pipeline. A `Representation` converts rendered
+    `Page` objects into a `Payload` while enforcing the modality boundary used
+    by the representation ladder.
+
+Pipeline role:
+    The orchestrator calls `get_representation(modality).build(pages)` after
+    input conditioning and rendering. The four composers mirror the spec:
 
 - `T`   -> raw text only.
 - `TL`  -> text + layout/structure (strings only).
@@ -15,6 +20,10 @@ building channels itself, so Stages 4-5 swap real tools in without touching this
 file. Second, the modality boundary is structural: only `TLV` and `V` add image
 parts; `T`/`TL` add strings. `Payload.__post_init__` re-checks this so a future
 bug cannot leak an image into a text-only condition.
+
+Arguments:
+    None. This module is import-only; callers pass a modality name to
+    `get_representation()`.
 """
 
 from __future__ import annotations

@@ -1,13 +1,24 @@
-"""Main experiment command-line entry point for cached pipeline runs.
+"""Run a cached experiment sample through the frozen pipeline interfaces.
 
-Stage 3 wiring: expand the config's conditions x representations over a tiny
-sample of questions, run each cell through the orchestrator (on stubs), and print
-a summary. Real tools and models fill in behind the frozen interfaces in later
-stages without changing this entry point. The heavy grid expansion for the paper
-tables is the Section-2 `experiments/runner.py`; this CLI is the minimal
-end-to-end smoke (the v3 MVP adds a `--smoke` corpus selector on top).
+Purpose:
+    This is the small local/MVP entry point for exercising the orchestrator over
+    questions, input conditioners, and representation rungs. It exists to prove
+    that the Stage-3 contracts and cache remain runnable while later stages fill
+    in real tools and models. Full paper sweeps belong in `experiments.runner`.
 
-    python -m cli.run_experiment --sample 4
+Pipeline role:
+    Loads MMLongBench questions, expands configured conditioners, runs each
+    `(question, condition, representation)` cell through `pipeline.orchestrator`,
+    and prints a concise cache/correctness summary.
+
+CLI:
+    `python -m cli.run_experiment [--sample N] [--smoke]`
+
+Arguments:
+    --sample N: number of leading questions to run in non-smoke mode
+        (default: 4).
+    --smoke: ignore `--sample`, load the frozen Stage-M1 smoke corpus, select
+        the smoke model config, and run the same cached cell expansion.
 """
 
 from __future__ import annotations

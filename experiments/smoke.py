@@ -1,9 +1,18 @@
-"""Frozen MMLongBench-Doc smoke corpus for the v3 MVP stages.
+"""Define and load the frozen MMLongBench smoke corpus for the MVP.
 
-The smoke set is selected at the document level and then includes all questions
-for those documents. It covers all seven native `doc_type` labels and therefore
-all three Option-A bins while keeping documents short enough for quick parser and
-GPU integration checks.
+Purpose:
+    Provides the reproducible document-level subset used by every `--smoke`
+    path. The set contains one short PDF from each native MMLongBench doc type,
+    covering all three Option-A bins while keeping parser/model checks cheap.
+
+Pipeline role:
+    Stage M1 freezes `SMOKE_DOC_IDS`; later MVP stages call
+    `load_smoke_questions()` or `select_smoke_questions()` so all smoke runs
+    exercise the same questions and cache keys across machines.
+
+Arguments:
+    None. This module is import-only; callers may pass an optional `data_dir` to
+    `load_smoke_questions()`.
 """
 
 from __future__ import annotations

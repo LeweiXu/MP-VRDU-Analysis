@@ -1,4 +1,16 @@
-"""Data loading and rendering package for MMLongBench-Doc."""
+"""Public data-layer exports for MMLongBench loading, binning, and rendering.
+
+Purpose:
+    Collects the data-layer functions and constants most stages need without
+    making callers know the exact submodule layout.
+
+Pipeline role:
+    Re-exports Option-A binning, dataset loading/PDF resolution, page rendering,
+    page counting, and gold-page validation helpers.
+
+Arguments:
+    None. This package initializer is import-only.
+"""
 
 from data.binning import (
     BIN_TO_DOC_TYPES,

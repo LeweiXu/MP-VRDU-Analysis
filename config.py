@@ -1,12 +1,20 @@
-"""Experiment configuration entry point for root-relative project settings.
+"""Define root-relative paths and plain-Python experiment configuration.
 
-`ProjectPaths` derives every artifact path from the repo root so the same config
-runs locally or on Kaya with no path edits (section 2b of the plan).
-`ExperimentConfig` holds the v3 experiment knobs the pipeline reads: the fixed
-dataset, smoke/full mode, the model specs, the input conditions and their grids,
-the representation ladder, Option-A bins, cost metric, and the pre-registered
-sufficiency margin. It is plain Python (a frozen dataclass): runs are driven by
-small CLI scripts, not a build system.
+Purpose:
+    Centralises settings that must be identical locally and on Kaya: artifact
+    roots, dataset name, smoke/full mode, model specs, condition grids,
+    representation rungs, Option-A bins, cost metric, rendering settings, and
+    the pre-registered sufficiency margin.
+
+Pipeline role:
+    `ProjectPaths` makes the repository self-contained by deriving `.data/`,
+    `.cache/`, `results/`, and `envs/` from the repo root. `ExperimentConfig`
+    is the immutable object passed into runners and the orchestrator; it is the
+    only configuration object later stages should read.
+
+Arguments:
+    None. This is an import-only module; callers instantiate dataclasses
+    directly, for example `ExperimentConfig(smoke=True)`.
 """
 
 from __future__ import annotations
