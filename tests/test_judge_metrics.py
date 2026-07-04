@@ -24,7 +24,7 @@ import pandas as pd
 from experiments.tables import TABLE_FILENAMES, build_all_tables, write_all_tables
 from metrics.accuracy import accuracy_summary
 from metrics.frontier import FrontierCell, sufficiency_frontier
-from pipeline.judge import GPT4oMiniJudge
+from pipeline.judge import GeminiJudge, GPT4oMiniJudge, get_judge
 from pipeline.orchestrator import ResultRow
 from schema import Prediction, Question
 
@@ -145,6 +145,51 @@ def test_gpt4o_mini_judge_returns_valid_score() -> None:
     assert score.metadata["verdict"] == "correct"
     assert score.metadata["extracted_answer"] == "42"
     assert client.completions.calls[0]["response_format"] == {"type": "json_object"}
+
+
+class FakeGeminiModels:
+    """Tiny google-genai `client.models` exposing `generate_content()`."""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls: list[dict] = []
+
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(text=json.dumps(self.payload))
+
+
+class FakeGeminiClient:
+    """Tiny google-genai client exposing `models.generate_content()`."""
+
+    def __init__(self, payload: dict) -> None:
+        self.models = FakeGeminiModels(payload)
+
+
+def test_gemini_judge_returns_valid_score() -> None:
+    client = FakeGeminiClient(
+        {"verdict": "incorrect", "extracted_answer": "7", "rationale": "wrong value"}
+    )
+    judge = GeminiJudge(client=client)
+
+    score = judge.score(question(), Prediction(text="The value is 7."))
+
+    assert not score.correct
+    assert score.value == 0.0
+    assert score.judge_spec == "gemini-flash-judge"
+    assert score.metadata["verdict"] == "incorrect"
+    assert client.models.calls[0]["model"] == "gemini-2.5-flash"
+
+
+def test_get_judge_resolves_specs(monkeypatch) -> None:
+    # Dummy keys so the SDK clients construct without a real credential.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    from pipeline.judge import StubJudge
+
+    assert isinstance(get_judge("stub"), StubJudge)
+    assert isinstance(get_judge("gemini"), GeminiJudge)
+    assert isinstance(get_judge("gpt-4o-mini"), GPT4oMiniJudge)
 
 
 def test_document_level_accuracy_summary() -> None:

@@ -117,7 +117,6 @@ class _CachedOnlyRetriever(Retriever):
 
 
 def _matched_cross_conditioners(
-    config: ExperimentConfig,
     *,
     text_retriever: Retriever,
     vision_retriever: Retriever,
@@ -232,7 +231,7 @@ def run_generate(
     # Matched/cross retrieval -> Table 6, plus retrieval R/P/F1 metrics.
     retrieval_rows: list[RetrievalEvalRow] = []
     pipelines = _matched_cross_conditioners(
-        config, text_retriever=text_retriever, vision_retriever=vision_retriever, k=top_k
+        text_retriever=text_retriever, vision_retriever=vision_retriever, k=top_k
     )
     for question in question_list:
         page_count = orchestrator.page_count(question)
@@ -303,7 +302,7 @@ def run_judge(
     text_guard = _CachedOnlyRetriever("bm25_bge_text")
     vision_guard = _CachedOnlyRetriever("colqwen_vision")
     pipelines = _matched_cross_conditioners(
-        config, text_retriever=text_guard, vision_retriever=vision_guard, k=top_k
+        text_retriever=text_guard, vision_retriever=vision_guard, k=top_k
     )
 
     _emit(

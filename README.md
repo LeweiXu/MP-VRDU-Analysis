@@ -26,7 +26,8 @@ envs/mpvrdu/bin/python -m cli.run_experiment --sample 4
 - `kaya/KAYA_USER_GUIDE.md` is the human-facing Kaya quick guide.
 - `kaya/KAYA_AGENT_GUIDE.md` is the agent-facing definitive Kaya operations guide.
 - `docs/DATA.md` documents the Stage 2 normalized question schema and render cache.
-- `docs/ARCHITECTURE.md` maps the tree to the paper and lists the Stage 3 frozen interfaces.
+- `docs/implementation_plan.md` is the build plan; `docs/DECISIONS.md` records the
+  tree-to-paper mapping, frozen interfaces, and every fixed decision.
 - `docs/MODELS.md` records the M3 Qwen3-VL load path and frozen prompt template.
 
 All machine-specific artifacts stay under the repository root and are ignored:

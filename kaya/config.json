@@ -22,7 +22,7 @@
   },
   "secrets": {
     "env_file": ".env",
-    "forward": ["HF_TOKEN", "OPENAI_API_KEY"]
+    "forward": ["HF_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY"]
   },
   "slurm": {
     "partition": "gpu",

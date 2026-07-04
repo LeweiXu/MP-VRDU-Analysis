@@ -235,6 +235,24 @@ Stage M3 reasoner smoke:
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 --mem 64G kaya/reasoner_smoke.py -- --fresh-cache
 ```
 
+Full smoke run (all 8 tables on the tiny corpus, real models). Two phases: the
+GPU phase generates and caches predictions; the login phase judges them with
+GPT-4o-mini and builds the tables. Put `OPENAI_API_KEY` in the local `.env`
+first (it is forwarded only to online login runs).
+
+```bash
+# phase 1: GPU, offline, caches predictions
+envs/mpvrdu/bin/python -m kaya.kaya submit kaya/smoke_generate.py
+# phase 2: login node, online, judges + writes results/tables/smoke/*.csv
+envs/mpvrdu/bin/python -m kaya.kaya run kaya/smoke_judge.py
+```
+
+Locally (a GPU + internet in one env) run both phases in one process:
+
+```bash
+envs/mpvrdu-local-gpu/bin/python -m cli.run_smoke --phase all
+```
+
 ## GPU Allocation
 
 The default config uses `--partition=gpu --gres=gpu:1`. `slurm.account` and
