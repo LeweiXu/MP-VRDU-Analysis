@@ -14,6 +14,8 @@ marker-pdf==1.10.2
 rank-bm25==0.2.2
 FlagEmbedding==1.3.5
 colpali-engine==0.3.13
+# GPT-4o-mini judge (phase-2, login-node/online). <2 stays inside Marker's pin.
+openai==1.109.1
 datasets==3.6.0
 huggingface_hub==0.34.4
 hf_xet>=1.1.5,<2.0.0

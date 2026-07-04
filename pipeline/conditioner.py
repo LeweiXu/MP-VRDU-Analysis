@@ -57,10 +57,10 @@ class OracleConditioner(InputConditioner):
 class RetrievedTopK(InputConditioner):
     """Feed the top-k pages returned by a real retriever (RQ7 / abstention)."""
 
-    def __init__(self, retriever: Retriever, k: int) -> None:
+    def __init__(self, retriever: Retriever, k: int, name: str | None = None) -> None:
         self.retriever = retriever
         self.k = int(k)
-        self.name = f"retrieved_k{self.k}"
+        self.name = name or f"retrieved_k{self.k}"
 
     def condition(self, question: Question, page_count: int) -> PageSet:
         ranked = self.retriever.retrieve(question, page_count, self.k)

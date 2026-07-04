@@ -14,6 +14,14 @@ reasoner spec, judge spec, dpi) and written to a jsonl cache under
 the multi-condition sweep is affordable. Nothing in this file knows which real
 tools or models sit behind the ABCs; swapping them never changes the run loop.
 
+An optional second cache layer, `PredictionCache`, stores the reasoner output on
+its own key (everything the prediction depends on *except* the judge spec). This
+is what lets the smoke/full run split across machines: the GPU phase generates
+and caches predictions offline, and a later online phase re-judges those cached
+predictions with a real (internet-only) judge without re-running the reasoner or
+even touching the GPU. When no prediction cache is passed the run loop behaves
+exactly as before.
+
 Arguments:
     None. This module is import-only; callers construct `Orchestrator(config)`
     and call `run_cell(question, conditioner, representation)`.
@@ -34,7 +42,7 @@ from data.render import pdf_page_count, render_pdf
 from models import get_reasoner
 from models.payload import ModelInput
 from pipeline.conditioner import InputConditioner
-from pipeline.judge import Judge, StubJudge
+from pipeline.judge import Judge, get_judge
 from pipeline.reasoner import Reasoner
 from pipeline.representation import Representation, get_representation
 from schema import Page, PageSet, Prediction, Question, Score
@@ -113,6 +121,86 @@ class ResultCache:
         return len(self._index)
 
 
+@dataclass(frozen=True)
+class CachedPrediction:
+    """A reasoner output plus its page provenance, keyed without the judge.
+
+    This is the durable record produced by the reasoner/GPU stage. It carries
+    everything a `ResultRow` needs from the A->C path so a later judge-only pass
+    can rebuild the row without re-running the conditioner, renderer, or model.
+    """
+
+    prediction_key: str
+    question_id: str
+    doc_id: str
+    condition: str
+    representation: str
+    model_spec: str
+    provenance: str
+    page_indices: tuple[int, ...]
+    note: str
+    text: str
+    input_text_tokens: int
+    input_visual_tokens: int
+    output_tokens: int
+    latency_s: float
+
+    def to_json(self) -> str:
+        data = asdict(self)
+        data["page_indices"] = list(self.page_indices)
+        return json.dumps(data, sort_keys=True)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CachedPrediction":
+        data = dict(data)
+        data["page_indices"] = tuple(data.get("page_indices", ()))
+        return cls(**data)
+
+    def as_prediction(self) -> Prediction:
+        """Rebuild the frozen `Prediction` this record was serialised from."""
+
+        return Prediction(
+            text=self.text,
+            model_spec=self.model_spec,
+            input_text_tokens=self.input_text_tokens,
+            input_visual_tokens=self.input_visual_tokens,
+            output_tokens=self.output_tokens,
+            latency_s=self.latency_s,
+        )
+
+
+class PredictionCache:
+    """Append-only jsonl cache of reasoner outputs keyed without the judge."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._index: dict[str, CachedPrediction] = {}
+        if self.path.exists():
+            for line in self.path.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                record = CachedPrediction.from_dict(json.loads(line))
+                self._index[record.prediction_key] = record
+
+    def get(self, prediction_key: str) -> CachedPrediction | None:
+        return self._index.get(prediction_key)
+
+    def put(self, record: CachedPrediction) -> None:
+        if record.prediction_key in self._index:
+            return
+        self._index[record.prediction_key] = record
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a") as handle:
+            handle.write(record.to_json() + "\n")
+
+    def __iter__(self) -> Iterator[CachedPrediction]:
+        return iter(self._index.values())
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+
 def make_cache_key(
     question: Question,
     condition_name: str,
@@ -138,6 +226,33 @@ def make_cache_key(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def make_prediction_key(
+    question: Question,
+    condition_name: str,
+    representation: str,
+    model_spec: str,
+    dpi: int,
+) -> str:
+    """Deterministic hash of everything a reasoner prediction depends on.
+
+    Deliberately excludes the judge spec: one prediction can be scored by any
+    number of judges, so the reasoner runs once and every judge reuses it.
+    """
+
+    payload = json.dumps(
+        {
+            "question_id": question.id,
+            "doc_id": question.doc_id,
+            "condition": condition_name,
+            "representation": representation,
+            "model_spec": model_spec,
+            "dpi": dpi,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 class Orchestrator:
     """Compose the pipeline for one cell, with result caching."""
 
@@ -147,12 +262,14 @@ class Orchestrator:
         reasoner: Reasoner | None = None,
         judge: Judge | None = None,
         cache: ResultCache | None = None,
+        prediction_cache: PredictionCache | None = None,
     ) -> None:
         self.config = config
         self.reasoner = reasoner or get_reasoner(config.reasoner_spec)
-        self.judge = judge or StubJudge(config.judge_spec)
+        self.judge = judge or get_judge(config.judge_spec)
         cache_path = config.paths.cache_dir / "orchestrator" / "results.jsonl"
         self.cache = cache or ResultCache(cache_path)
+        self.prediction_cache = prediction_cache
         self._page_count_cache: dict[str, int] = {}
 
     # -- page resolution --------------------------------------------------
@@ -203,11 +320,9 @@ class Orchestrator:
         if cached is not None:
             return cached
 
-        page_set = conditioner.condition(question, self.page_count(question))
-        pages = self.render_pages(question, page_set)
-        payload = representation.build(pages)
-        model_input = ModelInput.from_payload(payload)
-        prediction: Prediction = self.reasoner.answer(question, model_input)
+        prediction, provenance, page_indices, note = self._resolve_prediction(
+            question, conditioner, representation
+        )
         score: Score = self.judge.score(question, prediction)
 
         row = ResultRow(
@@ -219,8 +334,8 @@ class Orchestrator:
             is_unanswerable=question.is_unanswerable,
             evidence_sources=question.evidence_sources,
             condition=conditioner.name,
-            provenance=page_set.provenance,
-            page_indices=page_set.page_indices,
+            provenance=provenance,
+            page_indices=page_indices,
             representation=representation.modality,
             model_spec=prediction.model_spec or self.reasoner.spec,
             judge_spec=score.judge_spec or self.judge.spec,
@@ -232,7 +347,58 @@ class Orchestrator:
             score=score.value,
             correct=score.correct,
             abstained=score.abstained,
-            metadata={"note": page_set.note},
+            metadata={"note": note},
         )
         self.cache.put(row)
         return row
+
+    def _resolve_prediction(
+        self,
+        question: Question,
+        conditioner: InputConditioner,
+        representation: Representation,
+    ) -> tuple[Prediction, str, tuple[int, ...], str]:
+        """Return a prediction plus page provenance, using the prediction cache.
+
+        On a prediction-cache hit the whole A->C path (conditioner, renderer,
+        representation, reasoner) is skipped, so a judge-only pass needs neither
+        the GPU nor the PDFs. On a miss the model runs and the result is cached.
+        """
+
+        model_spec = self.reasoner.spec
+        if self.prediction_cache is not None:
+            prediction_key = make_prediction_key(
+                question, conditioner.name, representation.modality, model_spec, self.config.dpi
+            )
+            hit = self.prediction_cache.get(prediction_key)
+            if hit is not None:
+                return hit.as_prediction(), hit.provenance, tuple(hit.page_indices), hit.note
+
+        page_set = conditioner.condition(question, self.page_count(question))
+        pages = self.render_pages(question, page_set)
+        payload = representation.build(pages)
+        model_input = ModelInput.from_payload(payload)
+        prediction: Prediction = self.reasoner.answer(question, model_input)
+
+        if self.prediction_cache is not None:
+            self.prediction_cache.put(
+                CachedPrediction(
+                    prediction_key=make_prediction_key(
+                        question, conditioner.name, representation.modality, model_spec, self.config.dpi
+                    ),
+                    question_id=question.id,
+                    doc_id=question.doc_id,
+                    condition=conditioner.name,
+                    representation=representation.modality,
+                    model_spec=prediction.model_spec or model_spec,
+                    provenance=page_set.provenance,
+                    page_indices=page_set.page_indices,
+                    note=page_set.note,
+                    text=prediction.text,
+                    input_text_tokens=prediction.input_text_tokens,
+                    input_visual_tokens=prediction.input_visual_tokens,
+                    output_tokens=prediction.output_tokens,
+                    latency_s=prediction.latency_s,
+                )
+            )
+        return prediction, page_set.provenance, page_set.page_indices, page_set.note

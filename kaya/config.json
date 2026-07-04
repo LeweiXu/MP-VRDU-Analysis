@@ -22,7 +22,7 @@
   },
   "secrets": {
     "env_file": ".env",
-    "forward": ["HF_TOKEN"]
+    "forward": ["HF_TOKEN", "OPENAI_API_KEY"]
   },
   "slurm": {
     "partition": "gpu",
@@ -31,9 +31,9 @@
     "qos": "",
     "nodes": 1,
     "ntasks": 1,
-    "cpus_per_task": 8,
-    "mem": "64G",
-    "time": "02:00:00",
+    "cpus_per_task": 4,
+    "mem": "24G",
+    "time": "00:30:00",
     "poll_seconds": 10
   },
   "rsync_excludes": [

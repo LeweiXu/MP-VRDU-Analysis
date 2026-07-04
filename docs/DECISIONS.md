@@ -699,3 +699,41 @@ backend behind the frozen `Reasoner` ABC.
   such as `(Priority)` or `(Resources)`; running jobs report elapsed runtime,
   time limit, node list, and node count. When `squeue` no longer reports the
   job, the runner prints how long the local wait lasted before showing `sacct`.
+
+## 2026-07-04 Stage M5 implementation log
+
+- Added `pipeline.judge.GPT4oMiniJudge`, an injectable OpenAI GPT-4o-mini judge
+  that requests JSON verdicts, extracts `verdict`/`extracted_answer`/`rationale`,
+  and returns the frozen `Score` contract. `get_judge()` now lets
+  `ExperimentConfig.judge_spec` select `stub` or the GPT judge.
+- Added document-level bootstrap accuracy summaries, batch-1 latency/token cost
+  summaries, and the sufficiency-frontier rule.
+- Added `experiments.tables` builders for Tables 1-8 and `cli.build_tables` to
+  write `table1_headline.csv` through `table8_scale_sanity.csv` from cached
+  `ResultRow` jsonl files.
+- Added `docs/EVALUATION.md` and `tests/test_judge_metrics.py` to cover judge
+  parsing, document-level accuracy accounting, frontier selection, and all CSV
+  table shapes.
+
+## 2026-07-04 Stage M6 implementation log
+
+- Added concrete covariate implementations behind the existing retriever and
+  classifier interfaces. `BM25BGERetriever` ranks page text with BM25 plus
+  optional BGE dense similarity; `ColQwenRetriever` ranks rendered page images
+  through an injected or lazily loaded ColQwen scorer and keeps a deterministic
+  text/order fallback for smoke tests when the heavy scorer is unavailable.
+- Added page-level retrieval precision/recall/F1 in `metrics.retrieval`, plus
+  evidence-modality slice keys of the form `<retrieval-modality>:<source>` for
+  matched/cross analysis.
+- Added `QwenDocTypeClassifier`, which renders the first two document pages,
+  builds a `TLV` classifier payload by default, asks the Qwen3-VL-2B reasoner to
+  emit one native MMLongBench doc type, maps it through Option-A binning, and
+  logs predicted vs gold bin with classifier latency.
+- Added M6 runner helpers: `run_matched_cross_smoke()` for vision-retrieval +
+  vision-reasoning vs text-retrieval + vision-reasoning, and
+  `run_routing_policies_smoke()` for oracle routing, predicted routing,
+  uniform-cheapest `T`, and uniform-strongest `TLV`. Predicted routing classifies
+  each document once and reports classifier latency amortized per question.
+- Tightened the Table 6/7 builders to expose retrieval/reasoning modality and
+  routing classifier-latency columns, while preserving the existing M5 CSV
+  generation path from cached `ResultRow` files.
