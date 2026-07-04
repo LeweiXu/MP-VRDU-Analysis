@@ -25,6 +25,7 @@ import torch
 from PIL import Image
 
 from models import get_reasoner
+from models.internvl import LocalInternVLBackend
 from models.local_vlm import LocalVLMBackend, PROMPT_TEMPLATE_VERSION, hf_cache_dir_from_env, render_prompt
 from models.payload import ModelInput
 from schema import ImagePart, Question, TextPart
@@ -166,6 +167,25 @@ def test_registry_dispatches_smoke_spec_to_local_backend() -> None:
 
     assert isinstance(reasoner, LocalVLMBackend)
     assert reasoner.model_id == "Qwen/Qwen3-VL-2B-Instruct"
+
+
+def test_registry_dispatches_full_qwen_specs_to_local_backend() -> None:
+    specs = {
+        "qwen3vl-8b-local": "Qwen/Qwen3-VL-8B-Instruct",
+        "qwen3vl-32b-local": "Qwen/Qwen3-VL-32B-Instruct",
+    }
+
+    for spec, model_id in specs.items():
+        reasoner = get_reasoner(spec)
+        assert isinstance(reasoner, LocalVLMBackend)
+        assert reasoner.model_id == model_id
+
+
+def test_registry_dispatches_internvl_family_spec() -> None:
+    reasoner = get_reasoner("internvl3-8b-local")
+
+    assert isinstance(reasoner, LocalInternVLBackend)
+    assert reasoner.model_id == "OpenGVLab/InternVL3-8B"
 
 
 def test_local_vlm_uses_repo_hub_cache_env(tmp_path: Path, monkeypatch) -> None:

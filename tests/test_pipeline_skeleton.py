@@ -27,6 +27,7 @@ from data.loader import load_mmlongbench
 from models.payload import ModelInput
 from pipeline.conditioner import BuriedOracle, FullDoc, OracleConditioner, RetrievedTopK
 from pipeline.orchestrator import Orchestrator, ResultCache, make_cache_key
+from pipeline.reasoner import StubReasoner
 from pipeline.representation import get_representation
 from schema import ImagePart, Payload, Question, TextPart
 
@@ -112,7 +113,7 @@ def all_conditioners():
 def test_orchestrator_runs_every_cell(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     questions = load_mmlongbench(data_dir=config.paths.data_dir)
-    orchestrator = Orchestrator(config)
+    orchestrator = Orchestrator(config, reasoner=StubReasoner())
 
     for question in questions:
         for conditioner in all_conditioners():
@@ -132,7 +133,7 @@ def test_cache_is_idempotent_and_resumable(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     question = load_mmlongbench(data_dir=config.paths.data_dir, sample=1)[0]
 
-    first = Orchestrator(config)
+    first = Orchestrator(config, reasoner=StubReasoner())
     row_a = first.run_cell(question, OracleConditioner(), "T")
     size_after_first = len(first.cache)
 
@@ -142,7 +143,7 @@ def test_cache_is_idempotent_and_resumable(tmp_path: Path) -> None:
     assert len(first.cache) == size_after_first
 
     # A fresh orchestrator resumes from the on-disk cache with no recomputation.
-    second = Orchestrator(config)
+    second = Orchestrator(config, reasoner=StubReasoner())
     assert len(second.cache) == size_after_first
     row_b = second.run_cell(question, OracleConditioner(), "T")
     assert row_b.cache_key == row_a.cache_key
@@ -170,7 +171,7 @@ def test_modality_boundary_enforced_structurally() -> None:
 def test_representation_composers_respect_boundary(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     question = load_mmlongbench(data_dir=config.paths.data_dir, sample=1)[0]
-    orchestrator = Orchestrator(config)
+    orchestrator = Orchestrator(config, reasoner=StubReasoner())
     page_set = OracleConditioner().condition(question, orchestrator.page_count(question))
     pages = orchestrator.render_pages(question, page_set)
 

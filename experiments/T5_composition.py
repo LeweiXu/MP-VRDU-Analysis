@@ -36,6 +36,9 @@ class Composition(Experiment):
     ) -> Mapping[str, pd.DataFrame]:
         return {
             "table5": build_table5_composition_mediation(
-                rows, n_bootstrap=bootstrap_resamples(config)
+                rows,
+                bins=config.bins,
+                margin_points=config.sufficiency_margin,
+                n_bootstrap=bootstrap_resamples(config),
             )
         }

@@ -82,26 +82,15 @@ class Routing(Experiment):
             rows,
             bins=config.bins,
             margin_points=config.sufficiency_margin,
+            classifier_records=self._classifier_records(side_dir / CLASSIFIER_LOG),
             n_bootstrap=bootstrap_resamples(config),
         )
-        classifier_latency = self._mean_classifier_latency(side_dir / CLASSIFIER_LOG)
-        if classifier_latency and not table.empty:
-            mask = table["policy"] == "predicted_routing"
-            table.loc[mask, "classifier_latency_bs1_s"] = classifier_latency
-            table.loc[mask, "total_latency_bs1_s"] = (
-                table.loc[mask, "latency_bs1_s"] + classifier_latency
-            )
         return {"table7": table}
 
     @staticmethod
-    def _mean_classifier_latency(log_path: Path) -> float:
-        """Mean per-document classifier latency from the side log (0 if absent)."""
+    def _classifier_records(log_path: Path) -> list[dict]:
+        """Load classifier side records, returning empty list if absent."""
 
         if not log_path.exists():
-            return 0.0
-        latencies = [
-            float(json.loads(line)["latency_s"])
-            for line in log_path.read_text().splitlines()
-            if line.strip()
-        ]
-        return sum(latencies) / len(latencies) if latencies else 0.0
+            return []
+        return [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]

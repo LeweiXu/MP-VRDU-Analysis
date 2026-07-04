@@ -6,14 +6,14 @@ Purpose:
     code never imports concrete local/API backend classes directly.
 
 Pipeline role:
-    The orchestrator asks this registry for the configured reasoner. Stage M3
-    dispatches the smoke Qwen3-VL local spec to `LocalVLMBackend`; unsupported
-    specs still resolve to the stub until their stages wire them deliberately.
+    The orchestrator asks this registry for the configured reasoner. Qwen3-VL
+    local sizes dispatch to `LocalVLMBackend`; unsupported families still resolve
+    to the stub until their stages wire them deliberately.
 
 Spec grammar: ``<family>-<size>-<backend>`` (e.g. ``qwen3vl-8b-local``,
-``gpt4o-api``), or the literal ``stub``. M3 supports ``qwen3vl-2b-local`` as the
-critical-path smoke backend; additional local sizes and API backends remain
-behind this same function.
+    ``gpt4o-api``), or the literal ``stub``. Qwen3-VL local sizes share the same
+    Hugging Face backend; additional non-Qwen local sizes and API backends remain
+    behind this same function.
 
 Arguments:
     None. This module is import-only; callers pass a spec string to
@@ -70,11 +70,15 @@ def get_reasoner(spec: str) -> Reasoner:
         from pipeline.reasoner import StubReasoner
 
         return StubReasoner(spec="stub")
-    if parsed.family == "qwen3vl" and parsed.size == "2b" and parsed.backend == "local":
+    if parsed.family == "qwen3vl" and parsed.size in {"2b", "4b", "8b", "32b"} and parsed.backend == "local":
         from models.local_vlm import LocalVLMBackend
 
         return LocalVLMBackend(parsed.name)
-    # Later stages dispatch the remaining local sizes and API backends here.
+    if parsed.family == "internvl3" and parsed.size == "8b" and parsed.backend == "local":
+        from models.internvl import LocalInternVLBackend
+
+        return LocalInternVLBackend(parsed.name)
+    # Later stages dispatch non-Qwen local families and API backends here.
     from pipeline.reasoner import StubReasoner
 
     return StubReasoner(spec=parsed.name)

@@ -71,9 +71,9 @@ class Experiment(ABC):
     def model_specs(self, config: ExperimentConfig) -> tuple[str, ...]:
         """Reasoner specs this experiment generates itself.
 
-        Default: the config's single reasoner. Aggregation-only tables return
-        `()` (they build from `depends_on` rows and generate nothing). Multi-model
-        tables (family/scale) override this for the full run.
+        Default: aggregation-only. Generating experiments override this with the
+        config reasoner or a table-specific model list. Multi-model tables
+        (family/scale) override this for the full run.
         """
 
         return ()
@@ -91,6 +91,13 @@ class Experiment(ABC):
         """Optional extra GPU work (e.g. the classifier), writing side artifacts."""
 
         return None
+
+    def resolve_questions(
+        self, config: ExperimentConfig, questions: Sequence[Question]
+    ) -> Sequence[Question]:
+        """Return the corpus this experiment should run on."""
+
+        return questions
 
     @abstractmethod
     def build(

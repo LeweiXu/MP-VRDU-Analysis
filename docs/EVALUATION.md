@@ -1,8 +1,8 @@
 # Evaluation
 
-This file records the scoring and reporting rules implemented for Stage M5.
-The goal is to make cached smoke/full rows rebuildable into the paper table
-shapes without rerunning models.
+This file records the scoring and reporting rules implemented for Stage M5 and
+extended in Section F4-F6. The goal is to make cached smoke/full rows
+rebuildable into the paper table shapes without rerunning models.
 
 ## Judge Protocol
 
@@ -19,6 +19,18 @@ model answer. For answerable questions, `correct` requires semantic equivalence
 to the gold answer. For native-unanswerable questions, an abstaining verdict is
 counted correct. Tests inject a fake OpenAI client so the parsing and scoring
 contract is covered offline.
+
+## Judge-Human Agreement Gate
+
+Section F2 uses `cli.gates agreement-sample` to create a 200-row sheet
+stratified over `doc_type` x question type. The current MMLongBench loader uses
+an explicit `question_type` field when present and otherwise falls back to the
+derived evidence-hop label (`none`, `single`, `multi`).
+
+Completed sheets are scored with `cli.gates agreement-score`, which computes
+Cohen's kappa over `correct`, `incorrect`, and `abstained` labels. The
+pre-registered gate is kappa >= 0.75. Until that JSON artifact is recorded, the
+main numbers remain untrusted.
 
 ## Accuracy
 
@@ -48,6 +60,11 @@ accuracy. The selected frontier is the cheapest rung whose upper CI reaches
 within the configured margin of that strongest point estimate. The default
 margin is 3 accuracy points (`0.03`).
 
+The Section-F1 frontier-divergence gate is implemented by
+`cli.gates frontier`. It reads `results/tables/full/table1_headline.csv` and
+returns Go only when at least two configured Option-A bins have different
+frontier rungs.
+
 ## Tables
 
 `experiments.tables` emits all eight CSV shapes:
@@ -56,9 +73,9 @@ margin is 3 accuracy points (`0.03`).
 - Table 2: bin by question-type analytical slice
 - Table 3: model-family replication
 - Table 4: dataset replication
-- Table 5: evidence-composition mediation
-- Table 6: matched-vs-cross skeleton
-- Table 7: routing-policy skeleton
+- Table 5: evidence-composition mediation by evidence-source mix
+- Table 6: matched vision retrieval vs cross text-to-vision retrieval
+- Table 7: corpus-level routing policies with classifier cost
 - Table 8: scale sanity
 
 Build tables from cached rows with:
@@ -82,6 +99,21 @@ ColQwen) and the question's evidence-source labels. Slice keys use
 `vision:chart`, so matched/cross analysis can separate locating modality from
 the evidence modality being located.
 
+Table 6 is restricted to bins whose Table-1 oracle frontier requires a visual
+rung (`TLV` or `V`). It compares `matched_vision` (vision retrieval plus visual
+reasoning) with `cross_text_to_vision` (text retrieval plus visual reasoning)
+and reports accuracy, latency deltas relative to the matched row, and retrieval
+precision/recall/F1.
+
+## Composition Mediation
+
+Table 5 decomposes each MMLongBench Option-A bin by normalized evidence-source
+modality (`text`, `table`, `chart`, `figure`, `layout`). Per-question modality
+shares are split evenly across all labeled sources for that question, so shares
+sum to one within each bin. The predicted bin frontier is the strongest
+frontier among modalities with at least 10% share, with the global modality
+frontiers computed from all rows carrying that source label.
+
 ## Classifier Covariate
 
 `covariates.classifier.QwenDocTypeClassifier` is the Stage-M6 classifier path.
@@ -94,17 +126,23 @@ text, and latency.
 The classifier is a covariate for routing, not a source of ground truth. Oracle
 routing uses the gold `doc_type`; predicted routing uses the classifier output.
 
+Section F3 uses `cli.gates classifier-pilot --full` to sample 100 distinct
+documents and run this classifier once per document. The feasibility gate is
+top-1 Option-A bin accuracy >= 0.70. The same CLI can score an existing
+`classifier.jsonl` side artifact via `classifier-score`.
+
 ## Routing Cost
 
 The `T7_routing` experiment (`experiments/T7_routing.py`) builds Table 7 with
 four policies: oracle routing, predicted routing, uniform-cheapest `T`, and
-uniform-strongest `TLV`. The policy rows reuse T1's oracle-ladder rows; the
-doc-type classifier is the only new GPU work and runs once per document as a
-side artifact (`classifier.jsonl`).
+uniform-strongest `TLV`. Each policy emits one corpus-level row. The policy rows
+reuse T1's oracle-ladder rows; the doc-type classifier is the only new GPU work
+and runs once per document as a side artifact (`classifier.jsonl`).
 
 Predicted routing includes classifier cost explicitly. The classifier runs once
-per document; its mean per-document latency is folded into the predicted-routing
-row as `classifier_latency_bs1_s` (amortized per evaluated question), so
+per document; the sum of classifier latency is divided by the number of
+evaluated question rows selected by the predicted policy and reported as
+`classifier_latency_bs1_s`, so
 `total_latency_bs1_s` is:
 
 ```text

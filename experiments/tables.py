@@ -43,7 +43,7 @@ TABLE_FILENAMES: Mapping[str, str] = {
     "table8": "table8_scale_sanity.csv",
 }
 
-QUESTION_TYPES = ("none", "single", "multi")
+QUESTION_TYPES = ("single-hop text", "table", "chart-figure", "multi-hop")
 ROUTING_POLICIES = (
     "oracle_routing",
     "predicted_routing",
@@ -68,6 +68,54 @@ def _bin(row: ResultRow) -> DocTypeBin:
     """Return the Option-A bin for a result row."""
 
     return doc_type_bin(row.doc_type)
+
+
+def _safe_bin(row: ResultRow) -> str:
+    """Return the Option-A bin for MMLongBench rows, or empty for other datasets."""
+
+    try:
+        return doc_type_bin(row.doc_type)
+    except Exception:
+        return ""
+
+
+def _dataset(row: ResultRow) -> str:
+    """Return the source dataset recorded on a row, with a legacy fallback."""
+
+    value = row.metadata.get("source_dataset") if isinstance(row.metadata, dict) else None
+    if value:
+        return str(value)
+    return "mmlongbench" if _safe_bin(row) else str(row.doc_type).strip().casefold() or "unknown"
+
+
+def _normalise_source(source: str) -> str:
+    """Map raw evidence-source labels to the five mechanism modalities."""
+
+    text = str(source).strip().casefold()
+    if "table" in text:
+        return "table"
+    if "chart" in text:
+        return "chart"
+    if "figure" in text or "image" in text or "picture" in text:
+        return "figure"
+    if "layout" in text or "bbox" in text or "box" in text:
+        return "layout"
+    if "text" in text or "plain" in text:
+        return "text"
+    return "text" if not text or text == "none" else text.replace(" ", "_")
+
+
+def analytical_question_type(row: ResultRow) -> str:
+    """Return the Table-2 analytical question-type bucket for a row."""
+
+    if row.hop == "multi":
+        return "multi-hop"
+    sources = {_normalise_source(source) for source in row.evidence_sources}
+    if sources.intersection({"chart", "figure"}):
+        return "chart-figure"
+    if sources.intersection({"table", "layout"}):
+        return "table"
+    return "single-hop text"
 
 
 def _group(rows: Iterable[ResultRow], *attrs: str) -> dict[tuple[str, ...], list[ResultRow]]:
@@ -130,6 +178,17 @@ def _unique_doc_count(rows: Sequence[ResultRow]) -> int:
     return len({row.doc_id for row in rows})
 
 
+def _selected_row_map(rows: Sequence[ResultRow]) -> dict[tuple[str, str], ResultRow]:
+    """Return one row per (question, representation), preferring oracle rows."""
+
+    selected: dict[tuple[str, str], ResultRow] = {}
+    for row in rows:
+        key = (row.question_id, row.representation)
+        if key not in selected or row.condition == "oracle":
+            selected[key] = row
+    return selected
+
+
 def _size_label(model_spec: str) -> str:
     """Extract a readable model size label from a model spec."""
 
@@ -175,12 +234,16 @@ def build_table2_analytical(
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> pd.DataFrame:
-    """Build Table 2: bin x question-type analytical slice."""
+    """Build Table 2: bin x analytical question-type slice."""
 
     out: list[dict[str, object]] = []
     for bin_name in bins:
         for question_type in QUESTION_TYPES:
-            group_rows = [row for row in rows if _bin(row) == bin_name and row.hop == question_type]
+            group_rows = [
+                row
+                for row in rows
+                if _safe_bin(row) == bin_name and analytical_question_type(row) == question_type
+            ]
             columns, _, _ = _rung_metrics(group_rows, n_bootstrap=n_bootstrap, seed=seed)
             out.append(
                 {
@@ -202,15 +265,22 @@ def build_table3_family_replication(
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> pd.DataFrame:
-    """Build Table 3: model-family/size replication skeleton."""
+    """Build Table 3: model-family replication with primary-frontier match."""
 
     out: list[dict[str, object]] = []
-    model_specs = sorted({row.model_spec for row in rows}) or [""]
+    model_specs = sorted({row.model_spec for row in rows if _safe_bin(row)}) or [""]
+    primary_spec = next((spec for spec in model_specs if spec.startswith("qwen3vl-8b")), model_specs[0])
+    primary_frontiers: dict[str, str] = {}
+    for bin_name in bins:
+        primary_rows = [row for row in rows if row.model_spec == primary_spec and _safe_bin(row) == bin_name]
+        _, cells, _ = _rung_metrics(primary_rows, n_bootstrap=n_bootstrap, seed=seed)
+        primary_frontiers[bin_name] = sufficiency_frontier(cells, margin_points=margin_points)
     for model_spec in model_specs:
         model_rows = [row for row in rows if row.model_spec == model_spec]
         for bin_name in bins:
-            group_rows = [row for row in model_rows if _bin(row) == bin_name]
+            group_rows = [row for row in model_rows if _safe_bin(row) == bin_name]
             columns, cells, _ = _rung_metrics(group_rows, n_bootstrap=n_bootstrap, seed=seed)
+            frontier = sufficiency_frontier(cells, margin_points=margin_points)
             out.append(
                 {
                     "model_spec": model_spec,
@@ -218,7 +288,10 @@ def build_table3_family_replication(
                     "bin": bin_name,
                     "n_questions": _unique_question_count(group_rows),
                     **columns,
-                    "frontier": sufficiency_frontier(cells, margin_points=margin_points),
+                    "frontier": frontier,
+                    "primary_model_spec": primary_spec,
+                    "primary_frontier": primary_frontiers.get(bin_name, ""),
+                    "matches_primary_frontier": bool(frontier and frontier == primary_frontiers.get(bin_name, "")),
                 }
             )
     return pd.DataFrame(out)
@@ -227,88 +300,245 @@ def build_table3_family_replication(
 def build_table4_dataset_replication(
     rows: Sequence[ResultRow],
     *,
-    dataset: str = "mmlongbench",
     bins: Sequence[str] = DEFAULT_BINS,
     margin_points: float = 3.0,
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> pd.DataFrame:
-    """Build Table 4: dataset replication skeleton."""
+    """Build Table 4: dataset replication over MMLongBench bins and LongDocURL slices."""
 
-    table1 = build_table1_headline(
-        rows,
-        bins=bins,
-        margin_points=margin_points,
-        n_bootstrap=n_bootstrap,
-        seed=seed,
-    )
-    table1.insert(0, "dataset", dataset)
-    return table1
+    out: list[dict[str, object]] = []
+    for dataset_name in sorted({_dataset(row) for row in rows}) or ["mmlongbench"]:
+        dataset_rows = [row for row in rows if _dataset(row) == dataset_name]
+        if dataset_name == "mmlongbench":
+            groups = [(bin_name, [row for row in dataset_rows if _safe_bin(row) == bin_name]) for bin_name in bins]
+        else:
+            groups = [
+                (doc_type, [row for row in dataset_rows if row.doc_type == doc_type])
+                for doc_type in sorted({row.doc_type for row in dataset_rows})
+            ]
+        for group_name, group_rows in groups:
+            columns, cells, costs = _rung_metrics(group_rows, n_bootstrap=n_bootstrap, seed=seed)
+            frontier = sufficiency_frontier(cells, margin_points=margin_points)
+            out.append(
+                {
+                    "dataset": dataset_name,
+                    "bin": group_name,
+                    "n_questions": _unique_question_count(group_rows),
+                    "n_docs": _unique_doc_count(group_rows),
+                    **columns,
+                    "frontier": frontier,
+                    "latency_at_frontier_s": costs[frontier].latency_bs1_s if frontier else 0.0,
+                }
+            )
+    return pd.DataFrame(out)
 
 
 def build_table5_composition_mediation(
     rows: Sequence[ResultRow],
     *,
+    bins: Sequence[str] = DEFAULT_BINS,
+    margin_points: float = 3.0,
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> pd.DataFrame:
-    """Build Table 5: evidence-composition mediation skeleton."""
+    """Build Table 5: evidence-composition mediation by bin and modality."""
 
-    sources = sorted({source for row in rows for source in row.evidence_sources}) or ["all"]
+    modalities = ("text", "table", "chart", "figure", "layout")
     out: list[dict[str, object]] = []
-    for source in sources:
-        group_rows = [row for row in rows if source == "all" or source in row.evidence_sources]
-        columns, _, _ = _rung_metrics(group_rows, n_bootstrap=n_bootstrap, seed=seed)
-        out.append(
-            {
-                "evidence_source": source,
-                "n_questions": _unique_question_count(group_rows),
-                "n_docs": _unique_doc_count(group_rows),
-                **columns,
-            }
-        )
+    bin_frontiers: dict[str, str] = {}
+    modality_frontiers: dict[str, str] = {}
+
+    for bin_name in bins:
+        bin_rows = [row for row in rows if _safe_bin(row) == bin_name]
+        _, cells, _ = _rung_metrics(bin_rows, n_bootstrap=n_bootstrap, seed=seed)
+        bin_frontiers[bin_name] = sufficiency_frontier(cells, margin_points=margin_points)
+
+    for modality in modalities:
+        modality_rows = [
+            row
+            for row in rows
+            if modality in {_normalise_source(source) for source in row.evidence_sources}
+        ]
+        _, cells, _ = _rung_metrics(modality_rows, n_bootstrap=n_bootstrap, seed=seed)
+        modality_frontiers[modality] = sufficiency_frontier(cells, margin_points=margin_points)
+
+    for bin_name in bins:
+        bin_rows = [row for row in rows if _safe_bin(row) == bin_name]
+        question_sources: dict[str, set[str]] = {}
+        for row in bin_rows:
+            question_sources.setdefault(row.question_id, set()).update(
+                _normalise_source(source) for source in (row.evidence_sources or ("text",))
+            )
+        contributions = {modality: 0.0 for modality in modalities}
+        for sources in question_sources.values():
+            known = tuple(source for source in sources if source in contributions) or ("text",)
+            weight = 1.0 / len(known)
+            for source in known:
+                contributions[source] += weight
+        total = sum(contributions.values()) or 1.0
+        shares = {modality: contributions[modality] / total for modality in modalities}
+        predicted = predict_frontier_from_composition(shares, modality_frontiers)
+        for modality in modalities:
+            group_rows = [
+                row
+                for row in bin_rows
+                if modality in {_normalise_source(source) for source in (row.evidence_sources or ("text",))}
+            ]
+            columns, _, _ = _rung_metrics(group_rows, n_bootstrap=n_bootstrap, seed=seed)
+            out.append(
+                {
+                    "bin": bin_name,
+                    "evidence_modality": modality,
+                    "share": shares[modality],
+                    "n_questions": _unique_question_count(group_rows),
+                    "n_docs": _unique_doc_count(group_rows),
+                    "modality_frontier": modality_frontiers.get(modality, ""),
+                    "bin_frontier": bin_frontiers.get(bin_name, ""),
+                    "predicted_bin_frontier": predicted,
+                    "predicted_matches_bin": bool(predicted and predicted == bin_frontiers.get(bin_name, "")),
+                    **columns,
+                }
+            )
     return pd.DataFrame(out)
+
+
+def predict_frontier_from_composition(
+    shares: Mapping[str, float],
+    modality_frontiers: Mapping[str, str],
+    *,
+    min_share: float = 0.10,
+) -> str:
+    """Predict a bin frontier from modality shares and per-modality frontiers."""
+
+    candidates = [
+        modality_frontiers[modality]
+        for modality, share in shares.items()
+        if share >= min_share and modality_frontiers.get(modality)
+    ]
+    if not candidates:
+        candidates = [frontier for frontier in modality_frontiers.values() if frontier]
+    if not candidates:
+        return ""
+    rank = {rung: index for index, rung in enumerate(RUNG_ORDER)}
+    return max(candidates, key=lambda rung: rank.get(rung, -1))
+
+
+def _retrieval_summary_for(
+    records: Sequence[Mapping[str, object]],
+    *,
+    doc_ids: set[str],
+    modality: str,
+) -> dict[str, float]:
+    """Return macro retrieval metrics for selected docs/modality."""
+
+    selected = [
+        record
+        for record in records
+        if str(record.get("doc_id", "")) in doc_ids and str(record.get("modality", "")) == modality
+    ]
+    if not selected:
+        return {"retrieval_precision": 0.0, "retrieval_recall": 0.0, "retrieval_f1": 0.0}
+    n = len(selected)
+    return {
+        "retrieval_precision": sum(float(record.get("precision", 0.0)) for record in selected) / n,
+        "retrieval_recall": sum(float(record.get("recall", 0.0)) for record in selected) / n,
+        "retrieval_f1": sum(float(record.get("f1", 0.0)) for record in selected) / n,
+    }
 
 
 def build_table6_matched_vs_cross(
     rows: Sequence[ResultRow],
     *,
+    bins: Sequence[str] = DEFAULT_BINS,
+    margin_points: float = 3.0,
+    retrieval_records: Sequence[Mapping[str, object]] | None = None,
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> pd.DataFrame:
-    """Build Table 6: matched-vs-cross retrieval/reasoning skeleton."""
+    """Build Table 6: matched-vs-cross retrieval on vision-frontier bins."""
 
-    definitions = {
-        "matched_vision": [
-            row
-            for row in rows
-            if row.condition.startswith("retrieved_vision") and row.representation in {"TLV", "V"}
-        ],
-        "cross_text_to_vision": [
-            row
-            for row in rows
-            if row.condition.startswith("retrieved_text") and row.representation in {"TLV", "V"}
-        ],
+    oracle_rows = [row for row in rows if row.condition == "oracle" and _safe_bin(row)]
+    oracle_table = build_table1_headline(
+        oracle_rows,
+        bins=bins,
+        margin_points=margin_points,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+    ).set_index("bin")
+    vision_bins = {
+        bin_name
+        for bin_name in bins
+        if bin_name in oracle_table.index and str(oracle_table.loc[bin_name, "frontier"]) in {"TLV", "V"}
     }
+    retrieval_records = list(retrieval_records or [])
     out: list[dict[str, object]] = []
-    for pipeline, group_rows in definitions.items():
-        acc = accuracy_summary(group_rows, n_bootstrap=n_bootstrap, seed=seed)
-        cost = cost_summary(group_rows)
-        out.append(
+    columns = [
+        "bin",
+        "pipeline",
+        "condition",
+        "retrieval_modality",
+        "reasoning_modality",
+        "n_rows",
+        "n_docs",
+        "accuracy",
+        "ci_low",
+        "ci_high",
+        "latency_bs1_s",
+        "delta_accuracy_vs_matched",
+        "delta_latency_vs_matched_s",
+        "retrieval_precision",
+        "retrieval_recall",
+        "retrieval_f1",
+    ]
+    for bin_name in bins:
+        if bin_name not in vision_bins:
+            continue
+        definitions = {
+            "matched_vision": [
+                row
+                for row in rows
+                if _safe_bin(row) == bin_name
+                and row.condition.startswith("retrieved_vision")
+                and row.representation in {"TLV", "V"}
+            ],
+            "cross_text_to_vision": [
+                row
+                for row in rows
+                if _safe_bin(row) == bin_name
+                and row.condition.startswith("retrieved_text")
+                and row.representation in {"TLV", "V"}
+            ],
+        }
+        baseline_acc = accuracy_summary(definitions["matched_vision"], n_bootstrap=n_bootstrap, seed=seed)
+        baseline_cost = cost_summary(definitions["matched_vision"])
+        for pipeline, group_rows in definitions.items():
+            acc = accuracy_summary(group_rows, n_bootstrap=n_bootstrap, seed=seed)
+            cost = cost_summary(group_rows)
+            modality = "vision" if pipeline == "matched_vision" else "text"
+            out.append(
                 {
+                    "bin": bin_name,
                     "pipeline": pipeline,
                     "condition": ",".join(sorted({row.condition for row in group_rows})) if group_rows else "",
-                    "retrieval_modality": "vision" if pipeline == "matched_vision" else "text",
+                    "retrieval_modality": modality,
                     "reasoning_modality": "vision",
                     "n_rows": acc.n_rows,
                     "n_docs": acc.n_docs,
                     "accuracy": acc.accuracy,
                     "ci_low": acc.ci_low,
                     "ci_high": acc.ci_high,
-                "latency_bs1_s": cost.latency_bs1_s,
-            }
-        )
-    return pd.DataFrame(out)
+                    "latency_bs1_s": cost.latency_bs1_s,
+                    "delta_accuracy_vs_matched": acc.accuracy - baseline_acc.accuracy,
+                    "delta_latency_vs_matched_s": cost.latency_bs1_s - baseline_cost.latency_bs1_s,
+                    **_retrieval_summary_for(
+                        retrieval_records,
+                        doc_ids={row.doc_id for row in group_rows},
+                        modality=modality,
+                    ),
+                }
+            )
+    return pd.DataFrame(out, columns=columns)
 
 
 def build_table7_routing(
@@ -316,51 +546,80 @@ def build_table7_routing(
     *,
     bins: Sequence[str] = DEFAULT_BINS,
     margin_points: float = 3.0,
+    classifier_records: Sequence[Mapping[str, object]] | None = None,
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> pd.DataFrame:
-    """Build Table 7: routing-policy skeleton."""
+    """Build Table 7: corpus-level routing policies with classifier cost."""
 
-    out: list[dict[str, object]] = []
+    oracle_rows = [row for row in rows if row.condition == "oracle" and _safe_bin(row)]
     table1 = build_table1_headline(
-        rows,
+        oracle_rows,
         bins=bins,
         margin_points=margin_points,
         n_bootstrap=n_bootstrap,
         seed=seed,
     ).set_index("bin")
-    for bin_name in bins:
-        frontier = str(table1.loc[bin_name, "frontier"]) if bin_name in table1.index else ""
-        policies = {
-            "oracle_routing": frontier,
-            "predicted_routing": frontier,
-            "uniform_cheapest_T": "T",
-            "uniform_strongest_TLV": "TLV",
-        }
-        for policy in ROUTING_POLICIES:
-            rung = policies[policy]
-            group_rows = [
-                row for row in rows if _bin(row) == bin_name and row.representation == rung
-            ] if rung else []
-            acc = accuracy_summary(group_rows, n_bootstrap=n_bootstrap, seed=seed)
-            cost = cost_summary(group_rows)
-            classifier_latency = 0.0
-            out.append(
-                {
-                    "policy": policy,
-                    "bin": bin_name,
-                    "chosen_rung": rung,
-                    "n_rows": acc.n_rows,
-                    "accuracy": acc.accuracy,
-                    "ci_low": acc.ci_low,
-                    "ci_high": acc.ci_high,
-                    "latency_bs1_s": cost.latency_bs1_s,
-                    "classifier_latency_bs1_s": classifier_latency,
-                    "total_latency_bs1_s": cost.latency_bs1_s + classifier_latency,
-                    "text_tokens": cost.input_text_tokens,
-                    "vision_tokens": cost.input_visual_tokens,
-                }
-            )
+    recipes = {
+        bin_name: str(table1.loc[bin_name, "frontier"])
+        for bin_name in bins
+        if bin_name in table1.index and str(table1.loc[bin_name, "frontier"])
+    }
+    row_map = _selected_row_map(oracle_rows)
+    classifier_records = list(classifier_records or [])
+    predicted_bins = {
+        str(record.get("doc_id", "")): str(record.get("predicted_bin", ""))
+        for record in classifier_records
+    }
+    total_classifier_latency = sum(float(record.get("latency_s", 0.0)) for record in classifier_records)
+
+    def select_rows(policy: str) -> tuple[list[ResultRow], str]:
+        selected: list[ResultRow] = []
+        chosen: dict[str, int] = {}
+        for base in oracle_rows:
+            if base.representation != "T":
+                continue
+            gold_bin = _safe_bin(base)
+            if policy == "oracle_routing":
+                rung = recipes.get(gold_bin, "")
+            elif policy == "predicted_routing":
+                rung = recipes.get(predicted_bins.get(base.doc_id, gold_bin), "")
+            elif policy == "uniform_cheapest_T":
+                rung = "T"
+            else:
+                rung = "TLV"
+            if not rung:
+                continue
+            chosen[rung] = chosen.get(rung, 0) + 1
+            row = row_map.get((base.question_id, rung))
+            if row is not None:
+                selected.append(row)
+        chosen_text = ";".join(f"{rung}:{count}" for rung, count in sorted(chosen.items()))
+        return selected, chosen_text
+
+    out: list[dict[str, object]] = []
+    for policy in ROUTING_POLICIES:
+        group_rows, chosen = select_rows(policy)
+        acc = accuracy_summary(group_rows, n_bootstrap=n_bootstrap, seed=seed)
+        cost = cost_summary(group_rows)
+        classifier_latency = total_classifier_latency / acc.n_rows if policy == "predicted_routing" and acc.n_rows else 0.0
+        out.append(
+            {
+                "policy": policy,
+                "chosen_rungs": chosen,
+                "n_rows": acc.n_rows,
+                "n_docs": acc.n_docs,
+                "accuracy": acc.accuracy,
+                "ci_low": acc.ci_low,
+                "ci_high": acc.ci_high,
+                "latency_bs1_s": cost.latency_bs1_s,
+                "classifier_latency_bs1_s": classifier_latency,
+                "total_latency_bs1_s": cost.latency_bs1_s + classifier_latency,
+                "text_tokens": cost.input_text_tokens,
+                "vision_tokens": cost.input_visual_tokens,
+                "classifier_docs": len(classifier_records) if policy == "predicted_routing" else 0,
+            }
+        )
     return pd.DataFrame(out)
 
 
@@ -415,14 +674,25 @@ def build_all_tables(
         ),
         "table4": build_table4_dataset_replication(
             rows,
-            dataset=dataset,
             bins=bins,
             margin_points=margin_points,
             n_bootstrap=n_bootstrap,
             seed=seed,
         ),
-        "table5": build_table5_composition_mediation(rows, n_bootstrap=n_bootstrap, seed=seed),
-        "table6": build_table6_matched_vs_cross(rows, n_bootstrap=n_bootstrap, seed=seed),
+        "table5": build_table5_composition_mediation(
+            rows,
+            bins=bins,
+            margin_points=margin_points,
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+        ),
+        "table6": build_table6_matched_vs_cross(
+            rows,
+            bins=bins,
+            margin_points=margin_points,
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+        ),
         "table7": build_table7_routing(
             rows,
             bins=bins,

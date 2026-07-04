@@ -350,7 +350,10 @@ class Orchestrator:
             score=score.value,
             correct=score.correct,
             abstained=score.abstained,
-            metadata={"note": note},
+            metadata={
+                "note": note,
+                "source_dataset": question.raw_fields.get("source_dataset", self.config.dataset),
+            },
         )
         self.cache.put(row)
         return row

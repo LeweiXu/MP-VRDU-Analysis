@@ -186,6 +186,41 @@ would collide). Changed to `cache if cache is not None else …` (same for
 reasoner/judge). Not a frozen-interface change — the cache key and `ResultRow`
 shape are untouched.
 
+## Section-2 gates and full-stage tooling (F1-F6)
+
+Gate tooling is implemented in `experiments/gates.py` and exposed through
+`cli.gates`; commands are recorded in `docs/RUNBOOK.md`.
+
+- **F1 frontier divergence.** `cli.gates frontier` reads the full Table-1 CSV and
+  returns Go when at least two Option-A bins have different frontiers. The full
+  Qwen3-VL-8B run has not been executed in this log, so the verdict is pending.
+- **F2 judge-human agreement.** `cli.gates agreement-sample` writes the 200-row
+  human labelling sheet from judged rows; `agreement-score` computes Cohen's
+  kappa over `correct` / `incorrect` / `abstained` and gates at 0.75. The human
+  labels and kappa result are pending.
+- **F3 classifier feasibility.** `cli.gates classifier-pilot --full` samples 100
+  distinct documents, runs the first-two-page Qwen3-VL-2B classifier, and gates
+  top-1 Option-A bin accuracy at 0.70. The pilot result and RQ3 scope decision
+  are pending.
+
+**F4-F6 tooling.** The Section-2 full experiments are implemented but not yet
+run at full scale in this log. F4 adds the Table-2 analytical slice, the
+InternVL3-8B Table-3 replication backend, and the LongDocURL Table-4 loader /
+experiment. LongDocURL annotations are read from staged
+`.data/longdocurl/LongDocURL_public.jsonl` or a cached `dengchao/LongDocURL`
+snapshot; PDFs must still be staged manually under
+`.data/longdocurl/documents/<doc_no>.pdf` because the public annotation cache
+only records source paths. F5 now computes evidence-composition mediation and
+matched vision-vs-cross text-to-vision retrieval rows from real cached
+predictions/retrieval side records. F6 now builds one corpus-level row for each
+routing policy and amortizes classifier latency as total classifier time divided
+by evaluated question rows.
+
+The model registry now dispatches Qwen3-VL local sizes 2B/4B/8B/32B to the
+Hugging Face local backend and `internvl3-8b-local` to
+`OpenGVLab/InternVL3-8B`. Other non-Qwen families remain explicitly stubbed
+until their replication stage.
+
 ## Kaya operational notes (hazards that recur)
 
 - **Queue waits.** The GPU request (`--partition=gpu --gres=gpu:1`) never changed;

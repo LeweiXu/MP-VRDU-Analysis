@@ -1,19 +1,20 @@
-"""Load MMLongBench-Doc rows and normalise them into `Question` objects.
+"""Load benchmark rows and normalise them into `Question` objects.
 
 Purpose:
-    Encapsulates the source-specific parsing required for the primary v3
-    dataset: locating staged parquet/PDF files, converting pandas/numpy values
-    into plain Python values, parsing stringified evidence lists, normalising
-    one-based evidence pages to zero-based indices, and resolving source PDFs.
+    Encapsulates the source-specific parsing required for the primary
+    MMLongBench-Doc dataset and the Section-F4 LongDocURL replication: locating
+    staged annotation/PDF files, converting pandas/numpy values into plain
+    Python values, parsing evidence lists, normalising evidence pages, and
+    resolving source PDFs.
 
 Pipeline role:
-    Runners and smoke selectors call `load_mmlongbench()` to obtain the common
-    `schema.Question` contract. Renderers call `resolve_pdf()` to find the PDF
-    associated with each question's `doc_id`.
+    Runners and smoke selectors call `load_mmlongbench()` or `load_longdocurl()`
+    to obtain the common `schema.Question` contract. Renderers call
+    `resolve_pdf()` to find the PDF associated with each question's `doc_id`.
 
 Arguments:
     None at the command line. Import callers pass `data_dir` and optional
-    `sample` into `load_mmlongbench()` or `load_raw_mmlongbench()`.
+    `sample` into the dataset loader functions.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from schema import Question
 
 
 MMLONGBENCH_DIRNAME = "mmlongbench"
+LONGDOCURL_DIRNAME = "longdocurl"
+LONGDOCURL_FILENAME = "LongDocURL_public.jsonl"
 
 
 def find_mmlongbench_root(data_dir: Path | None = None) -> Path:
@@ -65,6 +68,40 @@ def load_raw_mmlongbench(data_dir: Path | None = None, sample: int | None = None
     if sample is not None:
         frame = frame.head(sample)
     return [normalise_raw_value(row) for row in frame.to_dict(orient="records")]
+
+
+def find_longdocurl_annotation(data_dir: Path | None = None) -> Path:
+    """Return the staged or cached LongDocURL annotation JSONL path."""
+
+    root = Path(data_dir or DEFAULT_PATHS.data_dir)
+    candidates = [
+        root / LONGDOCURL_DIRNAME / LONGDOCURL_FILENAME,
+        root / LONGDOCURL_FILENAME,
+    ]
+    cache_root = DEFAULT_PATHS.hf_home / "hub" / "datasets--dengchao--LongDocURL" / "snapshots"
+    if cache_root.is_dir():
+        candidates.extend(sorted(cache_root.glob(f"*/{LONGDOCURL_FILENAME}")))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"could not find LongDocURL annotations; expected {root / LONGDOCURL_DIRNAME / LONGDOCURL_FILENAME} "
+        f"or a cached dengchao/LongDocURL snapshot"
+    )
+
+
+def load_raw_longdocurl(data_dir: Path | None = None, sample: int | None = None) -> list[dict[str, Any]]:
+    """Load raw LongDocURL JSONL records from staged data or the HF cache."""
+
+    path = find_longdocurl_annotation(data_dir)
+    rows: list[dict[str, Any]] = []
+    with path.open() as handle:
+        for line in handle:
+            if line.strip():
+                rows.append(normalise_raw_value(json.loads(line)))
+                if sample is not None and len(rows) >= sample:
+                    break
+    return rows
 
 
 def normalise_raw_value(value: Any) -> Any:
@@ -127,6 +164,19 @@ def parse_evidence_pages(value: Any) -> tuple[int, ...]:
     return tuple(dict.fromkeys(pages))
 
 
+def parse_zero_based_pages(value: Any) -> tuple[int, ...]:
+    """Return unique source page indices that are already zero-based."""
+
+    pages: list[int] = []
+    for item in parse_list_field(value):
+        try:
+            page = int(item)
+        except (TypeError, ValueError):
+            continue
+        pages.append(max(page, 0))
+    return tuple(dict.fromkeys(pages))
+
+
 def parse_evidence_sources(value: Any) -> tuple[str, ...]:
     """Return evidence-source labels as strings."""
 
@@ -152,7 +202,40 @@ def question_from_row(row: dict[str, Any], index: int) -> Question:
         evidence_sources=parse_evidence_sources(raw.get("evidence_sources")),
         hop="none",
         is_unanswerable=False,
-        raw_fields=raw,
+        raw_fields={**raw, "source_dataset": "mmlongbench"},
+    )
+
+
+def _answer_text(value: Any) -> str:
+    """Return a stable string answer for scalar or structured answer values."""
+
+    value = normalise_raw_value(value)
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def question_from_longdocurl_row(row: dict[str, Any], index: int) -> Question:
+    """Normalise one raw LongDocURL row into a `Question`."""
+
+    raw = normalise_raw_value(row)
+    question_id = str(raw.get("question_id") or f"{index:06d}")
+    doc_no = str(raw.get("doc_no") or "")
+    task_tag = str(raw.get("task_tag") or "LongDocURL")
+    return Question(
+        id=f"longdocurl:{question_id}",
+        doc_id=f"longdocurl:{doc_no}",
+        question=str(raw.get("question") or ""),
+        gold_answer=_answer_text(raw.get("answer")),
+        answer_format=str(raw.get("answer_format") or ""),
+        # LongDocURL has no semantic document-domain labels; task_tag is the
+        # coarsest stable layer available for the dataset-replication table.
+        doc_type=task_tag,
+        evidence_pages=parse_zero_based_pages(raw.get("evidence_pages", raw.get("page"))),
+        evidence_sources=parse_evidence_sources(raw.get("evidence_sources")),
+        hop="none",
+        is_unanswerable=False,
+        raw_fields={**raw, "source_dataset": "longdocurl", "doc_no": doc_no},
     )
 
 
@@ -163,8 +246,34 @@ def load_mmlongbench(data_dir: Path | None = None, sample: int | None = None) ->
     return [question_from_row(row, index) for index, row in enumerate(rows)]
 
 
+def load_longdocurl(data_dir: Path | None = None, sample: int | None = None) -> list[Question]:
+    """Load LongDocURL rows as normalised replication questions."""
+
+    rows = load_raw_longdocurl(data_dir, sample)
+    return [question_from_longdocurl_row(row, index) for index, row in enumerate(rows)]
+
+
+def resolve_longdocurl_pdf(doc_id: str, data_dir: Path | None = None) -> Path:
+    """Resolve a LongDocURL document id to a staged PDF path."""
+
+    root = Path(data_dir or DEFAULT_PATHS.data_dir) / LONGDOCURL_DIRNAME / "documents"
+    bare = str(doc_id).removeprefix("longdocurl:")
+    names = [bare, f"{bare}.pdf", str(doc_id), f"{doc_id}.pdf"]
+    for name in names:
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"could not resolve LongDocURL PDF for doc_id={doc_id!r}; "
+        f"stage PDFs under {root}"
+    )
+
+
 def resolve_pdf(doc_id: str, data_dir: Path | None = None) -> Path:
     """Resolve a MMLongBench document id to a staged PDF path."""
+
+    if str(doc_id).startswith("longdocurl:"):
+        return resolve_longdocurl_pdf(doc_id, data_dir)
 
     dataset_root = find_mmlongbench_root(data_dir)
     names = [doc_id]

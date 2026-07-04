@@ -39,6 +39,7 @@ def _top_k(config: ExperimentConfig) -> int:
 class MatchedCross(Experiment):
     name = "T6_matched_cross"
     tables = ("table6",)
+    depends_on = ("T1_headline",)
 
     def generation_cells(
         self, config: ExperimentConfig, questions: Sequence, *, retrievers: Retrievers
@@ -81,5 +82,19 @@ class MatchedCross(Experiment):
         self, config: ExperimentConfig, rows: Sequence[ResultRow], side_dir: Path
     ) -> Mapping[str, pd.DataFrame]:
         return {
-            "table6": build_table6_matched_vs_cross(rows, n_bootstrap=bootstrap_resamples(config))
+            "table6": build_table6_matched_vs_cross(
+                rows,
+                bins=config.bins,
+                margin_points=config.sufficiency_margin,
+                retrieval_records=_load_retrieval_records(side_dir / "retrieval.jsonl"),
+                n_bootstrap=bootstrap_resamples(config),
+            )
         }
+
+
+def _load_retrieval_records(path: Path) -> list[dict]:
+    """Load T6 retrieval side records, returning empty list if absent."""
+
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]

@@ -140,6 +140,7 @@ def generate(config: ExperimentConfig, exp: Experiment, questions: Sequence[Ques
     prediction_cache = PredictionCache(paths.predictions)
     generate_cache = ResultCache(paths.generate_results)
     retrievers = real_retrievers(config)
+    exp_questions = exp.resolve_questions(config, questions)
 
     for spec in exp.model_specs(config):
         orchestrator = Orchestrator(
@@ -149,10 +150,10 @@ def generate(config: ExperimentConfig, exp: Experiment, questions: Sequence[Ques
             cache=generate_cache,
             prediction_cache=prediction_cache,
         )
-        for cell in exp.generation_cells(config, questions, retrievers=retrievers):
+        for cell in exp.generation_cells(config, exp_questions, retrievers=retrievers):
             orchestrator.run_cell(cell.question, cell.conditioner, cell.representation)
 
-    exp.run_side(config, questions, paths.side_dir)
+    exp.run_side(config, exp_questions, paths.side_dir)
 
 
 def judge(
@@ -168,6 +169,7 @@ def judge(
     prediction_cache = PredictionCache(paths.predictions)
     result_cache = ResultCache(paths.results)
     guards = guard_retrievers()
+    exp_questions = exp.resolve_questions(config, questions)
 
     specs = exp.model_specs(config)
     if specs and len(prediction_cache) == 0:
@@ -184,7 +186,7 @@ def judge(
             cache=result_cache,
             prediction_cache=prediction_cache,
         )
-        for cell in exp.generation_cells(config, questions, retrievers=guards):
+        for cell in exp.generation_cells(config, exp_questions, retrievers=guards):
             orchestrator.run_cell(cell.question, cell.conditioner, cell.representation)
 
 

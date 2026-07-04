@@ -1,8 +1,9 @@
 # Models
 
-This file records the reasoner backends and prompt contract used by the MVP.
+This file records the reasoner backends and prompt contracts used by the MVP
+and Section-2 replications.
 
-## Stage M3 Qwen3-VL Path
+## Local VLM Paths
 
 M3 uses the Hugging Face `transformers` load path for the smoke reasoner:
 
@@ -18,14 +19,25 @@ M3 uses the Hugging Face `transformers` load path for the smoke reasoner:
 `Qwen3VLProcessor`. That resolves the Stage-1 Qwen3-VL class gap without moving
 Marker, Surya, vLLM, or ColPali outside their declared compatibility windows.
 
-The M3 registry dispatches `qwen3vl-2b-local` to:
+The registry dispatches Qwen3-VL local specs to the shared Hugging Face backend:
 
 ```text
 Qwen/Qwen3-VL-2B-Instruct
+Qwen/Qwen3-VL-4B-Instruct
+Qwen/Qwen3-VL-8B-Instruct
+Qwen/Qwen3-VL-32B-Instruct
 ```
 
-The remaining local size specs stay stubbed until their scaling stages wire them
-deliberately.
+Section F4 adds the first non-Qwen local backend:
+
+```text
+internvl3-8b-local -> OpenGVLab/InternVL3-8B
+```
+
+`models.internvl.LocalInternVLBackend` uses the checkpoint's Hugging Face
+`chat()` helper behind the same `Reasoner.answer(question, model_input)`
+contract as Qwen. Other non-Qwen families remain stubbed until a concrete
+backend is added.
 
 ## Frozen Prompt
 
@@ -48,6 +60,10 @@ Answer:
 `ModelInput.to_local_prompt()` supplies `{context}`. Text parts are inserted as
 text. Each `<image>` placeholder is replaced by the corresponding Qwen chat
 image block, preserving the order of page images for `TLV` and `V`.
+
+InternVL uses prompt template version `f4-internvl3-v1` with the same document
+question/answer instruction and converts image parts into the model's expected
+pixel tensor input.
 
 ## Accounting
 

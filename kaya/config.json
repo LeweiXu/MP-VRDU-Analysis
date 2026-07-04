@@ -50,7 +50,8 @@
   "models": [
     "Qwen/Qwen3-VL-2B-Instruct",
     "Qwen/Qwen3-VL-4B-Instruct",
-    "Qwen/Qwen3-VL-8B-Instruct"
+    "Qwen/Qwen3-VL-8B-Instruct",
+    "OpenGVLab/InternVL3-8B"
   ],
   "retrieval_models": {
     "text": [
@@ -68,6 +69,7 @@
     "docling": true
   },
   "datasets": {
-    "mmlongbench": "yubo2333/MMLongBench-Doc"
+    "mmlongbench": "yubo2333/MMLongBench-Doc",
+    "longdocurl": "dengchao/LongDocURL"
   }
 }

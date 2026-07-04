@@ -1,10 +1,10 @@
 """Experiment T4 — RQ1 dataset replication: does the recipe hold on LongDocURL?
 
-Purpose:
-    Re-runs the RQ1 headline on a second dataset and reports whether the
-    frontiers match MMLongBench (Table 4, doc-type layer only). In smoke (and
-    until the LongDocURL loader lands) this reuses T1's MMLongBench rows and
-    labels the dataset column; the full run adds a LongDocURL corpus.
+    Purpose:
+    Re-runs the RQ1 headline on LongDocURL and reports whether frontiers match
+    MMLongBench (Table 4). Smoke reuses T1's MMLongBench rows; full mode loads
+    LongDocURL annotations through the frozen `Question` schema and generates an
+    oracle ladder over that replication corpus.
 
 Pipeline role:
     A concrete `Experiment` with `depends_on = ("T1_headline",)`. When a second
@@ -23,7 +23,8 @@ from pathlib import Path
 import pandas as pd
 
 from config import ExperimentConfig
-from experiments.base import Experiment, bootstrap_resamples
+from data.loader import load_longdocurl
+from experiments.base import Cell, Experiment, Retrievers, bootstrap_resamples, oracle_ladder_cells
 from experiments.tables import build_table4_dataset_replication
 from pipeline.orchestrator import ResultRow
 
@@ -33,13 +34,23 @@ class Dataset(Experiment):
     tables = ("table4",)
     depends_on = ("T1_headline",)
 
+    def model_specs(self, config: ExperimentConfig) -> tuple[str, ...]:
+        return () if config.smoke else (config.reasoner_spec,)
+
+    def resolve_questions(self, config: ExperimentConfig, questions: Sequence) -> Sequence:
+        return questions if config.smoke else load_longdocurl(config.paths.data_dir)
+
+    def generation_cells(
+        self, config: ExperimentConfig, questions: Sequence, *, retrievers: Retrievers
+    ) -> list[Cell]:
+        return oracle_ladder_cells(config, questions)
+
     def build(
         self, config: ExperimentConfig, rows: Sequence[ResultRow], side_dir: Path
     ) -> Mapping[str, pd.DataFrame]:
         return {
             "table4": build_table4_dataset_replication(
                 rows,
-                dataset=config.dataset,
                 bins=config.bins,
                 margin_points=config.sufficiency_margin,
                 n_bootstrap=bootstrap_resamples(config),

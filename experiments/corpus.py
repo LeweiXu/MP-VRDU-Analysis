@@ -17,7 +17,7 @@ Arguments:
 from __future__ import annotations
 
 from config import ExperimentConfig
-from data.loader import load_mmlongbench
+from data.loader import load_longdocurl, load_mmlongbench
 from experiments.smoke import load_smoke_questions
 from schema import Question
 
@@ -27,6 +27,8 @@ def load_questions(config: ExperimentConfig, *, limit: int | None = None) -> lis
 
     if config.smoke:
         questions = list(load_smoke_questions(config.paths.data_dir))
+    elif config.dataset == "longdocurl":
+        questions = list(load_longdocurl(data_dir=config.paths.data_dir))
     else:
         questions = list(load_mmlongbench(data_dir=config.paths.data_dir))
     if limit is not None:

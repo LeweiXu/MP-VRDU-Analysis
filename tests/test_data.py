@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from data.loader import load_mmlongbench, resolve_pdf
+from data.loader import load_longdocurl, load_mmlongbench, resolve_pdf
 from data.render import render_question_pages, validate_gold_pages
 from schema import PageSet
 
@@ -109,3 +109,26 @@ def test_resolve_and_render_question_pages(tmp_path: Path) -> None:
     assert all(page.image_path and page.image_path.is_file() for page in pages)
     assert "alpha page one" in pages[0].text
     assert "alpha page two" in pages[1].text
+
+
+def test_load_longdocurl_normalises_questions_and_resolves_pdf(tmp_path: Path) -> None:
+    data_dir = tmp_path / ".data"
+    root = data_dir / "longdocurl"
+    (root / "documents").mkdir(parents=True)
+    (root / "LongDocURL_public.jsonl").write_text(
+        '{"question_id":"qid-1","doc_no":"4026369","total_pages":70,'
+        '"start_end_idx":[60,70],"question_type":"extract","question":"Which value?",'
+        '"answer":["alpha","beta"],"page":[67],"evidence_sources":["Layout"],'
+        '"answer_format":"List","task_tag":"Understanding","pdf_path":"/remote/4026369.pdf"}\n'
+    )
+    write_pdf(root / "documents" / "4026369.pdf", ["page"] * 70)
+
+    question = load_longdocurl(data_dir=data_dir)[0]
+
+    assert question.id == "longdocurl:qid-1"
+    assert question.doc_id == "longdocurl:4026369"
+    assert question.doc_type == "Understanding"
+    assert question.evidence_pages == (67,)
+    assert question.evidence_sources == ("Layout",)
+    assert question.raw_fields["source_dataset"] == "longdocurl"
+    assert resolve_pdf(question.doc_id, data_dir=data_dir).name == "4026369.pdf"
