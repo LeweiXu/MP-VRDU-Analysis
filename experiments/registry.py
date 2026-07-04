@@ -46,6 +46,7 @@ ORDER: tuple[str, ...] = tuple(exp.name for exp in _EXPERIMENTS)
 
 GROUPS: dict[str, tuple[str, ...]] = {
     "all": ORDER,
+    "section2": ORDER[:7],
     "rq1": ("T1_headline", "T2_analytical", "T3_family", "T4_dataset"),
     "rq2": ("T5_composition", "T6_matched_cross"),
     "rq3": ("T7_routing",),

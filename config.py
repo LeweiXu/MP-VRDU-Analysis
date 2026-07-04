@@ -58,6 +58,28 @@ SMOKE_REASONER_SPEC = "qwen3vl-2b-local"
 DEFAULT_MAX_TOKENS = 256
 SMOKE_MAX_TOKENS = 64
 
+# Per-reasoner-size vision-token budget (max pixels per page fed to the image
+# processor). Bigger reasoners keep more weights/activations resident, so they
+# get a tighter per-page pixel cap to keep the visual sequence inside a 16GB
+# V100. Sizes not listed fall back to `ExperimentConfig.max_pixels`. Values are
+# `tokens * 28 * 28`, e.g. 768*28*28 -> ~800 vision tokens/page.
+MAX_PIXELS_BY_SIZE: dict[str, int] = {
+    "8b": 602_112,   # 768*28*28  -> ~800 tok/page
+    "32b": 401_408,  # 512*28*28  -> ~520 tok/page
+}
+
+
+def max_pixels_for_spec(spec: str, default: int) -> int:
+    """Return the per-page pixel cap for a reasoner spec (size-aware).
+
+    Falls back to `default` (usually `ExperimentConfig.max_pixels`) for the
+    smaller sizes that are not in `MAX_PIXELS_BY_SIZE`.
+    """
+
+    from models import ModelSpec
+
+    return MAX_PIXELS_BY_SIZE.get(ModelSpec.parse(spec).size, default)
+
 
 @dataclass(frozen=True)
 class ExperimentConfig:
@@ -97,6 +119,14 @@ class ExperimentConfig:
     dpi: int = 144
     sample: int | None = None
     max_tokens: int = DEFAULT_MAX_TOKENS
+
+    # Cap on how many pixels of a rendered page reach the local VLM image
+    # processor. 1280*28*28 = 1,003,520 px -> ~1300 vision tokens/page. Without a
+    # cap, 144-DPI pages are ~1.9M px (~2500 tokens each), and a multi-page oracle
+    # cell builds a long enough visual sequence that attention OOMs even a 2B
+    # model on a 16GB V100 (Volta has no FlashAttention-2, so SDPA falls back to
+    # the O(seq^2) math kernel). Tune down for the 8B or docs with many gold pages.
+    max_pixels: int = 1_003_520
 
     paths: ProjectPaths = field(default_factory=ProjectPaths)
 

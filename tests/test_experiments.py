@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -181,9 +182,38 @@ def test_guards_refuse_to_run() -> None:
 def test_registry_resolve() -> None:
     assert [e.name for e in registry.resolve("T1_headline")] == ["T1_headline"]
     assert [e.name for e in registry.resolve("rq2")] == ["T5_composition", "T6_matched_cross"]
+    assert [e.name for e in registry.resolve("section2")] == [
+        "T1_headline",
+        "T2_analytical",
+        "T3_family",
+        "T4_dataset",
+        "T5_composition",
+        "T6_matched_cross",
+        "T7_routing",
+    ]
     assert len(registry.resolve("all")) == 8
     with pytest.raises(ValueError):
         registry.resolve("nope")
+
+
+def test_run_generate_continue_on_error_records_per_experiment_status(tmp_path: Path, monkeypatch) -> None:
+    config = ExperimentConfig(smoke=True, paths=ProjectPaths(root=tmp_path, cache_dir=tmp_path / "results" / "cache"))
+    experiments = [SimpleNamespace(name="ok"), SimpleNamespace(name="bad"), SimpleNamespace(name="after")]
+
+    def fake_generate(config, exp, questions):  # noqa: ANN001
+        if exp.name == "bad":
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(driver, "resolve", lambda selector: experiments)
+    monkeypatch.setattr(driver, "generate", fake_generate)
+
+    statuses = driver.run_generate(config, "fake", [], continue_on_error=True)
+
+    assert [status.status for status in statuses] == ["success", "failed", "success"]
+    bad_status = experiment_paths(config, "bad").root / "generate_status.json"
+    after_status = experiment_paths(config, "after").root / "generate_status.json"
+    assert json.loads(bad_status.read_text())["error"] == "boom"
+    assert json.loads(after_status.read_text())["status"] == "success"
 
 
 def test_every_experiment_builds_its_table(tmp_path: Path, fake_channels) -> None:
@@ -197,7 +227,7 @@ def test_every_experiment_builds_its_table(tmp_path: Path, fake_channels) -> Non
 
     drv_reasoner = CountingReasoner()
     orig = drv._reasoner_for
-    drv._reasoner_for = lambda spec: drv_reasoner  # type: ignore[assignment]
+    drv._reasoner_for = lambda spec, config=None: drv_reasoner  # type: ignore[assignment]
     try:
         # Generate the two experiments that have reasoner cells (T1, T6). The
         # judge/build path never calls run_side, so the classifier/retrieval side

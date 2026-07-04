@@ -166,6 +166,7 @@ T7_routing         Table 7, routing policies with classifier cost
 rq1                T1-T4
 rq2                T5-T6
 rq3                T7
+section2           T1-T7, excluding deferred F7/T8 appendix work
 all                all registered experiments
 ```
 
@@ -218,9 +219,13 @@ Use `--questions N` for capped pilots that still use full-mode model/config.
 Generate a 10-question full-mode Table-1 pilot on Kaya:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:20:00 --mem 24G --cpus-per-task 2 \
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:20:00 --mem 32G --cpus-per-task 2 --gres gpu:v100:2 \
   kaya/generate.py -- --experiment T1_headline --full --questions 10
 ```
+
+Kaya's `gpu` partition is V100-based. Full-mode Qwen3-VL-8B can OOM on a
+single 16 GB V100 even for capped pilots, so use two V100s for full 8B
+generation. Smoke mode uses Qwen3-VL-2B and can use one GPU.
 
 Generate full Table 1:
 
@@ -264,6 +269,24 @@ envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T6_m
 envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T7_routing --full
 ```
 
+Run the Section-2 generation set (T1-T7) as one SLURM job, continuing past
+per-experiment failures:
+
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya submit \
+  --job-name section2_generate \
+  --gres gpu:v100:2 \
+  --cpus-per-task 2 \
+  --mem 32G \
+  --time 1-00:00:00 \
+  kaya/generate.py -- --experiment section2 --full --continue-on-error
+```
+
+Each experiment writes its own cache directory under
+`results/cache/full/<experiment>/`. The grouped generation command also writes
+`generate_status.json` in each experiment directory with `success` or failure
+details.
+
 F4-F6 aggregation-only or local judge/build commands:
 
 ```bash
@@ -277,15 +300,22 @@ envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T7_routing 
 
 ## Kaya Job Controls
 
+Check current GPU, memory, queue, and scheduler start-estimate status:
+
+```bash
+envs/mpvrdu/bin/python scripts/kaya_status.py
+envs/mpvrdu/bin/python scripts/kaya_status.py --json
+```
+
 `kaya.kaya submit` accepts SLURM overrides before the script path:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit \
   --job-name t1_10q \
   --partition gpu \
-  --gres gpu:1 \
+  --gres gpu:v100:2 \
   --cpus-per-task 2 \
-  --mem 24G \
+  --mem 32G \
   --time 00:20:00 \
   kaya/generate.py -- --experiment T1_headline --full --questions 10
 ```

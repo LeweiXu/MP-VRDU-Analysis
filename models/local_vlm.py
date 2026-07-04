@@ -104,15 +104,24 @@ def render_prompt(question: Question, model_input: ModelInput) -> RenderedPrompt
     )
 
 
-def _image_content(part: ImagePart) -> dict[str, str]:
-    """Return a Qwen chat-template content block for one image part."""
+def _image_content(part: ImagePart, max_pixels: int | None = None) -> dict[str, Any]:
+    """Return a Qwen chat-template content block for one image part.
 
-    if part.image_path is not None:
-        return {"type": "image", "image": str(part.image_path)}
-    return {"type": "image", "image": part.data_uri()}
+    When `max_pixels` is set it is attached to the block; `qwen_vl_utils`
+    downscales the page to that budget before tokenizing, which caps the vision
+    tokens per page and keeps the attention sequence from blowing up VRAM.
+    """
+
+    block: dict[str, Any] = {"type": "image"}
+    block["image"] = str(part.image_path) if part.image_path is not None else part.data_uri()
+    if max_pixels is not None:
+        block["max_pixels"] = int(max_pixels)
+    return block
 
 
-def messages_from_rendered_prompt(rendered: RenderedPrompt) -> list[dict[str, Any]]:
+def messages_from_rendered_prompt(
+    rendered: RenderedPrompt, max_pixels: int | None = None
+) -> list[dict[str, Any]]:
     """Interleave text and image blocks by replacing `<image>` placeholders."""
 
     pieces = rendered.text.split(IMAGE_PLACEHOLDER)
@@ -127,7 +136,7 @@ def messages_from_rendered_prompt(rendered: RenderedPrompt) -> list[dict[str, An
         if piece:
             content.append({"type": "text", "text": piece})
         if index < len(rendered.image_parts):
-            content.append(_image_content(rendered.image_parts[index]))
+            content.append(_image_content(rendered.image_parts[index], max_pixels))
     return [{"role": "user", "content": content}]
 
 
@@ -220,6 +229,7 @@ class LocalVLMBackend(Reasoner):
         *,
         model_id: str | None = None,
         max_new_tokens: int = 64,
+        max_pixels: int | None = None,
         processor: Any | None = None,
         model: Any | None = None,
         process_vision_info: Callable[[list[dict[str, Any]]], tuple[Any, Any]] | None = None,
@@ -228,6 +238,7 @@ class LocalVLMBackend(Reasoner):
         self.spec = spec
         self.model_id = model_id or model_id_for_spec(spec)
         self.max_new_tokens = int(max_new_tokens)
+        self.max_pixels = int(max_pixels) if max_pixels is not None else None
         self._processor = processor
         self._model = model
         self._process_vision_info = process_vision_info
@@ -276,7 +287,7 @@ class LocalVLMBackend(Reasoner):
 
     def answer(self, question: Question, model_input: ModelInput) -> Prediction:
         rendered = render_prompt(question, model_input)
-        messages = messages_from_rendered_prompt(rendered)
+        messages = messages_from_rendered_prompt(rendered, self.max_pixels)
         processor, model = self._load_components()
 
         chat_text = processor.apply_chat_template(
@@ -330,6 +341,7 @@ class LocalVLMBackend(Reasoner):
                 "model_id": self.model_id,
                 "prompt_template_version": PROMPT_TEMPLATE_VERSION,
                 "max_new_tokens": self.max_new_tokens,
+                "max_pixels": self.max_pixels,
                 "n_image_parts": len(rendered.image_parts),
                 "local_files_only": self.local_files_only,
                 "cache_dir": self.cache_dir,

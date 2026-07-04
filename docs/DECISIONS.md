@@ -221,6 +221,41 @@ Hugging Face local backend and `internvl3-8b-local` to
 `OpenGVLab/InternVL3-8B`. Other non-Qwen families remain explicitly stubbed
 until their replication stage.
 
+## Vision-token cap (CUDA OOM fix)
+
+The F1-F6 grid OOM'd on Kaya V100s (16GB) even for the 2B smoke model, allocating
+6.4 GiB inside a single SDPA attention op. Root cause was **not** model size: it
+was an uncapped visual sequence. `data/render.py` rasterizes pages at 144 DPI
+(~1.9M px = ~2500 vision tokens/page after Qwen's 28x28 merge), and
+`LocalVLMBackend` fed them through the processor with no `max_pixels`, so Qwen's
+~12.8M px default never downscaled them. A multi-page oracle cell built a 5k-10k
+token sequence; the V100 is Volta (sm_70) with no FlashAttention-2, so attention
+falls back to the O(seq^2) SDPA math kernel and the score tensor blew past 16GB.
+
+Fix: `ExperimentConfig.max_pixels` (default 1,003,520 = 1280*28*28, ~1300
+tokens/page) plus a size-aware override `config.max_pixels_for_spec` /
+`MAX_PIXELS_BY_SIZE` that tightens the cap for the bigger reasoners (8B ->
+602,112 = 768*28*28, ~800 tok/page; 32B -> 401,408 = 512*28*28, ~520 tok/page;
+2B/4B keep the 1.0M default). Threaded `get_reasoner(spec, max_new_tokens=,
+max_pixels=)` -> `LocalVLMBackend`, applied via the per-image `max_pixels` key
+that `qwen_vl_utils.process_vision_info` honors. Same wiring also fixed
+`_reasoner_for` ignoring `config.max_tokens` (full runs were capped at 64 new
+tokens). `kaya/generate.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
+True` as a fragmentation mitigation. InternVL is untouched (fixed 448px tiling
+already bounds its vision tokens). Not a frozen-interface change: `get_reasoner`
+gained optional kwargs; `Reasoner.answer` and the cache key are unchanged.
+
+**Verbose smoke tooling.** `experiments.driver.configure_logging(verbose)` sends
+`mpvrdu.*` logs to stdout; smoke runs are verbose (DEBUG) by default (`--quiet`
+opts out, `--verbose` forces it for full). The driver logs per-experiment banners
+and per-cell start/result lines; the orchestrator logs each stage (conditioner ->
+render -> representation -> reasoner -> judge) at DEBUG, so an OOM/crash points at
+the exact cell and stage. On failure the full traceback is logged to stdout (the
+SLURM log), not just the per-experiment `generate_status.json`. One
+`kaya.kaya submit kaya/generate.py -- --experiment section2 --continue-on-error`
+job runs all seven Section-2 tables (T1-T7) with per-experiment isolation: a
+failing table records its status and the run continues to the next.
+
 ## Kaya operational notes (hazards that recur)
 
 - **Queue waits.** The GPU request (`--partition=gpu --gres=gpu:1`) never changed;

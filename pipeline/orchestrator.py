@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -46,6 +47,9 @@ from pipeline.judge import Judge, get_judge
 from pipeline.reasoner import Reasoner
 from pipeline.representation import Representation, get_representation
 from schema import Page, PageSet, Prediction, Question, Score
+
+
+log = logging.getLogger("mpvrdu.orchestrator")
 
 
 @dataclass(frozen=True)
@@ -321,11 +325,20 @@ class Orchestrator:
         )
         cached = self.cache.get(cache_key)
         if cached is not None:
+            log.debug(
+                "result cache hit q=%s cond=%s rep=%s spec=%s judge=%s",
+                question.id,
+                conditioner.name,
+                representation.modality,
+                self.reasoner.spec,
+                self.judge.spec,
+            )
             return cached
 
         prediction, provenance, page_indices, note = self._resolve_prediction(
             question, conditioner, representation
         )
+        log.debug("stage=judge q=%s judge=%s", question.id, self.judge.spec)
         score: Score = self.judge.score(question, prediction)
 
         row = ResultRow(
@@ -378,13 +391,35 @@ class Orchestrator:
             )
             hit = self.prediction_cache.get(prediction_key)
             if hit is not None:
+                log.debug("prediction cache hit q=%s cond=%s rep=%s", question.id, conditioner.name, representation.modality)
                 return hit.as_prediction(), hit.provenance, tuple(hit.page_indices), hit.note
 
+        log.debug("stage=conditioner q=%s cond=%s", question.id, conditioner.name)
         page_set = conditioner.condition(question, self.page_count(question))
+        log.debug(
+            "  -> pages=%s provenance=%s note=%r",
+            list(page_set.page_indices),
+            page_set.provenance,
+            page_set.note,
+        )
+        log.debug("stage=render q=%s pages=%d dpi=%d", question.id, len(page_set.page_indices), self.config.dpi)
         pages = self.render_pages(question, page_set)
+        log.debug("stage=representation q=%s rep=%s pages=%d", question.id, representation.modality, len(pages))
         payload = representation.build(pages)
+        n_text = sum(1 for part in payload.parts if getattr(part, "text", None) is not None)
+        n_image = len(payload.parts) - n_text
+        text_chars = sum(len(getattr(part, "text", "") or "") for part in payload.parts)
+        log.debug("  -> payload parts: %d text (%d chars), %d image", n_text, text_chars, n_image)
         model_input = ModelInput.from_payload(payload)
+        log.debug("stage=reasoner q=%s spec=%s (generating)", question.id, model_spec)
         prediction: Prediction = self.reasoner.answer(question, model_input)
+        log.debug(
+            "  -> prediction latency=%.2fs in_txt=%d in_vis=%d out=%d",
+            prediction.latency_s,
+            prediction.input_text_tokens,
+            prediction.input_visual_tokens,
+            prediction.output_tokens,
+        )
 
         if self.prediction_cache is not None:
             self.prediction_cache.put(

@@ -62,8 +62,19 @@ class ModelSpec:
         return cls(name=raw, family=family, size=size, backend=backend)
 
 
-def get_reasoner(spec: str) -> Reasoner:
-    """Return a `Reasoner` for a model spec (the family swap point)."""
+def get_reasoner(
+    spec: str,
+    *,
+    max_new_tokens: int | None = None,
+    max_pixels: int | None = None,
+) -> Reasoner:
+    """Return a `Reasoner` for a model spec (the family swap point).
+
+    `max_new_tokens` / `max_pixels` are optional generation/vision-token caps for
+    the local backends; when omitted each backend keeps its own default. Callers
+    with an `ExperimentConfig` pass `config.max_tokens` / `config.max_pixels` so
+    the vision sequence stays bounded (see `config.ExperimentConfig.max_pixels`).
+    """
 
     parsed = ModelSpec.parse(spec)
     if parsed.backend == "stub":
@@ -73,11 +84,21 @@ def get_reasoner(spec: str) -> Reasoner:
     if parsed.family == "qwen3vl" and parsed.size in {"2b", "4b", "8b", "32b"} and parsed.backend == "local":
         from models.local_vlm import LocalVLMBackend
 
-        return LocalVLMBackend(parsed.name)
+        kwargs: dict[str, int] = {}
+        if max_new_tokens is not None:
+            kwargs["max_new_tokens"] = max_new_tokens
+        if max_pixels is not None:
+            kwargs["max_pixels"] = max_pixels
+        return LocalVLMBackend(parsed.name, **kwargs)
     if parsed.family == "internvl3" and parsed.size == "8b" and parsed.backend == "local":
         from models.internvl import LocalInternVLBackend
 
-        return LocalInternVLBackend(parsed.name)
+        # InternVL uses fixed 448px tiling, so its vision-token count is already
+        # bounded; only the generation cap is forwarded.
+        kwargs = {}
+        if max_new_tokens is not None:
+            kwargs["max_new_tokens"] = max_new_tokens
+        return LocalInternVLBackend(parsed.name, **kwargs)
     # Later stages dispatch non-Qwen local families and API backends here.
     from pipeline.reasoner import StubReasoner
 
