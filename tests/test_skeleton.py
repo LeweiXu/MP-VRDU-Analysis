@@ -139,6 +139,22 @@ def test_kaya_python_header_parsing(tmp_path: Path) -> None:
     assert override.offline is False
 
 
+def test_kaya_squeue_status_formatting() -> None:
+    """SLURM queue polling reports pending reasons and running elapsed time."""
+    from kaya.kaya import format_wait_status, parse_squeue_row
+
+    pending = parse_squeue_row("986240|gpu|m3-reasoner-smoke|lxu|PD|0:00|20:00|1|(Priority)")
+    running = parse_squeue_row("986240|gpu|m3-reasoner-smoke|lxu|R|3:23|20:00|1|k040")
+
+    assert pending is not None
+    assert running is not None
+    assert parse_squeue_row("not-enough-fields") is None
+    assert "pending" in format_wait_status(pending)
+    assert "(Priority)" in format_wait_status(pending)
+    assert "running for 3:23/20:00" in format_wait_status(running)
+    assert "k040" in format_wait_status(running)
+
+
 def test_data_package_is_code_not_artifacts() -> None:
     """The importable data package is separate from the ignored .data artifact root."""
     assert (ROOT / "data/__init__.py").is_file()

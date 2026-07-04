@@ -649,3 +649,53 @@ backend behind the frozen `Reasoner` ABC.
   for the smoke spec. The older pipeline skeleton tests now fake text/layout/
   visual channels locally so contract tests do not load Marker; real Marker
   coverage remains in M2 smoke tests and prestage.
+
+## 2026-07-04 Local RTX 5070 smoke environment
+
+- The existing `envs/mpvrdu` remains the Kaya-compatible environment. It pins
+  `torch==2.7.0+cu126`, which reported no local kernel support for the RTX 5070
+  (`sm_120`) and caused Marker/Surya CUDA execution to fail locally.
+- Added `requirements-local-rtx5070.txt` for a separate local-only env at
+  `envs/mpvrdu-local-gpu`. It installs PyTorch separately from the CUDA 12.8
+  wheel index (`torch==2.11.0`, `torchvision==0.26.0`, `torchaudio==2.11.0`) and
+  then installs the M3 local reasoner/tool dependencies without vLLM or the
+  retrieval stack. This env is for local M3/Qwen3-VL smoke iteration; Kaya full
+  setup still uses `requirements.txt`.
+
+## 2026-07-04 Kaya M3 offline cache fix
+
+- Kaya job `986240` proved that prestage had downloaded
+  `Qwen/Qwen3-VL-2B-Instruct` under `.cache/models--Qwen--Qwen3-VL-2B-Instruct`,
+  but `transformers` searched its default Hub cache while compute-node offline
+  mode was enabled. The runner and prestage helper now export
+  `HF_HUB_CACHE=<root>/.cache`, unset inherited `TRANSFORMERS_CACHE`, and the
+  local Qwen backend passes the Hub cache root as `cache_dir` to
+  `AutoProcessor.from_pretrained()` and `Qwen3VLForConditionalGeneration`.
+- The same failed run showed Marker/Surya writing to
+  `/home/lxu/.cache/datalab/models` on the compute node. `prepare_tool_cache_env`
+  now overwrites inherited cache variables instead of using `setdefault()`, and
+  `kaya.kaya` exports `MODEL_CACHE_DIR`, Paddle, Docling, Matplotlib, Torch, and
+  Xet cache paths in every remote prelude. Compute jobs should therefore read
+  and write root-relative caches only.
+
+## 2026-07-04 Stage M4 implementation log
+
+- Added `experiments.runner.run_oracle_ladder()`, which expands a question set
+  over `OracleConditioner` and the requested representation rungs while leaving
+  single-cell execution and cache ownership in `pipeline.orchestrator`.
+- Added `kaya/ladder_smoke.py`, a GPU/offline smoke entry point for the M4
+  barrier. It runs the frozen smoke questions through the oracle ladder, prints
+  one JSON row per cached result, and performs a second pass that must be all
+  cache hits unless `--no-cache-check` is supplied.
+- Added `tests/test_ladder_e2e.py`, covering one cached row per fixture smoke
+  question/rung, the text-only boundary for `T`/`TL`, image attachment for
+  `TLV`/`V`, fresh-orchestrator cache resumption with no reasoner calls, and
+  distinct cache keys for different model specs.
+
+## 2026-07-04 Kaya queue wait verbosity
+
+- `kaya.kaya submit`/GPU `run` now poll `squeue` with a pipe-delimited format
+  and print one status line per poll. Pending jobs report SLURM's reason field
+  such as `(Priority)` or `(Resources)`; running jobs report elapsed runtime,
+  time limit, node list, and node count. When `squeue` no longer reports the
+  job, the runner prints how long the local wait lasted before showing `sacct`.

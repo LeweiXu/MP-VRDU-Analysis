@@ -25,7 +25,7 @@ import torch
 from PIL import Image
 
 from models import get_reasoner
-from models.local_vlm import LocalVLMBackend, PROMPT_TEMPLATE_VERSION, render_prompt
+from models.local_vlm import LocalVLMBackend, PROMPT_TEMPLATE_VERSION, hf_cache_dir_from_env, render_prompt
 from models.payload import ModelInput
 from schema import ImagePart, Question, TextPart
 
@@ -166,6 +166,18 @@ def test_registry_dispatches_smoke_spec_to_local_backend() -> None:
 
     assert isinstance(reasoner, LocalVLMBackend)
     assert reasoner.model_id == "Qwen/Qwen3-VL-2B-Instruct"
+
+
+def test_local_vlm_uses_repo_hub_cache_env(tmp_path: Path, monkeypatch) -> None:
+    cache_dir = tmp_path / ".cache"
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-home"))
+    monkeypatch.setenv("TRANSFORMERS_CACHE", str(tmp_path / "transformers"))
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache_dir))
+
+    reasoner = backend()
+
+    assert hf_cache_dir_from_env() == str(cache_dir)
+    assert reasoner.cache_dir == str(cache_dir)
 
 
 def test_image_path_prompt_binding(tmp_path: Path) -> None:

@@ -1,0 +1,54 @@
+# Local RTX 5070 / Blackwell Section-1 MVP smoke environment.
+#
+# This file is intentionally not the Kaya requirements file. It excludes vLLM
+# because local M3/M4 reasoner smoke uses the Transformers backend directly,
+# while vLLM is retained for Kaya/full-run work. PyTorch is installed separately
+# from the CUDA 12.8 index so the RTX 5070's sm_120 kernels are supported.
+#
+# Install PyTorch first from the CUDA 12.8 index, then install this file:
+#
+#   conda create -y -p envs/mpvrdu-local-gpu python=3.11 pip
+#   envs/mpvrdu-local-gpu/bin/python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0
+#   envs/mpvrdu-local-gpu/bin/python -m pip install -r requirements-local-rtx5070.txt
+#
+# If this env previously installed the latest LangChain 1.x stack through
+# PaddleX extras, remove those stale packages before `pip check`:
+#
+#   envs/mpvrdu-local-gpu/bin/python -m pip uninstall -y langgraph langgraph-sdk langgraph-prebuilt langgraph-checkpoint langchain-classic
+#
+# The target local path is Section-1 MVP smoke: prestage/tool smoke, M3 reasoner
+# smoke, and M4 oracle ladder smoke. Section-2/full sweeps should still run on
+# Kaya with `requirements.txt`.
+
+accelerate==1.8.1
+transformers==4.57.6
+qwen-vl-utils==0.0.11
+PyMuPDF==1.26.3
+paddleocr==3.1.0
+# PaddleOCR 3.1 requests PaddleX's broader extras. Pin the OpenAI/LangChain
+# side to the last 0.3 LangChain line so it stays compatible with Marker's
+# `openai<2` requirement.
+paddlex[ocr]>=3.1.0,<3.2.0
+paddlepaddle==3.0.0
+docling==2.41.0
+marker-pdf==1.10.2
+openai==1.109.1
+langchain==0.3.30
+langchain-community==0.3.31
+langchain-core==0.3.86
+langchain-openai==0.3.35
+langchain-text-splitters==0.3.11
+rank-bm25==0.2.2
+FlagEmbedding==1.3.5
+colpali-engine==0.3.13
+datasets==3.6.0
+huggingface_hub==0.34.4
+hf_xet>=1.1.5,<2.0.0
+pillow==10.4.0
+numpy==2.2.6
+scipy==1.15.3
+pandas==2.3.1
+pyarrow==24.0.0
+requests==2.34.2
+chardet==5.2.0
+pytest==8.4.1

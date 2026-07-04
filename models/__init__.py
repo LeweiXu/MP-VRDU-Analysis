@@ -23,8 +23,10 @@ Arguments:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from pipeline.reasoner import Reasoner, StubReasoner
+if TYPE_CHECKING:
+    from pipeline.reasoner import Reasoner
 
 
 @dataclass(frozen=True)
@@ -65,10 +67,14 @@ def get_reasoner(spec: str) -> Reasoner:
 
     parsed = ModelSpec.parse(spec)
     if parsed.backend == "stub":
+        from pipeline.reasoner import StubReasoner
+
         return StubReasoner(spec="stub")
     if parsed.family == "qwen3vl" and parsed.size == "2b" and parsed.backend == "local":
         from models.local_vlm import LocalVLMBackend
 
         return LocalVLMBackend(parsed.name)
     # Later stages dispatch the remaining local sizes and API backends here.
+    from pipeline.reasoner import StubReasoner
+
     return StubReasoner(spec=parsed.name)

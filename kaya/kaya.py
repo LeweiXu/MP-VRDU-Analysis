@@ -90,6 +90,21 @@ class RunSettings:
     job_name: str | None = None
 
 
+@dataclass(frozen=True)
+class SqueueJobStatus:
+    """One parsed `squeue` row for a submitted SLURM job."""
+
+    job_id: str
+    partition: str
+    name: str
+    user: str
+    state: str
+    elapsed: str
+    time_limit: str
+    nodes: str
+    reason: str
+
+
 def load_config(path: Path = DEFAULT_CONFIG) -> KayaConfig:
     """Load the static Kaya JSON configuration."""
 
@@ -269,9 +284,18 @@ def artifact_exports(config: KayaConfig, *, offline: bool) -> list[str]:
     values = {
         "PYTHONPATH": config.remote_root,
         "HF_HOME": cache,
+        "HF_HUB_CACHE": cache,
         "HF_DATASETS_CACHE": f"{cache}/datasets",
+        "HF_XET_CACHE": f"{cache}/xet",
         "TORCH_HOME": f"{cache}/torch",
         "PIP_CACHE_DIR": f"{cache}/pip",
+        "MODEL_CACHE_DIR": f"{cache}/datalab/models",
+        "PADDLE_HOME": f"{cache}/paddle",
+        "PADDLEOCR_HOME": f"{cache}/paddleocr",
+        "PADDLE_PDX_CACHE_HOME": f"{cache}/paddlex",
+        "PADDLE_PDX_MODEL_SOURCE": "huggingface",
+        "DOCLING_CACHE_DIR": f"{cache}/docling",
+        "MPLCONFIGDIR": f"{cache}/matplotlib",
     }
     if offline:
         values.update(
@@ -281,7 +305,8 @@ def artifact_exports(config: KayaConfig, *, offline: bool) -> list[str]:
                 "TRANSFORMERS_OFFLINE": "1",
             }
         )
-    return [f"export {name}={quote(value)}" for name, value in values.items()]
+    exports = [f"export {name}={quote(value)}" for name, value in values.items()]
+    return ["unset TRANSFORMERS_CACHE", *exports]
 
 
 def activate_env_commands(config: KayaConfig) -> list[str]:
@@ -523,20 +548,91 @@ def submit_remote_sbatch(
     return job_id
 
 
+def parse_squeue_row(line: str) -> SqueueJobStatus | None:
+    """Parse one pipe-delimited `squeue` status row."""
+
+    parts = line.rstrip("\n").split("|", 8)
+    if len(parts) != 9:
+        return None
+    return SqueueJobStatus(*parts)
+
+
+def squeue_statuses(config: KayaConfig, job_id: str) -> list[SqueueJobStatus]:
+    """Return current queue rows for a job id."""
+
+    simple_job_id = job_id.split(";", 1)[0]
+    fmt = "%i|%P|%j|%u|%t|%M|%l|%D|%R"
+    result = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "ConnectTimeout=10",
+            config.ssh_alias,
+            f"squeue -h -j {quote(simple_job_id)} -o {quote(fmt)}",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or f"squeue exited {result.returncode}"
+        raise RuntimeError(message)
+    statuses: list[SqueueJobStatus] = []
+    for line in result.stdout.splitlines():
+        status = parse_squeue_row(line)
+        if status is not None:
+            statuses.append(status)
+    return statuses
+
+
+def format_wait_status(status: SqueueJobStatus) -> str:
+    """Return one human-readable queue status line."""
+
+    state_names = {
+        "PD": "pending",
+        "R": "running",
+        "CG": "completing",
+        "CF": "configuring",
+        "S": "suspended",
+    }
+    state = state_names.get(status.state, status.state)
+    if status.state == "PD":
+        return (
+            f"Job {status.job_id} pending for {status.elapsed}/{status.time_limit} "
+            f"on partition {status.partition}: {status.reason}"
+        )
+    if status.state in {"R", "CG"}:
+        return (
+            f"Job {status.job_id} {state} for {status.elapsed}/{status.time_limit} "
+            f"on {status.reason} ({status.nodes} node(s))"
+        )
+    return (
+        f"Job {status.job_id} {state} elapsed={status.elapsed}/{status.time_limit} "
+        f"partition={status.partition} reason={status.reason}"
+    )
+
+
 def wait_for_job(config: KayaConfig, job_id: str) -> None:
     """Block until a SLURM job leaves the queue and print accounting output."""
 
     poll = int(config.slurm.get("poll_seconds", 10))
-    print(f"Waiting for job {job_id} to leave the queue...")
+    simple_job_id = job_id.split(";", 1)[0]
+    start = time.monotonic()
+    print(f"Waiting for job {simple_job_id} to leave the queue (poll every {poll}s)...")
     while True:
-        result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=10", config.ssh_alias, f"squeue -h -j {quote(job_id)}"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if not result.stdout.strip():
+        try:
+            statuses = squeue_statuses(config, simple_job_id)
+        except RuntimeError as exc:
+            waited_s = int(time.monotonic() - start)
+            print(f"[wait {waited_s}s] squeue failed: {exc}; retrying in {poll}s")
+            time.sleep(poll)
+            continue
+        waited_s = int(time.monotonic() - start)
+        if not statuses:
+            print(f"Job {simple_job_id} left the queue after {waited_s}s.")
             break
+        primary = statuses[0]
+        print(f"[wait {waited_s}s] {format_wait_status(primary)}", flush=True)
         time.sleep(poll)
     subprocess.run(
         [
@@ -544,7 +640,7 @@ def wait_for_job(config: KayaConfig, job_id: str) -> None:
             "-o",
             "ConnectTimeout=10",
             config.ssh_alias,
-            f"sacct -j {quote(job_id)} --format=JobID,JobName,State,Elapsed,ExitCode --noheader",
+            f"sacct -j {quote(simple_job_id)} --format=JobID,JobName,State,Elapsed,ExitCode --noheader",
         ],
         text=True,
         check=False,

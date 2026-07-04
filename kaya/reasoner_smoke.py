@@ -34,6 +34,7 @@ import json
 
 from config import ExperimentConfig
 from experiments.smoke import load_smoke_questions
+from kaya.prestage import prepare_tool_cache_env
 from pipeline.conditioner import OracleConditioner
 from pipeline.orchestrator import Orchestrator, ResultCache
 
@@ -58,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = ExperimentConfig(smoke=True)
+    prepare_tool_cache_env(config.paths.hf_home)
     questions = [question for question in load_smoke_questions(config.paths.data_dir) if question.evidence_pages]
     selected = questions[: max(1, args.questions)]
     representations = tuple(args.representation or config.representations)

@@ -182,3 +182,36 @@ def test_prestage_tool_device_override_wins(tmp_path: Path, monkeypatch) -> None
     prestage.prepare_tool_cache_env(tmp_path / ".cache", tool_device="cpu")
 
     assert os.environ["TORCH_DEVICE"] == "cpu"
+
+
+def test_prestage_cache_env_overrides_home_defaults(tmp_path: Path, monkeypatch) -> None:
+    import kaya.prestage as prestage
+
+    cache_dir = tmp_path / ".cache"
+    monkeypatch.setenv("MODEL_CACHE_DIR", "/home/lxu/.cache/datalab/models")
+    monkeypatch.setenv("TRANSFORMERS_CACHE", "/home/lxu/.cache/huggingface/transformers")
+    monkeypatch.setenv("HF_HUB_CACHE", "/home/lxu/.cache/huggingface/hub")
+
+    prestage.prepare_tool_cache_env(cache_dir)
+
+    assert os.environ["MODEL_CACHE_DIR"] == str(cache_dir / "datalab" / "models")
+    assert "TRANSFORMERS_CACHE" not in os.environ
+    assert os.environ["HF_HUB_CACHE"] == str(cache_dir)
+
+
+def test_kaya_artifact_exports_align_repo_cache_roots(tmp_path: Path) -> None:
+    from kaya.kaya import KayaConfig, artifact_exports
+
+    config = KayaConfig({"remote_root": str(tmp_path), "paths": {"cache": ".cache"}}, Path("kaya/config.json"))
+
+    lines = artifact_exports(config, offline=True)
+    values = {
+        line.removeprefix("export ").split("=", 1)[0]: line.removeprefix("export ").split("=", 1)[1]
+        for line in lines
+        if line.startswith("export ")
+    }
+
+    assert "unset TRANSFORMERS_CACHE" in lines
+    assert values["HF_HOME"] == f"{tmp_path}/.cache"
+    assert values["HF_HUB_CACHE"] == f"{tmp_path}/.cache"
+    assert values["MODEL_CACHE_DIR"] == f"{tmp_path}/.cache/datalab/models"

@@ -165,17 +165,18 @@ def prepare_tool_cache_env(cache_dir: Path, *, tool_device: str | None = None) -
         cache_dir / "torch",
     ]:
         path.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("PADDLE_HOME", str(cache_dir / "paddle"))
-    os.environ.setdefault("PADDLEOCR_HOME", str(cache_dir / "paddleocr"))
-    os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(cache_dir / "paddlex"))
-    os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "huggingface")
-    os.environ.setdefault("DOCLING_CACHE_DIR", str(cache_dir / "docling"))
-    os.environ.setdefault("MPLCONFIGDIR", str(cache_dir / "matplotlib"))
-    os.environ.setdefault("TORCH_HOME", str(cache_dir / "torch"))
-    os.environ.setdefault("HF_HOME", str(cache_dir))
-    os.environ.setdefault("HF_XET_CACHE", str(cache_dir / "xet"))
-    os.environ.setdefault("TRANSFORMERS_CACHE", str(cache_dir / "transformers"))
-    os.environ.setdefault("MODEL_CACHE_DIR", str(cache_dir / "datalab" / "models"))
+    os.environ["PADDLE_HOME"] = str(cache_dir / "paddle")
+    os.environ["PADDLEOCR_HOME"] = str(cache_dir / "paddleocr")
+    os.environ["PADDLE_PDX_CACHE_HOME"] = str(cache_dir / "paddlex")
+    os.environ["PADDLE_PDX_MODEL_SOURCE"] = "huggingface"
+    os.environ["DOCLING_CACHE_DIR"] = str(cache_dir / "docling")
+    os.environ["MPLCONFIGDIR"] = str(cache_dir / "matplotlib")
+    os.environ["TORCH_HOME"] = str(cache_dir / "torch")
+    os.environ["HF_HOME"] = str(cache_dir)
+    os.environ["HF_HUB_CACHE"] = str(cache_dir)
+    os.environ["HF_XET_CACHE"] = str(cache_dir / "xet")
+    os.environ.pop("TRANSFORMERS_CACHE", None)
+    os.environ["MODEL_CACHE_DIR"] = str(cache_dir / "datalab" / "models")
     if tool_device:
         os.environ["TORCH_DEVICE"] = tool_device
 

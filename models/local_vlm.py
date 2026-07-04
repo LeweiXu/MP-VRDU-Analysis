@@ -83,6 +83,16 @@ def offline_mode_enabled() -> bool:
     return any(os.environ.get(name) for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"))
 
 
+def hf_cache_dir_from_env() -> str | None:
+    """Return the configured Hub cache root used by repo prestage."""
+
+    for name in ("HF_HUB_CACHE", "TRANSFORMERS_CACHE", "HF_HOME"):
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def render_prompt(question: Question, model_input: ModelInput) -> RenderedPrompt:
     """Apply the frozen M3 prompt template to one question/model input pair."""
 
@@ -222,6 +232,7 @@ class LocalVLMBackend(Reasoner):
         self._model = model
         self._process_vision_info = process_vision_info
         self.local_files_only = offline_mode_enabled() if local_files_only is None else bool(local_files_only)
+        self.cache_dir = hf_cache_dir_from_env()
 
     def _load_components(self) -> tuple[Any, Any]:
         """Load and cache the Qwen processor/model pair."""
@@ -240,6 +251,8 @@ class LocalVLMBackend(Reasoner):
             "trust_remote_code": True,
             "local_files_only": self.local_files_only,
         }
+        if self.cache_dir:
+            common_kwargs["cache_dir"] = self.cache_dir
         processor = AutoProcessor.from_pretrained(self.model_id, **common_kwargs)
         model = model_cls.from_pretrained(
             self.model_id,
@@ -319,6 +332,7 @@ class LocalVLMBackend(Reasoner):
                 "max_new_tokens": self.max_new_tokens,
                 "n_image_parts": len(rendered.image_parts),
                 "local_files_only": self.local_files_only,
+                "cache_dir": self.cache_dir,
                 "load_class": "Qwen3VLForConditionalGeneration",
             },
         )
