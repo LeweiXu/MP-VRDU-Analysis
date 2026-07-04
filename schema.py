@@ -20,14 +20,16 @@ MMLongBench-Doc source mapping for `Question`:
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, Union
 
 
 Hop = Literal["none", "single", "multi"]
 PageSetProvenance = Literal["oracle", "retrieved", "full", "buried"]
+Modality = Literal["T", "TL", "TLV", "V"]
 
 
 def derive_hop(page_indices: tuple[int, ...]) -> Hop:
@@ -128,23 +130,108 @@ class Page:
 
 
 @dataclass(frozen=True)
-class Payload:
-    """Placeholder representation payload filled by later pipeline stages."""
+class TextPart:
+    """One ordered text fragment in a payload / model input."""
 
-    parts: tuple[Any, ...] = ()
+    text: str
+
+
+@dataclass(frozen=True)
+class ImagePart:
+    """One ordered image, referenced by path or carried inline as bytes.
+
+    A part sourced from disk keeps its `image_path`; a part reconstructed from a
+    serialised model input (e.g. a base64 data URI) carries decoded `data`
+    instead. `read_bytes()`/`data_uri()` hide that difference from callers, so
+    the local and API adapters never need to know where the image came from.
+    """
+
+    image_path: Path | None = None
+    data: bytes | None = None
+    mime: str = "image/png"
+
+    def __post_init__(self) -> None:
+        if self.image_path is None and self.data is None:
+            raise ValueError("ImagePart needs either an image_path or inline data")
+        if self.image_path is not None:
+            object.__setattr__(self, "image_path", Path(self.image_path))
+
+    def read_bytes(self) -> bytes:
+        """Return the raw image bytes regardless of source."""
+
+        if self.data is not None:
+            return self.data
+        return Path(self.image_path).read_bytes()  # type: ignore[arg-type]
+
+    def data_uri(self) -> str:
+        """Return a base64 `data:` URI usable in a chat image_url part."""
+
+        encoded = base64.b64encode(self.read_bytes()).decode("ascii")
+        return f"data:{self.mime};base64,{encoded}"
+
+
+Part = Union[TextPart, ImagePart]
+
+
+@dataclass(frozen=True)
+class Payload:
+    """Ordered representation output produced by a `Representation` composer.
+
+    `modality` is the ladder rung that built it (`T`, `TL`, `TLV`, `V`). The
+    modality-boundary rule from the spec is enforced structurally here: `T` and
+    `TL` payloads may not carry images, only `TLV` and `V` may. The reasoner-
+    facing `ModelInput` (`models/payload.py`) is derived from this payload.
+    """
+
+    modality: Modality
+    parts: tuple[Part, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parts", tuple(self.parts))
+        if self.modality in ("T", "TL") and self.image_parts:
+            raise ValueError(
+                f"modality {self.modality!r} may not attach images "
+                "(only TLV and V may carry a visual channel)"
+            )
+
+    @property
+    def text_parts(self) -> tuple[TextPart, ...]:
+        return tuple(p for p in self.parts if isinstance(p, TextPart))
+
+    @property
+    def image_parts(self) -> tuple[ImagePart, ...]:
+        return tuple(p for p in self.parts if isinstance(p, ImagePart))
 
 
 @dataclass(frozen=True)
 class Prediction:
-    """Placeholder model prediction filled by later reasoner stages."""
+    """A reasoner's answer plus the cost accounting that Stage 6 fills in.
+
+    Token counts are split text vs visual so the accuracy-cost analysis (RQ4)
+    can price the visual channel separately. The Stage 3 stub reasoner returns a
+    fixed answer with the cost fields zeroed.
+    """
 
     text: str
+    model_spec: str = ""
+    input_text_tokens: int = 0
+    input_visual_tokens: int = 0
+    output_tokens: int = 0
+    latency_s: float = 0.0
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class Score:
-    """Placeholder judge score filled by later metric stages."""
+    """A judge's verdict on one prediction.
+
+    `value` is the graded correctness in [0, 1]; `correct`/`abstained` are the
+    boolean views the accuracy and abstention metrics read. The Stage 3 stub
+    judge returns a heuristic; the real different-family judge lands in Stage 7.
+    """
 
     value: float
+    correct: bool = False
+    abstained: bool = False
+    judge_spec: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)

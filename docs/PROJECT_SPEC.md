@@ -1,273 +1,165 @@
-# Project Specification — Vision-Sufficiency and Representation Choice in Multi-Page Document Understanding
+# Project Specification — A Doc-Type Recipe for Multi-Page Document QA (v3)
 
-> Full standalone spec (v2). Read with `context.md` (decision history), `dataset_profile.md`
-> (real per-dataset field availability), and `MP-VRDU_Survey.md` (the survey whose open
-> challenges this study addresses). This document is authoritative for what to build and what
-> to run. Dataset claims here are grounded in the actual profile report, not assumptions.
-> This version supersedes v1: the four-RQ-plus-ablations structure is replaced by nine
-> research questions in three groups, and routing and abstention are promoted to full RQs.
+> The authoritative statement of *what* the paper claims and *why*. The companion
+> `implementation_plan.md` governs *how* the codebase is built. This spec mirrors the v3
+> experimental plan and supersedes all earlier multi-topic / nine-RQ / three-topic specs.
+> Where an older doc disagrees, this file is current.
 
 ---
 
-## 1. Background
+## 1. One-line thesis
 
-Real-world documents (contracts, financial filings, ESG reports, technical manuals) routinely
-span tens to hundreds of pages. Most visually-rich document understanding (VRDU) research
-assumes a single page and reports a single answer-accuracy number that conflates two distinct
-failures: failing to **locate** the answer-bearing pages, and failing to **reason** correctly
-over them once found. This conflation hides *why* a system fails and therefore *what to fix*.
+**The representation an MP-VRDU system requires is a function of document type, not a single
+property of the model.** We measure this function on a controlled representation ladder, turn it
+into a deployment recipe indexed by document type, and explain the recipe through evidence
+composition.
 
-The cost of guessing is highest under a concrete deployment constraint: sensitive documents
-cannot be sent to cloud APIs and must be processed **on-premise with small, locally hosted
-vision-language models (VLMs)** in the 3B–32B range. There, the most expensive single design
-choice is whether to encode pages as **images** at all (vision encoding dominates GPU cost),
-yet that choice is currently made without evidence.
+Venue target: **EACL long paper** (8 pages). Everything not serving the thesis is moved to the
+honours thesis or explicitly cut.
 
-## 2. Research gap (grounded in the MP-VRDU survey)
+## 2. Motivation
 
-The companion survey (`MP-VRDU_Survey.md`) organises MP-VRDU systems into four architectural
-families (page-to-document encoders, MLLM-centric adaptation, retrieval-augmented pipelines,
-adaptive-trajectory/agentic pipelines) and concludes that **progress repeatedly relocates the
-bottleneck rather than removing it**, with no controlled, like-for-like measurement of where
-difficulty actually lies. Three of the survey's five named open challenges are *measurement*
-problems that a controlled empirical study is the right instrument for, and this study targets
-exactly those:
+Sensitive documents (medical records, contracts, financial filings, compliance reports) cannot be
+sent to a cloud API; they must be processed on-premise with a self-hosted open MLLM, realistically
+3B–32B. Under that constraint the expensive design choices are made without evidence:
 
-- **Efficiency and deployability.** The survey notes the literature reports almost no
-  inference-cost analysis (latency, token budgets, accuracy–cost Pareto curves are "largely
-  absent") and explicitly flags compact models under on-device/privacy constraints as future
-  work. → Addressed by RQ1–RQ5 (the deployment lens), with cost promoted to a first-class axis
-  (RQ4).
-- **Evaluation methodology and scope.** Answer-only accuracy masks retrieval failure and
-  rewards correct answers reached by incorrect reasoning. → Addressed by the
-  locating-vs-reasoning decomposition (RQ7) and the question-type/evidence-modality view (RQ6).
-- **Supervision integrity and contamination.** Benchmarks reuse documents (MMLongBench-Doc
-  draws from DUDE/SlideVQA/ChartQA) and are often judged by the same MLLM family. → Addressed
-  by uniform re-scoring with a different-family judge, a memory-guessing check, and cross-suite
-  overlap disclosure (Section 8).
+- Do you need to feed pages as images at all? Vision encoding is the most expensive thing on the
+  GPU; if cheap text suffices for your documents, the saving is large.
+- Does the answer depend on what kind of document you have? A contract corpus and a slide-deck
+  corpus are not the same problem; one recipe cannot serve both without waste.
+- Without doc-type labels, is it worth classifying each document? Routing adds a classifier's own
+  cost; if a uniform policy is nearly as good, routing is dead weight.
 
-The study is therefore positioned as **the controlled measurement layer the survey says the
-field is missing**: it does not propose a new method, but produces per-document-type,
-per-representation, cost-aware measurements that future method work (any of the four families)
-can build on.
+The contribution is a **recipe indexed by document type**, plus the mechanism that explains it.
 
-## 3. What the study is (and is not)
+## 3. Central construct: the representation ladder
 
-- **Is:** a document-**understanding** analysis. Primary axis = **reasoning** (accuracy given
-  evidence in a controlled representation), studied across document type, question type,
-  representation, model size, and **cost**, and extended to two deployment decisions a
-  practitioner actually faces: whether to **route** by document type, and whether the system
-  **abstains** when evidence is missing.
-- **Covariates (measured, not studied):** retrieval quality (page-F1) and document-type
-  classifier accuracy. Both are instruments that let us attribute error and bound the value of
-  a deployment decision.
-- **Is not:** a retrieval/RAG benchmark, a new method, a new dataset, or a per-domain
-  architecture study. Routing is studied only at the level of the *representation* decision,
-  not at the level of swapping models or pipelines per domain.
+The cost knob is *how evidence is represented*. Holding gold pages fixed, page content is fed from
+cheapest to most expensive; we find the cheapest form that still works, separately per document
+type.
 
-## 4. Experimental setup
-
-### 4.1 Input conditions (control which pages reach the model)
-
-| Condition | Pages fed | Role |
+| Rung | Content | Role |
 |---|---|---|
-| **Oracle** | exactly the gold evidence pages | the reasoning measurement (primary) |
-| **Retrieved top-k** | k pages from a real retriever (k∈{1,3,5}) | realistic performance + decomposition + abstention |
-| **Full document** | all pages (where context allows) | feed-everything baseline |
+| `T` | raw text (Marker-extracted) | reference (cheap) |
+| `T+L` | text + serialized bbox layout (JSON) | cumulative |
+| `T+L+V` | text + layout + native-resolution page image | cumulative |
+| `V` | page image only | parser-independent reference |
 
-Decomposition: Oracle = reasoning ceiling; (Oracle − Retrieved) read through retriever page-F1
-= locating- vs reasoning-attributable error; (Oracle − Full-doc) = distraction/long-context
-penalty.
+The ladder is cumulative on `T`/`T+L`/`T+L+V` (marginal value of each added modality); `V` is the
+parser-independent reference.
 
-### 4.2 Representation — two levels
+## 4. Deployable vs analytical axes
 
-**Modality (primary cumulative sweep, run across the design):**
+- **Document type is deployable.** A lightweight classifier can predict it from the first pages
+  (RQ3), so recipes may be indexed by it.
+- **Question type is analytical only.** It is used to *explain* the recipe (mechanism), never in a
+  deployment recommendation, because a practitioner does not know a question's type in advance.
 
-| Condition | Channels | Type |
-|---|---|---|
-| `T` | raw text | reference |
-| `T+L` | text + layout/structure | cumulative |
-| `T+L+V` | text + layout + visual | cumulative |
-| `V` | visual only | reference |
+## 5. Research questions
 
-**Extraction method (representation-recovery ablations, RQ8–RQ9)** — varied only where the
-method choice can change the outcome; null cells reported as deliberately-not-run with
-rationale:
-- **RQ8 (text):** embedded (PyMuPDF) vs OCR (PaddleOCR), read as the cost of always using OCR
-  (born-digital control vs scanned/degraded slice).
-- **RQ9 (layout):** geometry (PP-StructureV3 bbox) vs structure (Docling markdown) on
-  table/layout-evidence questions; plus, parse held fixed, serialisation format
-  Markdown vs HTML vs XML.
-- **Visual granularity** (full-page vs region-crop vs resolution) is folded into the cost
-  analysis (RQ4) rather than run as a standalone ablation, since it is inseparable from token
-  cost.
+**RQ1 — Recipe by doc type (what to build).** Given the correct pages, what is the cheapest
+representation that lets an 8B MLLM reason to an answer, and does that frontier depend on document
+type? *Deliverable:* a 3-row headline table (text-heavy / in-between / visual-heavy) × four
+representations, sufficiency frontier marked; replicated on a second model family and a second
+dataset.
 
-**Modality-boundary rule:** text/layout extraction is **modular (non-VLM)** only; the VLM is
-confined to the visual condition. Parser held fixed for main results (Docling); one re-run with
-Marker confirms findings are not a parser artifact.
+**RQ2 — Mechanism behind the recipe (why it looks that way).** What explains the doc-type effect,
+and does retrieval require the same modality as reasoning? *Deliverable:* (a) the doc-type effect
+re-expressed as an evidence-composition effect (the recipe is what it is because a text-heavy
+corpus is X% pure-text evidence); (b) matched vs cross (text-retrieval + vision-reasoning)
+pipelines, with cross wins explained via a locate–reason modality divergence — a page can be
+text-locatable but vision-reasoned.
 
-### 4.3 Models
+**RQ3 — Routing under uncertainty (what to do without labels).** Without gold doc-type labels,
+does running a lightweight classifier and dispatching to the RQ1 recipe beat a uniform policy,
+once the classifier's own cost is counted? *Deliverable:* corpus-level accuracy and total cost of
+four policies — oracle routing, predicted routing, uniform-cheapest, uniform-strongest; classifier
+latency is added into predicted-routing cost, not hidden.
 
-Qwen2.5-VL **3B / 7B / 32B** (one family; 7B = center). vLLM/HF on Tesla V100s. Confirm 32B
-full-document feasibility early; otherwise scope 32B to oracle/retrieved. Judge = a different
-family; report judge–human agreement on ~100 hand-labelled items before trusting any number.
+## 6. Pre-registered setup
 
-### 4.4 Tools per representation method
+Every choice below is fixed before the main runs.
 
-| Modality | Method | Tool | License |
-|---|---|---|---|
-| Text | embedded | PyMuPDF (raw) | BSD |
-| Text | OCR | PaddleOCR classic PP-OCRv5 | Apache-2.0 |
-| Layout | markdown | Docling (primary) | MIT |
-| Layout | markdown (2nd parser) | Marker (robustness) | restricted* |
-| Layout | bbox geometry | PaddleOCR PP-StructureV3 | Apache-2.0 |
-| Visual | page image | Qwen2.5-VL native | Apache-2.0 |
-| Doc-type classifier (RQ3) | — | cheap VLM/LLM pass (same family acceptable) | Apache-2.0 |
-| Retrieval (vision) | — | ColQwen / ColPali | — |
-| Retrieval (text) | — | BM25 + BGE | — |
+- **Primary cost metric:** latency per question at batch=1 on a single A100 80GB. Text and vision
+  tokens reported separately as secondary. (Local deployment cares about response time; token
+  counts across modalities are not FLOPs-equivalent.)
+- **Sufficiency margin:** accuracy drop ≤ 3 points relative to the strongest representation.
+  Sensitivity for margin ∈ {2, 3, 5} in the Appendix.
+- **Doc-type binning (Option A, fixed):** MMLongBench-Doc native `doc_type` categories aggregated
+  by semantic domain into three bins:
+  - **Text-heavy** = Administration/Industry file + Academic paper + Research report/Introduction
+    (**578 Q / 54 docs**).
+  - **In-between** = Financial report + Guidebook + Tutorial/Workshop (**412 Q / 50 docs**).
+  - **Visual-heavy** = Brochure (**101 Q / 15 docs**).
+  Data-driven clustering by evidence-modality distribution is reported in the Appendix as
+  robustness (and is the fallback if the visual-heavy bin proves too thin; see §9). Semantic
+  aggregation is practitioner-interpretable; data-driven grouping would leak the effect being
+  studied, so it is validator, not primary.
+- **Ladder implementation:** `T` = Marker raw text; `T+L` = Marker text + serialized bbox JSON;
+  `T+L+V` = Marker text + native-resolution page image; `V` = page image only. Parser swap
+  (Marker vs PyMuPDF) in the Appendix.
+- **Reasoner:** Qwen3-VL-8B primary. InternVL3-8B replicates the RQ1 headline table only.
+  Qwen3-VL-2B / 32B for scale sanity in the Appendix.
+- **Retrieval:** BM25 + BGE-large (text), ColQwen (vision). RQ2 compares *matched* (retrieval
+  modality = reasoning modality) vs *cross* (text retrieval + vision reasoning). Vision-retrieval +
+  text-reasoning is not tested (no practical rationale; inflates the comparison surface).
+- **Judge:** GPT-4o-mini (different family from Qwen and InternVL). Judge–human agreement on 200
+  hand-labelled questions; **Cohen's κ ≥ 0.75 required** before any main-run number is trusted.
+- **Confidence:** every headline number carries a bootstrap 95% CI (1000 resamples over
+  questions). A frontier claim requires the cheaper representation's CI upper bound to reach within
+  3 points of the strongest representation's point estimate.
 
-*Primary recommendations (PyMuPDF, PaddleOCR, Docling, Qwen2.5-VL) are permissively licensed for
-business use; Marker/Surya carry commercial-use restrictions and are used only internally.
+## 7. Experiments
 
-### 4.5 Datasets — roles grounded in the profile report
+- **Exp 1 · RQ1 — Recipe by document type.** Sweep the ladder on oracle pages with Qwen3-VL-8B;
+  fill the 3×4 headline table (Table 1), mark the frontier; re-slice by question type into the
+  analytical 3×4 (Table 2, not for deployment); replicate the headline on InternVL3-8B (Table 3)
+  and LongDocURL (Table 4).
+- **Exp 2 · RQ2 — Mechanism.** (a) Evidence-composition mediation: decompose each doc-type bin
+  into shares of text/table/chart/figure/layout evidence; show per-modality frontier + composition
+  predicts the doc-type frontier (Table 5). (b) Retrieval-side modality: on cells where RQ1 says
+  vision is needed, compare matched vs cross pipelines under real retrieval on accuracy and latency
+  (Table 6); cross wins explained by locate–reason divergence in one paragraph + one qualitative
+  figure.
+- **Exp 3 · RQ3 — Routing.** Four policies on the full corpus: oracle routing, predicted routing
+  (Qwen3-VL-2B few-shot classifies the first pages, then recipe), uniform-cheapest (`T`
+  everywhere), uniform-strongest (`T+L+V` everywhere). Predicted-routing total latency includes the
+  classifier's own latency (Table 7).
+- **Exp 4 · Appendix — Scale sanity.** Re-run the RQ1 headline on Qwen3-VL-2B and 32B (Table 8).
+  Main text cites one sentence: "the recipe is qualitatively stable across 2B–32B," or names the
+  bins where the frontier moves. No scaling headline is claimed.
 
-**MMLongBench-Doc is the PRIMARY dataset and the basis of all initial experiments.** It is the
-only dataset carrying *both* a document-type/domain label and evidence-modality labels, so the
-full design (decomposition, domain slice, question-type slice, representation sweep, routing) is
-built and validated here first. LongDocURL and the three domain sets provide robustness and
-additional evidence.
+## 8. Go / no-go gates (Weeks 1–2)
 
-| Dataset | Role | Key real fields (from profile) | Can do | Cannot do |
-|---|---|---|---|---|
-| **MMLongBench-Doc** | PRIMARY (general) | `doc_type` (7 domain classes), `evidence_sources` (text/layout/table/chart/figure), `evidence_pages`, `answer_format`; unanswerable via answer=`"Not answerable"`; PDFs via `doc_id` | domain slice, evidence-modality slice, derived-hop, locate/decomposition, representation sweep, routing, abstention | needs PDF rendering (no shipped images/text) |
-| **LongDocURL** | robustness; question-type replicate; in-page boxes for crop | `task_tag`, `question_type` (9 classes), `evidence_pages`, `total_pages`, page `images`, in-page `<box>` coords in `detailed_evidences` | question-type robustness, locate/decomposition, vision, oracle-region crop (RQ4) | no domain label |
-| **CUAD** | text-heavy domain backup | `clause_category` (41), `is_impossible` (real unanswerable), `answer_start/text` spans, `context` text | text reasoning, representation (text/layout), abstention | no evidence pages → no locate; no images |
-| **DocFinQA** | in-between (financial) backup | `Question`, `Answer`, long `Context`, `Program` | text reasoning on long financial filings | no labels, no pages → no slicing, no locate; render needed for vision |
-| **SlideVQA** | visual-heavy domain backup | native `evidence_pages`, per-slide `page_1..20` images, `arithmetic_expression` (numeric flag) | locate/decomposition, vision, numeric-question slice, abstention (retrieval-miss) | no question-type/domain label |
+- **Gate 1 · RQ1 frontier divergence.** Run Exp 1's headline table on 8B, oracle pages, full
+  MMLongBench-Doc. **Go** if ≥2 of 3 doc-type rows have different sufficiency frontiers. **No-go**
+  if all three land on the same rung → doc-type is not a useful axis; reframe around evidence
+  composition alone.
+- **Gate 2 · Judge–human agreement.** Hand-label 200 questions across doc-type × question-type
+  strata. **Go** if GPT-4o-mini reaches κ ≥ 0.75. **No-go** → iterate the judge prompt or fall back
+  to GPT-4o full before any main run.
+- **Gate 3 · Classifier feasibility.** On a 100-doc pilot, run Qwen3-VL-2B few-shot doc-type
+  classification from the first two pages. **Go** if top-1 ≥ 70%. **No-go** → upgrade the
+  classifier or scope RQ3 to the oracle-routing upper bound only.
 
-Cross-dataset facts: **hop is derived everywhere** from `len(evidence_pages)` (single=1,
-multi≥2). Unanswerable is native only in CUAD (`is_impossible`) and via the answer string in
-MMLongBench-Doc. Page images are shipped/pointed-to by MMLongBench-Doc (render), LongDocURL,
-SlideVQA; CUAD/DocFinQA are text-only. In-page bounding boxes for oracle-region crops exist only
-in LongDocURL.
+## 9. Known risks fixed by data
 
-### 4.6 Metrics & protocol
+- **Visual-heavy bin is thin (101 Q / 15 docs).** It is the most likely Gate-1 casualty and will
+  carry the widest CIs. If it cannot be separated from the other bins at the 3-point margin, the
+  fallbacks, in order, are: (i) adopt the Appendix evidence-composition (data-driven) binning as
+  primary; (ii) collapse to a two-bin contrast (text-heavy vs rest); (iii) recruit a visual-heavy
+  dataset (SlideVQA) as the visual anchor. Recorded so the choice is pre-committed, not improvised.
+- **Sampling correlation.** Questions cluster within documents (135 docs, 1091 Q). Any subsetting
+  and all CIs are handled at the **document level** (draw documents, take their questions) so
+  precision is not overstated.
+- **Qwen3-VL API availability.** `transformers==4.53.2` did not expose the Qwen3-VL model class at
+  Stage 1; resolving the load path (transformers upgrade within the vLLM/colpali window, or a
+  confirmed vLLM path) is on the critical path before Gate 1, since every number needs a working
+  8B reasoner.
 
-- **Answer accuracy:** one uniform LLM-as-judge (MMLongBench-Doc protocol: generate → extract →
-  score), applied identically to every dataset so columns are commensurable; native metrics
-  unused. Mean ± 95% CI, effect sizes on headline comparisons.
-- **Retrieval covariate:** page Recall / Precision / F1 vs gold evidence pages; best-in-class +
-  spread, hedged "as of the implementations tested."
-- **Classifier covariate (RQ3):** document-type classification accuracy of the cheap predicted-
-  routing pass, logged alongside routed accuracy.
-- **Abstention (RQ5):** abstention rate and hallucination rate on (a) natively unanswerable
-  questions and (b) answerable questions whose gold page the retriever missed (page-recall = 0).
-- **Cost (RQ4):** tokens (text/visual) and latency per question per representation, reported as
-  an accuracy–cost Pareto frontier per document-type group.
-- **Sufficiency frontier:** cheapest condition within a pre-registered margin of, and not
-  significantly worse than, the best.
+## 10. What was cut (and where it went)
 
-## 5. Research questions & hypotheses
-
-Nine RQs in three groups. **Deployment lens (RQ1–RQ5):** what a practitioner should build.
-**Mechanistic view (RQ6–RQ7):** where difficulty originates, which the deployment answers are
-mediated by. **Representation recovery (RQ8–RQ9):** how each non-visual modality is best
-recovered.
-
-- **RQ1 (headline, vision-sufficiency).** Is visual encoding required, and does it depend on
-  document type? *H1a:* text-heavy frontier at `T`/`T+L`. *H1b:* visual-heavy `T+L+V` ≫ `T+L`,
-  gap larger than text-heavy. *H1c:* in-between frontier genuinely uncertain.
-- **RQ2 (scaling).** Does the frontier move with model size? *H2:* as size grows the frontier
-  shifts cheaper and the bottleneck migrates reasoning→locating.
-- **RQ3 (routing vs uniform).** Without document-type labels, is it better to route (classify,
-  then apply the per-type frontier) or to apply one representation uniformly? *H3:* routing pays
-  off only when per-type frontiers genuinely differ AND the classifier is accurate enough that
-  misrouting does not erase the specialisation gain.
-- **RQ4 (cost).** What is the accuracy–cost trade-off of each representation, and how should
-  visual pages be encoded under a token budget? *H4:* the sufficiency frontier rarely coincides
-  with the accuracy-maximising condition; region-crops/higher resolution beat full-page per
-  visual token where vision is needed.
-- **RQ5 (abstention).** When evidence is not retrieved, does the model abstain or hallucinate?
-  *H5:* models abstain rarely; abstention depends on representation and document type.
-- **RQ6 (question type).** Which question types need which representations? *H6:* multi-hop and
-  numeric questions show larger reasoning gaps; chart/figure-evidence questions benefit most
-  from vision regardless of document type.
-- **RQ7 (decomposition).** When end-to-end accuracy is lost, is it locating or reasoning? *H7:*
-  retriever page-F1 lower for visual-heavy docs and multi-hop questions → locating bottleneck;
-  text-heavy is reasoning-dominated.
-- **RQ8 (text recovery).** Is OCR a safe default for the text channel? *H8:* OCR ≈ embedded on
-  born-digital, degrades gracefully elsewhere, making it a defensible uniform default.
-- **RQ9 (layout recovery).** Does the representation of structure matter? *H9:*
-  geometry-vs-structure matters most on table/layout evidence, at least one closing much of the
-  gap to vision; serialisation format (MD/HTML/XML) of the same parse matters comparatively
-  little.
-
-## 6. Skeleton results tables (rows reflect what each dataset can actually support)
-
-Headline and slicing tables run on **MMLongBench-Doc** (the only set with domain + modality
-labels); robustness/extra-evidence rows come from the other datasets where their fields allow.
-Dashes = to be filled. Frontier marked ★. Table numbering assumes a dataset-overview table as
-Table 1.
-
-| Table | Maps to | Content |
-|---|---|---|
-| Dataset overview | §4.5 | dataset roles & capabilities |
-| **T1** | RQ1 | HEADLINE: vision-sufficiency by document type (7B, Oracle) |
-| **T2** | RQ2 | scaling: frontier vs model size (3B/7B/32B, Oracle) |
-| **T3** | RQ3 | routing vs uniform under unknown document type (+ classifier acc.) |
-| **T4** | RQ4 | accuracy–cost: (a) modality cost, (b) visual granularity |
-| **T5** | RQ5 | abstention vs hallucination (native unanswerable + retrieval-miss) |
-| **T6** | RQ6 | question-type analysis (evidence modality + hop) |
-| **T7** | RQ7 | decomposition: Oracle/Retrieved/Full-doc + page-F1 + bottleneck |
-| **T8** | RQ8–RQ9 | representation-recovery ablations (text OCR-default; layout geom/struct + serialisation) |
-| **T9** | robustness | Docling vs Marker, LongDocURL replicate, domain-backup corroboration |
-
-(The exact LaTeX skeletons live in `tables/` and are the authoritative cell layout.)
-
-## 7. Deployment lens (the synthesis the paper is built around)
-
-The deployment group (T1–T5) combines into a per-document-type **deployment recommendation**:
-- **Skip vision?** (T1, T4) If the frontier sits at `T`/`T+L` for a document type, visual
-  encoding is unnecessary there — a direct GPU-cost saving, quantified against the cost axis.
-- **Route or go uniform?** (T3) Per-document representation routing is worth its classifier
-  overhead only if the per-type frontiers differ and the classifier is accurate enough.
-- **Build retrieval?** (T7) Where page-F1 is low and the bottleneck is locating, retrieval is
-  the binding constraint worth engineering; where reasoning-dominated, it is not.
-- **Buy a bigger model?** (T2) Whether the recipe changes with affordable size.
-- **Will it fail safely?** (T5) Whether the system abstains rather than hallucinates when
-  evidence is missing.
-- **Confound disclosure:** document type and evidence-modality are correlated; report both the
-  document-type view (deployment-facing) and the evidence-modality view (mechanistic, T6), and
-  state the domain effect is largely **mediated by** evidence-type composition.
-
-## 8. Rigour & safeguards
-
-- Uniform re-scoring dissolves cross-dataset metric incomparability (one scorer; no comparison
-  of published numbers).
-- Per-dataset length and question-mix profiles reported up front (confound disclosure); domain
-  comparisons matched on length/question-type where possible, else reported descriptively.
-- Memory-guessing check: identify and set aside questions answerable without the document.
-- Generation ≠ evaluation: judge from a different family than evaluated models; for any
-  AI-assisted data, keep the generator out of the judge/evaluated loop.
-- Contamination disclosure: declare cross-suite document overlap (e.g. MMLongBench-Doc ⊃
-  DUDE/SlideVQA/ChartQA documents) per the survey's supervision-integrity challenge.
-- Representation-recovery null cells reported as deliberately-not-run, with the fork-existence
-  rationale (no scan → OCR-default moot; no table → layout moot).
-- Implementation-bounded claims: tool/representation/retrieval/classifier findings carry the
-  "as of the implementations tested" hedge; conclusions bounded to "controlled evidence on
-  MMLongBench-Doc (+ replicates) that …", never "we prove in general that …".
-- Out-of-scope (inherited SP-VRDU gaps, named in Limitations, not addressed): multilingual
-  layouts, summarisation/structured-extraction beyond VQA, streaming page-by-page inputs.
-
-## 9. Open items to pin before main experiments
-
-- Exact published Qwen2.5-VL number for the reproduction gate.
-- Pre-registered sufficiency margin (e.g. within 2 points and not significantly worse).
-- Pre-registered judge–human agreement bar.
-- Confirm a clean Qwen2.5-VL 3B/7B/32B trio in one family; else pick the family that has it.
-- MMLongBench-Doc `doc_type` → text/in-between/visual spectrum mapping for T1, agreed up front.
-- **Confirm whether MMLongBench-Doc PDFs contain genuinely scanned documents** (decides whether
-  RQ8's degraded slice is real or must be synthetically degraded; affects T8).
-- **Confirm doc-type classifier choice for RQ3** (cheap same-family VLM pass is acceptable since
-  the classifier is a covariate, not an evaluated model) and pre-register the abstention
-  definition for RQ5 (what counts as an abstention vs a wrong answer).
+Cut from the paper, retained for the honours thesis / future work: the full retrieval-sufficiency
+and distractor-burying sweep; scaling as a *story* (kept only as an Appendix sanity check);
+fail-safe abstention; the multi-dataset robustness suite beyond one replication. These are real but
+do not serve the single thesis at 8 pages.

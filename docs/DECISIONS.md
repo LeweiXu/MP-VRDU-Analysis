@@ -354,3 +354,197 @@ one Qwen3-VL size at a time.
     skipped as requested) and then correctly failed fast, not hung, on the
     pre-existing PaddleOCR/PaddleX version mismatch noted in the Stage 1.5
     log, which the remote env has not yet been rebuilt to pick up.
+
+## 2026-07-03 Stage 3 implementation log (freeze point)
+
+Stage 3 defined every pipeline ABC, the backend-agnostic `ModelInput`, a caching
+orchestrator, the expanded `ExperimentConfig`, and a runnable stub CLI. The whole
+pipeline now runs end to end on stubs and emits well-typed rows before any real
+tool or model exists. `docs/ARCHITECTURE.md` was created and holds the
+tree↔paper mapping and the authoritative **frozen interfaces** list.
+
+- **Frozen interfaces (Stage 3 invariant).** `schema.py` contracts, the ABCs in
+  `pipeline/` and `covariates/`, and the `ModelInput` contract in
+  `models/payload.py` are frozen. Later stages fill implementations behind them;
+  any change is a checkpoint conversation recorded here, never a silent edit.
+
+- **Schema placeholders filled.** `Payload` now carries `modality` +
+  ordered parts; `Prediction` carries `model_spec` and split
+  text/visual/output token counts + latency (zeroed by the stub, filled in
+  Stage 6); `Score` carries `value` + `correct`/`abstained`/`judge_spec`.
+  Added shared `TextPart`/`ImagePart` in `schema.py` so both `Payload` and
+  `ModelInput` compose the same part types without a layering cycle
+  (schema ← models.payload ← pipeline.reasoner ← models registry).
+
+- **`ImagePart` dual source.** An image is carried either by path
+  (`image_path`, the render output) or inline (`data`, e.g. decoded from a chat
+  data URI). `read_bytes()`/`data_uri()` hide the difference so the local and
+  API adapters never branch on image origin. This is what lets
+  `ModelInput.from_chat_messages` round-trip losslessly (image *bytes* survive;
+  the on-disk path is intentionally not recovered).
+
+- **Interface signature note (deviation from the plan's literal wording).** The
+  plan wrote `Representation.build(PageSet) -> Payload`, but a `PageSet` carries
+  only page indices + provenance, not a `doc_id`, so it cannot resolve pixels or
+  text on its own. Frozen signature is therefore
+  `Representation.build(pages: Sequence[Page]) -> Payload`: the orchestrator
+  resolves the `PageSet` into rendered `Page`s (via `data/render.py`) and hands
+  those to the composer. This keeps the representation a pure page-encoder and
+  keeps rendering in one place. Recorded here as the deliberate freeze choice.
+
+- **Conditioner signature.** `InputConditioner.condition(question, page_count)`.
+  The orchestrator computes each document's total `page_count` once (cached per
+  doc) so `FullDoc`/`BuriedOracle` know the page range without every conditioner
+  re-opening the PDF. `OracleConditioner` falls back to page 0 for
+  native-unanswerable questions (no gold pages) so the pipeline still has
+  something to render. `RetrievedTopK` wraps a `Retriever`; `BuriedOracle` uses
+  deterministic first-N non-gold distractors so the cache key is stable.
+
+- **Model swap point.** `models/__init__.py::get_reasoner(spec)` parses a
+  `family-size-backend` spec (or `stub`) via `ModelSpec.parse` and returns a
+  `Reasoner`. Stage 3 resolves every spec to `StubReasoner`; Stage 6 will
+  dispatch `local`→`LocalVLMBackend` and `api`→`APIBackend`. No pipeline code
+  will change when it does.
+
+- **Caching contract (frozen).** `make_cache_key` = SHA-256 over
+  `{question_id, doc_id, condition, representation, model_spec, judge_spec,
+  dpi}`; rows are appended as jsonl to
+  `results/cache/orchestrator/results.jsonl` via `ResultCache`. `run_cell` is
+  idempotent (cache hit returns the stored row) and resumable (a fresh
+  orchestrator rebuilds its index from disk). The model spec is in the key, so
+  the scaling sweep and any family swap produce distinct, mergeable rows. `k`
+  and burying level are encoded in the conditioner `name`
+  (`retrieved_k3`, `buried_n10`), so they are part of the condition dimension of
+  the key.
+
+- **Abstention definition promoted to a shared helper.** The pre-registered
+  Stage 1 refusal-surface test now lives as `metrics/abstention.py::is_abstention`
+  (used by the stub judge and, later, the Stage 7 abstention metrics) so there is
+  one definition of "the model declined to answer".
+
+- **Config.** `ExperimentConfig` holds the v1 knobs: dataset fixed to
+  `mmlongbench`; center reasoner `qwen3vl-8b-local` + the 2B/4B/8B/32B scaling
+  specs; conditions `oracle/retrieved/full/buried` with `k∈{1,3,5}` and burying
+  levels `{10,25,50}`; representation ladder `T/TL/TLV/V`; sufficiency margin 2.0
+  points; `dpi=144`. `ProjectPaths` stays overridable so tests point
+  `data_dir`/`cache_dir` at a fixture with no pipeline change.
+
+- **Tools are Stage 3 placeholders, not stubs-that-do-nothing.** `text_channel`
+  returns the embedded text render already extracted; `layout_channel` echoes it
+  (no structure yet); `visual_channel` returns one `ImagePart` per rendered page.
+  Stages 4/5 replace these behind the same return types; the composers do not
+  change.
+
+- **Tests.** `tests/test_pipeline_skeleton.py` runs the orchestrator over every
+  (condition × representation) cell on a tiny PDF fixture, asserts cache
+  idempotency + resumability, that the cache key depends on the model spec, that
+  the modality boundary is enforced both structurally and via `Payload`, and that
+  `ModelInput` round-trips through both adapters. Full suite: 23 passed.
+
+## 2026-07-04 v1 → v3 scope pivot (plan swap, before MVP Stage M1)
+
+Stages 0–3 above were built against the **v1 plan**, now archived at
+`docs/implementation_plan_old.md` (the three-topic study: RQ1/2/3 =
+Representation / Retrieval / Deployment, multi-dataset-capable, distractor-burying
+and fail-safe abstention and scaling-as-a-story all in scope). `PROJECT_SPEC.md`
+and `docs/implementation_plan.md` are now **v3**: a single EACL long-paper thesis,
+"the representation an MP-VRDU system requires is a function of document type."
+Where the two disagree, v3 is current. The v3 build starts at the MVP (Stage M1);
+this entry records what carries over and what each v3 stage must reconcile, so the
+M1 start is not misled by v1-era notes elsewhere in this log.
+
+**Carries over unchanged (do not re-implement).** The repo skeleton, Stage-1
+feasibility probes, the Kaya Python runner + static config, the Stage-2 data layer
+(loader + render), and the **Stage-3 frozen interfaces** (`schema.py`, the pipeline
+and covariate ABCs, `ModelInput`, the caching contract). v3 fills these same
+interfaces with real tools/models; the freeze still holds.
+
+**Reconciliation items (each owned by a specific v3 stage, not done in this pivot):**
+
+- **Doc-type binning.** v3 fixes **Option A** (semantic-domain bins): text-heavy =
+  Administration/Industry file + Academic paper + Research report/Introduction
+  (578 Q / 54 docs); in-between = Financial report + Guidebook + Tutorial/Workshop
+  (412 Q / 50 docs); visual-heavy = Brochure (101 Q / 15 docs). This **supersedes**
+  the Stage-1 "conservative proposal" above (which put Academic/Guidebook/Research/
+  Tutorial in visual-heavy) — that proposal is dead. Option A lands in
+  `data/binning.py` as the single source of truth at **Stage M1**; the data-driven
+  Option B is the Section-3 P1 swap behind the same signature.
+- **Primary parser.** v3 makes **Marker** the primary ladder text/layout source;
+  PyMuPDF (and Docling/PP-Structure) become the appendix parser-swap. This reverses
+  the v1 Docling-primary note baked into `tools/layout.py`. Implemented at **Stage
+  M2**; confirmed with the human at the M1/M2 checkpoint. (Tool placeholder
+  docstrings were updated in this pivot to point at Marker-primary / v3 stage names
+  so they stop pointing coders at the v1 plan.)
+- **Sufficiency margin.** v3 primary margin is **3** points (sensitivity {2, 3, 5}
+  in the appendix); `config.sufficiency_margin` is still the v1 value **2.0**. M1
+  updates it as part of the config extension below.
+- **Config extension.** **Stage M1** adds `smoke: bool`, `bins`,
+  `cost_metric="latency_bs1"`, and sets `sufficiency_margin=3`. The existing v1
+  knobs stay as-is until then. `k_values` stay (retrieval, RQ2/RQ3). The
+  `BuriedOracle` conditioner and `burying_levels` **stay in the tree but are unused
+  by the paper** (moved to Section-3 P4); do not delete them. `scaling_specs` still
+  lists 4B — v3 scale sanity uses **2B / 32B** only (8B is primary), so 4B is
+  simply unused, not removed.
+- **Judge.** v3 judge is **GPT-4o-mini** (different family), gated by Cohen's
+  **κ ≥ 0.75** vs 200 hand-labels. `config.judge_spec` is still `"stub"`; the real
+  judge is **Stage M5**, validated at **Stage F2**.
+- **Confidence intervals.** v3 requires **document-level** bootstrap CIs (1000
+  resamples over documents, not questions), because questions cluster within
+  documents (135 docs / 1091 Q). Built in `metrics/accuracy.py` at **Stage M5**.
+- **Reasoner / replication.** Qwen3-VL-8B primary; **InternVL3-8B** replicates the
+  RQ1 headline only (Stage F4); Qwen3-VL-2B/32B are appendix scale sanity (Stage F7).
+- **Cut to Section 3 (retained in tree, not on the paper's critical path):** the
+  full retrieval-sufficiency frontier, the distractor-burying sweep, fail-safe
+  abstention, scaling-as-a-story, and multi-dataset robustness beyond one LongDocURL
+  replication. The `BuriedOracle` conditioner and `metrics/abstention.py` stay but
+  are unused by the main paper.
+
+**Stale-reference cleanup done in this pivot (docs/comments only, no interface
+change):** `tools/text.py`, `tools/layout.py`, `tools/visual.py`, and
+`cli/run_experiment.py` docstrings were updated to point at v3 stage names
+(M2 / Section-2 runner) and Marker-primary instead of the v1 stage numbers
+("Stage 4/5/9"), nine-RQ names ("RQ4"), and Docling-primary. `docs/ARCHITECTURE.md`
+still carries one v1-era line (`covariates/retriever.py` labelled "RQ7
+decomposition"); per the global architecture rule it is left for a confirm-first
+edit rather than changed silently here.
+
+## 2026-07-04 Stage M1 implementation log
+
+Stage M1 added the deterministic v3 MVP smoke corpus, the fixed Option-A
+document-type binning source, and the config knobs later MVP stages consume.
+
+- **Option-A binning source.** Added `data/binning.py::doc_type_bin()` as the
+  single source of truth for native MMLongBench-Doc `doc_type` labels:
+  text-heavy = Administration/Industry file + Academic paper + Research report /
+  Introduction; in-between = Financial report + Guidebook + Tutorial/Workshop;
+  visual-heavy = Brochure. The function is intentionally the swap point for the
+  Section-3 Option-B data-driven robustness check.
+- **Option-A counts.** The raw staged parquet and `docs/dataset_stats.md` give:
+  text-heavy 578 questions / **70 documents**, in-between 412 questions / 50
+  documents, visual-heavy 101 questions / 15 documents. The v3 plan/spec text
+  said text-heavy was 578 questions / 54 documents; that is an arithmetic/doc-count
+  typo because the native-class document counts are 10 + 26 + 34 = 70. Code and
+  tests use the data-derived 70-document count.
+- **Frozen smoke corpus.** Added `experiments/smoke.py` with seven short
+  MMLongBench documents, one per native `doc_type`, selected by low page count and
+  PDF availability. The smoke set contains 54 questions across 7 documents:
+  `2303.05039v2.pdf` (Academic paper, 8 Q, 9 pages),
+  `7c3f6204b3241f142f0f8eb8e1fefe7a.pdf` (Administration/Industry file, 6 Q,
+  15 pages), `BRO-GL-MMONEY.pdf` (Brochure, 6 Q, 16 pages),
+  `f86d073b0d735ac873a65d906ba82758.pdf` (Financial report, 9 Q, 20 pages),
+  `8dfc21ec151fb9d3578fc32d5c4e5df9.pdf` (Guidebook, 12 Q, 18 pages),
+  `379f44022bb27aa53efd5d322c7b57bf.pdf` (Research report / Introduction, 6 Q,
+  17 pages), and `0e94b4197b10096b1f4c699701570fbf.pdf` (Tutorial/Workshop, 7 Q,
+  15 pages).
+- **Config extension.** `ExperimentConfig` now has `smoke`, `bins`,
+  `cost_metric="latency_bs1"`, `max_tokens`, and v3
+  `sufficiency_margin=3.0`. `ExperimentConfig(smoke=True)` selects
+  `qwen3vl-2b-local` and caps `max_tokens` at 64. Existing root-relative
+  `ProjectPaths` behaviour is unchanged.
+- **Runnable smoke hook.** `cli.run_experiment --smoke` now loads the frozen smoke
+  corpus through `experiments.smoke.load_smoke_questions()` and uses the smoke
+  config. Non-smoke `--sample` behaviour is preserved for the Stage-3 stub path.
+- **Parser reconciliation.** v3 treats Marker as the primary `T`/`T+L` text and
+  layout source; PyMuPDF/Docling/PP-Structure are appendix/parser-swap paths. M1
+  records the decision and keeps implementation of Marker extraction itself scoped
+  to Stage M2.

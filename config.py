@@ -1,8 +1,17 @@
-"""Experiment configuration entry point for root-relative project settings."""
+"""Experiment configuration entry point for root-relative project settings.
+
+`ProjectPaths` derives every artifact path from the repo root so the same config
+runs locally or on Kaya with no path edits (section 2b of the plan).
+`ExperimentConfig` holds the v3 experiment knobs the pipeline reads: the fixed
+dataset, smoke/full mode, the model specs, the input conditions and their grids,
+the representation ladder, Option-A bins, cost metric, and the pre-registered
+sufficiency margin. It is plain Python (a frozen dataclass): runs are driven by
+small CLI scripts, not a build system.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -34,3 +43,58 @@ class ProjectPaths:
 
 
 DEFAULT_PATHS = ProjectPaths()
+
+DEFAULT_BINS: tuple[str, ...] = ("text_heavy", "in_between", "visual_heavy")
+DEFAULT_REASONER_SPEC = "qwen3vl-8b-local"
+SMOKE_REASONER_SPEC = "qwen3vl-2b-local"
+DEFAULT_MAX_TOKENS = 256
+SMOKE_MAX_TOKENS = 64
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    """The knobs one experiment run reads. Defaults describe the v3 study."""
+
+    # Dataset is fixed to MMLongBench-Doc for the primary v3 study.
+    dataset: str = "mmlongbench"
+    smoke: bool = False
+
+    # Reasoner: 8B is the center config for single-model experiments; the scaling
+    # sanity appendix runs 2B/32B. Specs are 'family-size-backend' strings.
+    reasoner_spec: str = DEFAULT_REASONER_SPEC
+    scaling_specs: tuple[str, ...] = (
+        "qwen3vl-2b-local",
+        "qwen3vl-4b-local",
+        "qwen3vl-8b-local",
+        "qwen3vl-32b-local",
+    )
+    judge_spec: str = "stub"
+
+    # Input conditions and their grids.
+    conditions: tuple[str, ...] = ("oracle", "retrieved", "full", "buried")
+    k_values: tuple[int, ...] = (1, 3, 5)
+    burying_levels: tuple[int, ...] = (10, 25, 50)
+
+    # Representation ladder.
+    representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
+
+    # Option-A doc-type bins and cost metric for the headline frontier.
+    bins: tuple[str, ...] = DEFAULT_BINS
+    cost_metric: str = "latency_bs1"
+
+    # Pre-registered sufficiency margin in accuracy points.
+    sufficiency_margin: float = 3.0
+
+    # Rendering / sampling knobs.
+    dpi: int = 144
+    sample: int | None = None
+    max_tokens: int = DEFAULT_MAX_TOKENS
+
+    paths: ProjectPaths = field(default_factory=ProjectPaths)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "bins", tuple(self.bins))
+        object.__setattr__(self, "representations", tuple(self.representations))
+        if self.smoke:
+            object.__setattr__(self, "reasoner_spec", SMOKE_REASONER_SPEC)
+            object.__setattr__(self, "max_tokens", min(int(self.max_tokens), SMOKE_MAX_TOKENS))
