@@ -602,3 +602,50 @@ barrier for the MVP tool chain.
   according to the package metadata and pip's resolver. Changed the project pin
   to `pillow==10.4.0`, the latest Pillow 10.x release, so Marker can install
   without relaxing the rest of the environment pins.
+- A second resolver pass showed `surya-ocr==0.17.1` (Marker's OCR/layout model
+  dependency) requires `transformers>=4.56.1`, while the repo still pinned
+  `transformers==4.53.2`. Updated the pin to `transformers==4.56.1`, which still
+  satisfies `vllm==0.9.2` (`transformers>=4.51.1`) and Marker
+  (`transformers>=4.45.2,<5.0.0`). That transformer version also requires
+  `huggingface-hub>=0.34.0`, so the Hub client pin moved from `0.33.4` to
+  `0.34.4`. Added `kaya/prestage.py --local` so the same smoke prestage logic
+  can be verified against local `.cache`/`.data` without attempting to write to
+  Kaya's `/group` path. Local prestage then showed Surya/Marker uses its own
+  `MODEL_CACHE_DIR` setting, independent of `HF_HOME`; `prepare_tool_cache_env()`
+  now exports `MODEL_CACHE_DIR=<root>/.cache/datalab/models` so Marker/Surya does
+  not try to write to `/home/<user>/.cache/datalab`.
+- Local Marker smoke then reached model execution and failed on CUDA because the
+  workstation GPU reports a newer compute capability than the installed
+  `torch==2.7.0+cu126` wheel supports. Remote Kaya runs should still use CUDA by
+  default, but `kaya/prestage.py --local` now defaults Marker/Surya to
+  `TORCH_DEVICE=cpu` and exposes `--tool-device` for explicit overrides.
+
+## 2026-07-04 Stage M3 implementation log
+
+Stage M3 resolves the Qwen3-VL smoke load path and adds the real local reasoner
+backend behind the frozen `Reasoner` ABC.
+
+- **Transformers load path.** `transformers==4.56.1` satisfied Surya but did not
+  expose `Qwen3VLForConditionalGeneration` or the Qwen3-VL processor mapping.
+  `transformers==4.57.6` does expose `Qwen3VLForConditionalGeneration`,
+  `Qwen3VLMoeForConditionalGeneration`, `Qwen3VLProcessor`, and the
+  `qwen3_vl` auto mappings while remaining inside the installed dependency
+  window: `colpali-engine==0.3.13` requires `<4.58.0`, Marker requires `<5.0.0`,
+  Surya requires `>=4.56.1`, and vLLM requires `>=4.51.1`. `pip check` is clean.
+- **Local backend.** Added `models/local_vlm.py::LocalVLMBackend`, which maps
+  `qwen3vl-2b-local` to `Qwen/Qwen3-VL-2B-Instruct`, lazily loads
+  `AutoProcessor` plus `Qwen3VLForConditionalGeneration`, consumes
+  `ModelInput.to_local_prompt()`, interleaves `<image>` placeholders with Qwen
+  chat image blocks, and returns populated `Prediction` cost fields.
+- **Frozen prompt.** Added prompt template version `m3-qwen3vl-v1` and recorded
+  it in `docs/MODELS.md`. The same template wraps all four representation rungs;
+  only the evidence payload changes.
+- **Smoke command.** Added `kaya/reasoner_smoke.py`, a GPU/offline Kaya script
+  that runs oracle smoke questions through `T`, `TL`, `TLV`, and `V` using the
+  normal orchestrator path and an isolated optional M3 cache via `--fresh-cache`.
+- **Tests.** Added `tests/test_reasoner.py` with fake processor/model coverage
+  for text-only and image+text generation, token/latency population, prompt
+  version stability across all four representation rungs, and registry dispatch
+  for the smoke spec. The older pipeline skeleton tests now fake text/layout/
+  visual channels locally so contract tests do not load Marker; real Marker
+  coverage remains in M2 smoke tests and prestage.

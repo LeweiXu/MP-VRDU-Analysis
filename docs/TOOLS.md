@@ -46,3 +46,8 @@ After staging, smoke mode runs one tiny call through PyMuPDF embedded text,
 PaddleOCR, Marker text, Marker bbox JSON, `full_page`, `resolution`, and
 `region_crop`, all on the frozen smoke corpus. Full prestage keeps the broader
 configured inventory for later stages.
+
+For local verification, `python -m kaya.prestage --local --smoke` uses local
+`.cache` and `.data` and defaults Marker/Surya to `TORCH_DEVICE=cpu`. Kaya
+remote prestage keeps the tool-device default selected by the installed stack;
+pass `--tool-device DEVICE` only when an explicit override is needed.

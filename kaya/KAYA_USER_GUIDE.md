@@ -229,6 +229,12 @@ envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 kaya/run_probe.py -- 
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 kaya/run_probe.py -- retrieval --run-heavy --json
 ```
 
+Stage M3 reasoner smoke:
+
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 --mem 64G kaya/reasoner_smoke.py -- --fresh-cache
+```
+
 ## GPU Allocation
 
 The default config uses `--partition=gpu --gres=gpu:1`. `slurm.account` and

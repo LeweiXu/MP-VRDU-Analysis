@@ -31,6 +31,29 @@ from pipeline.representation import get_representation
 from schema import ImagePart, Payload, Question, TextPart
 
 
+@pytest.fixture(autouse=True)
+def fake_representation_channels(monkeypatch) -> None:
+    """Keep contract tests independent of heavy Marker/OCR layout tools."""
+
+    import pipeline.representation as representation
+
+    monkeypatch.setattr(
+        representation,
+        "text_channel",
+        lambda pages: tuple(page.text or f"page {page.index}" for page in pages),
+    )
+    monkeypatch.setattr(
+        representation,
+        "layout_channel",
+        lambda pages: tuple(f'{{"page": {page.index}, "blocks": []}}' for page in pages),
+    )
+    monkeypatch.setattr(
+        representation,
+        "visual_channel",
+        lambda pages: tuple(ImagePart(image_path=page.image_path) for page in pages if page.image_path),
+    )
+
+
 def write_pdf(path: Path, pages: list[str]) -> None:
     import fitz
 

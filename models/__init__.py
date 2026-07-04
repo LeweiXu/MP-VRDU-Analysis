@@ -6,16 +6,14 @@ Purpose:
     code never imports concrete local/API backend classes directly.
 
 Pipeline role:
-    The orchestrator asks this registry for the configured reasoner. Adding
-    Qwen3-VL sizes, InternVL, or hosted comparison models should be a registry
-    change behind the frozen `Reasoner` and `ModelInput` contracts.
+    The orchestrator asks this registry for the configured reasoner. Stage M3
+    dispatches the smoke Qwen3-VL local spec to `LocalVLMBackend`; unsupported
+    specs still resolve to the stub until their stages wire them deliberately.
 
 Spec grammar: ``<family>-<size>-<backend>`` (e.g. ``qwen3vl-8b-local``,
-``gpt4o-api``), or the literal ``stub``. Stage 3 resolves every spec to the
-`StubReasoner`; Stage 6 wires the ``local`` backend to `LocalVLMBackend`
-(Qwen3-VL etc.) and the ``api`` backend to `APIBackend` (OpenAI / Gemini /
-Anthropic-style HTTP). Adding a family is a new registry entry; no pipeline code
-changes.
+``gpt4o-api``), or the literal ``stub``. M3 supports ``qwen3vl-2b-local`` as the
+critical-path smoke backend; additional local sizes and API backends remain
+behind this same function.
 
 Arguments:
     None. This module is import-only; callers pass a spec string to
@@ -68,6 +66,9 @@ def get_reasoner(spec: str) -> Reasoner:
     parsed = ModelSpec.parse(spec)
     if parsed.backend == "stub":
         return StubReasoner(spec="stub")
-    # Stage 6 dispatches parsed.backend to LocalVLMBackend / APIBackend here.
-    # Until then every spec resolves to the stub so the pipeline is runnable.
+    if parsed.family == "qwen3vl" and parsed.size == "2b" and parsed.backend == "local":
+        from models.local_vlm import LocalVLMBackend
+
+        return LocalVLMBackend(parsed.name)
+    # Later stages dispatch the remaining local sizes and API backends here.
     return StubReasoner(spec=parsed.name)

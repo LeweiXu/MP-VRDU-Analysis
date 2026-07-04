@@ -16,6 +16,7 @@ Arguments:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from data.render import render_pdf
@@ -144,3 +145,40 @@ def test_prestage_smoke_selects_small_subset_and_is_repeatable(tmp_path: Path, m
     ]
     assert first_run == expected
     assert second_run == expected
+
+
+def test_local_prestage_defaults_marker_surya_to_cpu(tmp_path: Path, monkeypatch) -> None:
+    import kaya.prestage as prestage
+
+    class FakeConfig:
+        remote_root = str(tmp_path)
+        raw = {
+            "models": ["Qwen/Qwen3-VL-2B-Instruct"],
+            "retrieval_models": {"text": [], "vision": []},
+            "datasets": {"mmlongbench": "dataset/repo"},
+            "tool_caches": {},
+            "hf": {"max_workers": 4},
+            "paths": {"cache": ".cache", "data": ".data"},
+        }
+
+        def remote_path(self, key: str) -> str:
+            paths = {"cache": ".cache", "data": ".data"}
+            return str(tmp_path / paths[key])
+
+    monkeypatch.setattr(prestage, "ROOT", tmp_path)
+    monkeypatch.setattr(prestage, "load_config", lambda path: FakeConfig())
+    monkeypatch.delenv("TORCH_DEVICE", raising=False)
+
+    argv = ["--local", "--skip-models", "--skip-dataset", "--skip-tool-caches"]
+    assert prestage.main(argv) == 0
+
+    assert os.environ["TORCH_DEVICE"] == "cpu"
+
+
+def test_prestage_tool_device_override_wins(tmp_path: Path, monkeypatch) -> None:
+    import kaya.prestage as prestage
+
+    monkeypatch.setenv("TORCH_DEVICE", "cuda")
+    prestage.prepare_tool_cache_env(tmp_path / ".cache", tool_device="cpu")
+
+    assert os.environ["TORCH_DEVICE"] == "cpu"

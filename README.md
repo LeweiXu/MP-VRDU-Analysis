@@ -4,12 +4,11 @@ This repository implements the staged empirical pipeline described in
 `docs/implementation_plan.md` for the MP-VRDU representation and deployment
 study.
 
-Stages 0-3 now provide the project skeleton, Kaya orchestration, complete
-prestage/setup inventory, the concrete MMLongBench data layer, and the frozen
-pipeline skeleton: all ABCs, the backend-agnostic `ModelInput`, and a caching
-orchestrator that runs end to end on stubs. Real tools, models, metrics, and
-experiment runners are filled in behind these frozen interfaces by the later
-stages after the human checkpoints.
+Stages M1-M3 now provide the smoke corpus, Kaya orchestration, complete
+prestage/setup inventory, the concrete MMLongBench data layer, Marker/OCR/visual
+tools, and the first real Qwen3-VL smoke reasoner behind the frozen
+`Reasoner`/`ModelInput` boundary. Remaining model sizes, metrics, and experiment
+runners are filled in behind these interfaces by later stages.
 
 Run the stub pipeline over a tiny sample:
 
@@ -28,6 +27,7 @@ envs/mpvrdu/bin/python -m cli.run_experiment --sample 4
 - `kaya/KAYA_AGENT_GUIDE.md` is the agent-facing definitive Kaya operations guide.
 - `docs/DATA.md` documents the Stage 2 normalized question schema and render cache.
 - `docs/ARCHITECTURE.md` maps the tree to the paper and lists the Stage 3 frozen interfaces.
+- `docs/MODELS.md` records the M3 Qwen3-VL load path and frozen prompt template.
 
 All machine-specific artifacts stay under the repository root and are ignored:
 `.cache/`, `.data/`, `envs/`, `results/`, and `logs/`. The `data/` directory

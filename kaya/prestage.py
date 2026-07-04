@@ -11,9 +11,12 @@ Pipeline role:
     PyMuPDF embedded text, PaddleOCR, Marker text/layout, and visual helpers.
 
 CLI:
-    `python -m kaya.kaya run kaya/prestage.py -- [options]`
+    Remote: `python -m kaya.kaya run kaya/prestage.py -- [options]`
+    Local verification: `python -m kaya.prestage --local [options]`
 
 Arguments:
+    --local: use this checkout's `.cache` and `.data` instead of Kaya remote
+        paths; intended for local smoke verification, not cluster staging.
     --smoke: stage only the MVP smoke subset and run fast tool smoke checks.
     --skip-dataset: do not stage MMLongBench-Doc.
     --skip-models: skip all configured model snapshots.
@@ -26,6 +29,9 @@ Arguments:
     --force-download: force Hub redownload instead of cache probing.
     --copy: copy MMLongBench files instead of symlinking staged cache files.
     --max-workers N: override `hf.max_workers` from `kaya/config.json`.
+    --tool-device DEVICE: force Marker/Surya tool warmup to run on this torch
+        device. Defaults to `cpu` for `--local`; remote Kaya runs keep the
+        library default unless explicitly overridden.
 """
 
 # kaya: target=login
@@ -36,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import math
 import os
 import importlib.metadata
 import json
@@ -54,6 +61,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="use local repo .cache/.data paths instead of Kaya remote paths",
+    )
     parser.add_argument(
         "--smoke",
         action="store_true",
@@ -82,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force-download", action="store_true", help="force Hugging Face redownload")
     parser.add_argument("--copy", action="store_true", help="copy staged MMLongBench files instead of symlinking")
     parser.add_argument("--max-workers", type=int, help="override config hf.max_workers")
+    parser.add_argument(
+        "--tool-device",
+        help="force Marker/Surya tool warmup to a torch device such as cpu or cuda",
+    )
     return parser
 
 
@@ -136,8 +152,8 @@ def smoke_retrieval_models(raw: dict) -> list[str]:
     return selected
 
 
-def prepare_tool_cache_env(cache_dir: Path) -> None:
-    """Point tool/model caches at the root-relative Kaya cache directory."""
+def prepare_tool_cache_env(cache_dir: Path, *, tool_device: str | None = None) -> None:
+    """Point tool/model caches and optional torch device at configured paths."""
 
     for path in [
         cache_dir,
@@ -159,6 +175,9 @@ def prepare_tool_cache_env(cache_dir: Path) -> None:
     os.environ.setdefault("HF_HOME", str(cache_dir))
     os.environ.setdefault("HF_XET_CACHE", str(cache_dir / "xet"))
     os.environ.setdefault("TRANSFORMERS_CACHE", str(cache_dir / "transformers"))
+    os.environ.setdefault("MODEL_CACHE_DIR", str(cache_dir / "datalab" / "models"))
+    if tool_device:
+        os.environ["TORCH_DEVICE"] = tool_device
 
 
 def warm_paddleocr_cache() -> None:
@@ -217,10 +236,10 @@ def warm_docling_cache(cache_dir: Path, force: bool) -> None:
     DocumentConverter()
 
 
-def warm_marker_cache(cache_dir: Path, smoke_pdf: Path | None = None) -> None:
+def warm_marker_cache(cache_dir: Path, smoke_pdf: Path | None = None, *, tool_device: str | None = None) -> None:
     """Initialise Marker and, when a PDF is available, run one page through it."""
 
-    prepare_tool_cache_env(cache_dir)
+    prepare_tool_cache_env(cache_dir, tool_device=tool_device)
     from marker.config.parser import ConfigParser
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
@@ -261,15 +280,16 @@ def warm_tool_caches(
     *,
     smoke: bool = False,
     data_dir: Path | None = None,
+    tool_device: str | None = None,
 ) -> None:
     """Warm non-HF tool caches required by later stages."""
 
     tool_caches = config_raw.get("tool_caches", {})
-    prepare_tool_cache_env(cache_dir)
+    prepare_tool_cache_env(cache_dir, tool_device=tool_device)
     staged_smoke_pdf = smoke_pdf_path(data_dir) if smoke and data_dir is not None else None
     if tool_caches.get("marker", False):
         print("[prestage] warming Marker cache")
-        warm_marker_cache(cache_dir, staged_smoke_pdf)
+        warm_marker_cache(cache_dir, staged_smoke_pdf, tool_device=tool_device)
         print("[prestage] Marker cache ready")
     if tool_caches.get("paddleocr", False):
         print("[prestage] warming PaddleOCR cache")
@@ -289,7 +309,7 @@ def verify_retrieval_smoke_imports() -> None:
     import colpali_engine  # noqa: F401
 
     scores = BM25Okapi([["smoke", "document"]]).get_scores(["smoke"])
-    if not scores.size or float(scores[0]) < 0:
+    if not scores.size or not math.isfinite(float(scores[0])):
         raise RuntimeError("BM25 smoke query produced an invalid score")
     print("[prestage] retrieval imports ready: rank_bm25, FlagEmbedding, colpali_engine")
 
@@ -340,16 +360,25 @@ def verify_tool_smoke_calls(data_dir: Path, cache_dir: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(ROOT / "kaya/config.json")
-    cache_dir = Path(config.remote_path("cache"))
-    data_dir = Path(config.remote_path("data"))
+    if args.local:
+        cache_dir = ROOT / config.raw["paths"]["cache"]
+        data_dir = ROOT / config.raw["paths"]["data"]
+        root_label = str(ROOT)
+    else:
+        cache_dir = Path(config.remote_path("cache"))
+        data_dir = Path(config.remote_path("data"))
+        root_label = config.remote_root
     cache_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
     max_workers = args.max_workers or int(config.raw.get("hf", {}).get("max_workers", 8))
+    tool_device = args.tool_device or ("cpu" if args.local else None)
+    prepare_tool_cache_env(cache_dir, tool_device=tool_device)
     print(
         "[prestage] start "
-        f"remote_root={config.remote_root} cache_dir={cache_dir} data_dir={data_dir} "
+        f"root={root_label} local={args.local} cache_dir={cache_dir} data_dir={data_dir} "
         f"skip_models={args.skip_models} skip_dataset={args.skip_dataset} "
         f"smoke={args.smoke} max_workers={max_workers} force_download={args.force_download} "
+        f"tool_device={tool_device or 'auto'} "
         f"HF_TOKEN={'set' if os.environ.get('HF_TOKEN') else 'missing'}"
     )
 
@@ -413,7 +442,14 @@ def main(argv: list[str] | None = None) -> int:
         print("[prestage] skipping dataset staging")
 
     if not args.skip_tool_caches:
-        warm_tool_caches(config.raw, cache_dir, args.force_download, smoke=args.smoke, data_dir=data_dir)
+        warm_tool_caches(
+            config.raw,
+            cache_dir,
+            args.force_download,
+            smoke=args.smoke,
+            data_dir=data_dir,
+            tool_device=tool_device,
+        )
         if args.smoke:
             verify_retrieval_smoke_imports()
             verify_tool_smoke_calls(data_dir, cache_dir)
