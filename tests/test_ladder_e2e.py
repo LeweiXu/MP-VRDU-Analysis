@@ -18,17 +18,64 @@ Arguments:
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
 from config import ExperimentConfig, ProjectPaths
 from data.loader import load_mmlongbench
-from experiments.runner import run_oracle_ladder
+from experiments.base import oracle_ladder_cells
 from models.payload import ModelInput
 from pipeline.orchestrator import Orchestrator, ResultCache
 from pipeline.reasoner import Reasoner
 from schema import ImagePart, Prediction, Question, TextPart
+
+
+@dataclass
+class _LadderBatch:
+    """Rows plus cache accounting, mirroring the old runner helper."""
+
+    rows: tuple
+    computed: int
+    cache_hits: int
+    cache_rows: int
+    cache_path: object
+
+
+def run_oracle_ladder(config, questions, *, orchestrator, representations=None):
+    """Run the oracle ladder through the orchestrator (test helper).
+
+    Replaces the removed `experiments.runner.run_oracle_ladder`; the production
+    path is now `experiments.driver` + `experiments.T1_headline`.
+    """
+
+    reps = tuple(representations) if representations is not None else config.representations
+    rows = []
+    cache_hits = 0
+    for cell in oracle_ladder_cells(config, questions):
+        if cell.representation not in reps:
+            continue
+        from pipeline.orchestrator import make_cache_key
+
+        key = make_cache_key(
+            cell.question,
+            cell.conditioner.name,
+            cell.representation,
+            orchestrator.reasoner.spec,
+            orchestrator.judge.spec,
+            config.dpi,
+        )
+        if orchestrator.cache.get(key) is not None:
+            cache_hits += 1
+        rows.append(orchestrator.run_cell(cell.question, cell.conditioner, cell.representation))
+    return _LadderBatch(
+        rows=tuple(rows),
+        computed=len(rows) - cache_hits,
+        cache_hits=cache_hits,
+        cache_rows=len(orchestrator.cache),
+        cache_path=orchestrator.cache.path,
+    )
 
 
 class RecordingReasoner(Reasoner):

@@ -63,7 +63,9 @@ Data flow: `Question` → `InputConditioner.condition` → render pages →
 | `covariates/{retriever,classifier}.py` | Retrieval + doc-type classifier covariates. |
 | `tools/{text,layout,visual}.py` | Non-VLM channel functions the composers call. |
 | `metrics/*` | accuracy (doc-level CI), retrieval, cost, frontier, abstention. |
-| `experiments/*`, `cli/*` | Config → cells → cached rows → table CSVs; `experiments/smoke_run.py` is the full-smoke driver. |
+| `experiments/T*_*.py` | One reusable `Experiment` per paper table (T1-T8); smoke and full share them. |
+| `experiments/{base,registry,driver,corpus,tables}.py` | Experiment contract, name→experiment map, two-phase runner, corpus resolver, table primitives. |
+| `cli/experiments.py`, `kaya/generate.py` | Run experiments: generate on GPU, judge/build anywhere. |
 
 **Frozen interfaces (Stage-3 freeze; change only via a checkpoint recorded
 here):** `schema.py` contracts; `models/payload.py::ModelInput` + its
@@ -145,28 +147,44 @@ all eight table builders + `cli/build_tables.py`; `docs/EVALUATION.md`. M6:
 `BM25BGERetriever` + `ColQwenRetriever`, page R/P/F1 + evidence-modality slices,
 `QwenDocTypeClassifier`, and matched/cross + four routing policies.
 
-## Full smoke run (two-phase) — Section-1 "full experiment, tiny data"
+## Per-experiment runs (two-phase: generate on Kaya, judge locally)
 
-`experiments/smoke_run.py` runs the **real** pipeline (Qwen3-VL-2B reasoner,
-BM25+BGE / ColQwen retrievers, Qwen classifier, Gemini/GPT judge) over the frozen
-smoke corpus and emits all eight tables. No stub reasoners or injected scorers.
+Each paper table is one reusable `Experiment` (`experiments/T1_headline.py` …
+`T8_scale.py`); the same object serves the tiny smoke run and the full run (only
+the config's model/corpus differ). They run the **real** pipeline (Qwen3-VL
+reasoner, BM25+BGE / ColQwen retrievers, Qwen classifier, Gemini/GPT judge). No
+stub reasoners or injected scorers on this path.
 
-- **Why two phases.** Reasoner/retrievers/classifier need a GPU; the judge needs
-  the internet — on Kaya those never coexist (compute = GPU + offline, login =
-  internet + no GPU). So the run splits into `run_generate` (GPU, offline-safe:
-  caches every prediction via `PredictionCache`, logs the classifier) and
-  `run_judge` (internet, no GPU, no PDFs: re-judges cached predictions and builds
-  tables; a `_CachedOnlyRetriever` guard raises if a cell was missed). Locally
-  (GPU + internet) both run in one process. Section 2's full runs need the same
-  split (judge always internet-only, reasoner always GPU-only).
-- **Commands.** Local: `envs/mpvrdu-local-gpu/bin/python -m cli.run_smoke
-  --phase all`. Kaya: `kaya.kaya submit kaya/smoke_generate.py` then
-  `kaya.kaya run kaya/smoke_judge.py`. Judge defaults to `gemini`
-  (`--judge gpt-4o-mini` or `stub` to switch). Tables land in
-  `results/tables/smoke/`.
-- **Secrets.** `secrets.forward` in `kaya/config.json` forwards `HF_TOKEN`,
-  `OPENAI_API_KEY`, `GEMINI_API_KEY` to online login runs only; put the judge key
-  in the local `.env` (git-ignored, rsync-excluded).
+- **Why per experiment.** Running one table per Kaya job keeps jobs small (fast
+  backfill) and lets a single experiment be re-run in isolation after a change.
+  `experiments/registry.py` maps names/groups (`all`, `rq1`, `rq2`, `rq3`,
+  `appendix`); `experiments/driver.py` runs them. Each experiment caches under its
+  own dir (`results/cache/<smoke|full>/<name>/`), so runs never collide and merge
+  cleanly. Aggregation-only tables (T2/T5/analytical relabels, T3/T8 in smoke)
+  declare `depends_on` and build from T1's rows with no new generation; T6 adds
+  retrieval cells; T7 adds the classifier as GPU side work.
+- **Why two phases, split across machines.** Reasoner/retrievers/classifier need a
+  GPU; the judge needs the internet — on Kaya those never coexist. So generation
+  runs on Kaya (GPU, offline) and the judge + table build run **locally** after a
+  `kaya.kaya pull` brings the prediction cache back (`pull` already rsyncs
+  `results/`). The local judge phase loads **no models** (prediction-cache hits
+  only), which keeps the workstation responsive. The phase-2 `_GuardRetriever` /
+  `_SpecOnlyReasoner` raise if a cell was missed in generation.
+- **Commands.** Kaya generate: `kaya.kaya submit kaya/generate.py -- --experiment
+  T1_headline` (or `all`), then `kaya.kaya pull`. Local judge+build:
+  `cli.experiments --phase judge --experiment all`. One-machine (GPU + internet):
+  `cli.experiments --phase all`. Add `--full` for the full corpus/8B. Judge
+  defaults to `gemini` (`--judge gpt-4o-mini` / `stub`). Tables → `results/tables/
+  <smoke|full>/`. Judge keys are **not** forwarded to Kaya (only `HF_TOKEN` is);
+  keep `GEMINI_API_KEY`/`OPENAI_API_KEY` in the local `.env`.
+
+**Orchestrator cache-selection fix (bug found during the refactor).** `ResultCache`
+defines `__len__`, so an empty one is falsy; `Orchestrator.__init__` used
+`self.cache = cache or ResultCache(default)`, which silently discarded a fresh
+per-experiment cache and fell back to the shared default file (all experiments
+would collide). Changed to `cache if cache is not None else …` (same for
+reasoner/judge). Not a frozen-interface change — the cache key and `ResultRow`
+shape are untouched.
 
 ## Kaya operational notes (hazards that recur)
 

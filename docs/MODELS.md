@@ -76,8 +76,9 @@ Local unit coverage, no weights loaded:
 envs/mpvrdu/bin/python -m pytest tests/test_reasoner.py
 ```
 
-Kaya GPU smoke, after `setup_env.py` and `prestage.py --smoke`:
+Kaya GPU smoke, after `setup_env.py` and `prestage.py --smoke` (generate the
+headline experiment's predictions on the GPU):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 --mem 64G kaya/reasoner_smoke.py -- --fresh-cache
+envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T1_headline
 ```

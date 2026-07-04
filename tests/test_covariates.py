@@ -27,7 +27,6 @@ from covariates.classifier import DocTypeClassifier, DocTypePrediction, QwenDocT
 from covariates.retriever import BM25BGERetriever, ColQwenRetriever, Retriever
 from data.binning import doc_type_bin
 from data.loader import load_mmlongbench
-from experiments.runner import run_matched_cross_smoke, run_routing_policies_smoke
 from metrics.retrieval import (
     page_prf,
     retrieval_slice_keys,
@@ -238,59 +237,5 @@ def test_qwen_doc_type_classifier_returns_valid_bin(tmp_path: Path) -> None:
     assert prediction.metadata["correct_bin"] is True
     assert prediction.metadata["prompt_version"] == "m6-doc-type-classifier-v1"
 
-
-def test_matched_cross_smoke_runs_retrieval_and_reasoning(tmp_path: Path) -> None:
-    config = make_config(tmp_path)
-    questions = load_mmlongbench(config.paths.data_dir)
-    orchestrator = Orchestrator(config, reasoner=GoldAnswerReasoner())
-
-    batch = run_matched_cross_smoke(
-        config,
-        questions,
-        orchestrator=orchestrator,
-        text_retriever=GoldRetriever("fake_text"),
-        vision_retriever=GoldRetriever("fake_vision"),
-        k=1,
-    )
-
-    assert len(batch.rows) == len(questions) * 2
-    assert len(batch.retrieval_rows) == len(questions) * 2
-    assert {row.modality for row in batch.retrieval_rows} == {"text", "vision"}
-    assert all(row.f1 == 1.0 for row in batch.retrieval_rows)
-    assert {row.condition for row in batch.rows} == {"retrieved_text_k1", "retrieved_vision_k1"}
-    assert all(row.representation == "TLV" for row in batch.rows)
-
-
-def test_routing_policies_produce_corpus_level_rows_with_classifier_cost(tmp_path: Path) -> None:
-    config = make_config(tmp_path)
-    questions = load_mmlongbench(config.paths.data_dir)
-    orchestrator = Orchestrator(config, reasoner=GoldAnswerReasoner())
-
-    batch = run_routing_policies_smoke(
-        config,
-        questions,
-        orchestrator=orchestrator,
-        classifier=LatencyClassifier(latency_s=0.3),
-        recipe_by_bin={
-            "text_heavy": "T",
-            "in_between": "TL",
-            "visual_heavy": "TLV",
-        },
-    )
-
-    policies = {row.policy: row for row in batch.policy_rows}
-    assert set(policies) == {
-        "oracle_routing",
-        "predicted_routing",
-        "uniform_cheapest_T",
-        "uniform_strongest_TLV",
-    }
-    assert all(row.n_rows == len(questions) for row in policies.values())
-    assert all(row.accuracy == 1.0 for row in policies.values())
-    assert len(batch.classifier_rows) == len(questions)
-    assert policies["predicted_routing"].classifier_latency_bs1_s == pytest.approx(0.3)
-    assert policies["predicted_routing"].total_latency_bs1_s == pytest.approx(
-        policies["predicted_routing"].latency_bs1_s + 0.3
-    )
-    assert policies["uniform_cheapest_T"].chosen_rungs == ("T", "T", "T")
-    assert policies["uniform_strongest_TLV"].chosen_rungs == ("TLV", "TLV", "TLV")
+    # The matched/cross and routing integration is covered end to end through the
+    # T6/T7 experiments and the driver in tests/test_experiments.py.

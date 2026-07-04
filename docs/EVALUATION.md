@@ -96,13 +96,15 @@ routing uses the gold `doc_type`; predicted routing uses the classifier output.
 
 ## Routing Cost
 
-`experiments.runner.run_routing_policies_smoke()` emits four corpus-level rows:
-oracle routing, predicted routing, uniform-cheapest `T`, and
-uniform-strongest `TLV`.
+The `T7_routing` experiment (`experiments/T7_routing.py`) builds Table 7 with
+four policies: oracle routing, predicted routing, uniform-cheapest `T`, and
+uniform-strongest `TLV`. The policy rows reuse T1's oracle-ladder rows; the
+doc-type classifier is the only new GPU work and runs once per document as a
+side artifact (`classifier.jsonl`).
 
-Predicted routing includes classifier cost explicitly. The runner classifies
-each document once, sums that document-level classifier latency, and reports
-`classifier_latency_bs1_s` as the amortized latency per evaluated question.
+Predicted routing includes classifier cost explicitly. The classifier runs once
+per document; its mean per-document latency is folded into the predicted-routing
+row as `classifier_latency_bs1_s` (amortized per evaluated question), so
 `total_latency_bs1_s` is:
 
 ```text

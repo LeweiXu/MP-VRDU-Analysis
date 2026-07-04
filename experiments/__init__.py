@@ -1,12 +1,16 @@
 """Experiment orchestration package.
 
 Purpose:
-    Groups smoke-corpus selection, future experiment expansion, and future table
-    aggregation code under one import namespace.
+    Groups the per-table experiments and the machinery that runs them under one
+    import namespace. Each paper table is one reusable `Experiment` (`T1_headline`
+    … `T8_scale`) that serves both the smoke and full runs.
 
 Pipeline role:
-    `experiments.smoke` is active in the MVP; `experiments.runner` and
-    `experiments.tables` become the full-run and reporting surfaces later.
+    `experiments.base` holds the `Experiment` contract; `experiments.registry`
+    maps names/groups to instances; `experiments.driver` runs them in two phases
+    (generate on GPU, judge/build anywhere); `experiments.tables` holds the shared
+    table-building primitives; `experiments.corpus`/`experiments.smoke` resolve
+    the question set.
 
 Arguments:
     None. This package initializer is import-only.

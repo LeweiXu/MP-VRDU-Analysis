@@ -157,15 +157,28 @@ mpvrdu/                 # == the working directory / repo root
     frontier.py        # sufficiency-frontier rule (pre-registered margin)
   experiments/
     __init__.py
-    runner.py          # config -> cells; caches per (question, condition) result
-    tables.py          # cached results -> the RQ result tables (CSV)
+    smoke.py           # frozen smoke corpus (doc ids)
+    corpus.py          # config -> question set (smoke frozen corpus | full loader)
+    base.py            # Experiment contract + shared cell helpers
+    registry.py        # name/group -> Experiment (the run selector)
+    driver.py          # two-phase runner: generate (GPU) / judge / build, per experiment
+    tables.py          # shared table-building primitives (frontier, metric columns)
+    T1_headline.py     # one reusable Experiment per paper table (T1..T8),
+    T2_analytical.py   #   usable for both smoke and full; each runs as its own job
+    T3_family.py
+    T4_dataset.py
+    T5_composition.py
+    T6_matched_cross.py
+    T7_routing.py
+    T8_scale.py
   cli/
     run_probe.py       # Stage 1 feasibility probes
-    run_experiment.py  # main entry: config -> cached predictions
+    experiments.py     # main entry: run experiment(s), phase generate|judge|all
     build_tables.py    # cached predictions -> result CSVs
 kaya/
   config.json          # static Kaya site/project/module/SLURM/path config
   kaya.py              # Python SSH/rsync/SLURM runner for login and GPU jobs
+  generate.py          # GPU generate phase for one experiment or a group
   download_hf.py       # login-node HF snapshot download + MMLongBench .data staging
   KAYA_AGENT_GUIDE.md  # definitive agent guide to Kaya operations
   KAYA_USER_GUIDE.md   # human quick guide for setup and run commands
@@ -254,6 +267,23 @@ root-relative: `HF_HOME=<root>/.cache`, `data_dir=<root>/.data`, conda env at
   or `docs/KAYA.md`.
 - Confirm Kaya's module names, CUDA version, and GPU partition before relying on them (they
   drift); record what you find in `docs/DECISIONS.md`.
+
+**Experiment execution model (generate on Kaya, judge locally, per experiment).**
+Every paper table is one reusable `Experiment` (`experiments/T*_*.py`), run in two
+phases split across machines because the reasoner/retrievers/classifier need a GPU
+while the judge needs the internet:
+- **Generate** on Kaya (GPU, offline): `kaya.kaya submit kaya/generate.py --
+  --experiment <name|group>`. One experiment per job keeps jobs small and
+  fast-queueing; a single table re-runs in isolation. Predictions cache per
+  experiment under `results/cache/<smoke|full>/<name>/`.
+- **Pull** them back: `kaya.kaya pull` (rsyncs `results/`).
+- **Judge + build** locally (no GPU, only an API key): `cli.experiments --phase
+  judge --experiment <sel>`. The local judge phase loads no models, so the
+  workstation stays responsive. On one machine with a GPU + internet,
+  `cli.experiments --phase all` runs both phases. `--full` selects the full
+  corpus/8B. Judge keys live only in the local `.env`; they are not forwarded to
+  Kaya. This per-experiment model supersedes the earlier single monolithic
+  `runner.py` sweep — the Section-2 stages below run these experiments.
 
 ---
 
@@ -426,10 +456,10 @@ MVP: the entire paper is now runnable end to end, fast.
   `RetrievedTopK`; `metrics/retrieval.py` computes page R/P/F1 vs gold on the smoke set.
 - `covariates/classifier.py`: Qwen3-VL-2B few-shot doc-type classification from the first two pages
   of a smoke doc; logs predicted bin vs gold.
-- `experiments/runner.py`: smoke the **matched vs cross** pipelines (T6 shape: matched =
-  vision-retrieval + vision-reasoning; cross = text-retrieval + vision-reasoning) and the **four
-  routing policies** (T7 shape: oracle routing, predicted routing with classifier latency folded in,
-  uniform-cheapest `T`, uniform-strongest `T+L+V`).
+- `experiments/T6_matched_cross.py`: the **matched vs cross** pipelines (matched =
+  vision-retrieval + vision-reasoning; cross = text-retrieval + vision-reasoning) and
+  `experiments/T7_routing.py`: the **four routing policies** (oracle routing, predicted routing with
+  classifier latency folded in, uniform-cheapest `T`, uniform-strongest `T+L+V`).
 
 **Docs.** Extend `docs/EVALUATION.md` with retrieval metric definitions (evidence-modality sliced),
 the classifier's covariate role, and the routing-cost accounting (classifier latency counted).
@@ -458,7 +488,8 @@ tables locally.
 **Goal.** The paper's pivotal result and its first go/no-go decision.
 
 **Build/run.**
-- Full Exp 1 headline via `experiments/runner.py`: Qwen3-VL-8B, `OracleConditioner`, full
+- Full Exp 1 headline via `experiments/T1_headline.py` (`cli.experiments --experiment T1_headline
+  --full`): Qwen3-VL-8B, `OracleConditioner`, full
   MMLongBench-Doc, all four rungs, all three Option-A bins → **Table 1** with frontier marks,
   per-cell document-level bootstrap CIs, and latency@frontier.
 - Apply the gate: **Go** if ≥2 of the 3 bins have different sufficiency frontiers. **No-go** if all
@@ -572,7 +603,7 @@ or falls here.
 **Goal.** RQ3 — does routing beat uniform once the classifier's cost is counted?
 
 **Build/run.**
-- Four policies on the full corpus via `experiments/runner.py`: oracle routing (gold doc-type →
+- Four policies on the full corpus via `experiments/T7_routing.py`: oracle routing (gold doc-type →
   recipe), predicted routing (Qwen3-VL-2B classifies first pages → recipe), uniform-cheapest (`T`
   everywhere), uniform-strongest (`T+L+V` everywhere). **Predicted-routing total latency includes
   the classifier's own latency**, reported as a separate column, not hidden. Two uniform baselines

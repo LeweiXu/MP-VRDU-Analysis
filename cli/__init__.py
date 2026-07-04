@@ -6,8 +6,9 @@ Purpose:
     wrappers.
 
 Pipeline role:
-    `cli.run_probe` checks feasibility, `cli.run_experiment` exercises cached
-    pipeline cells, and `cli.build_tables` will aggregate result CSVs.
+    `cli.run_probe` checks feasibility, `cli.experiments` runs the paper-table
+    experiments (generate/judge/build), and `cli.build_tables` aggregates cached
+    rows into CSVs directly.
 
 Arguments:
     None. This package initializer is import-only; arguments live in the

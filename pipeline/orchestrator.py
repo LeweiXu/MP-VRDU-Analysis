@@ -265,10 +265,13 @@ class Orchestrator:
         prediction_cache: PredictionCache | None = None,
     ) -> None:
         self.config = config
-        self.reasoner = reasoner or get_reasoner(config.reasoner_spec)
-        self.judge = judge or get_judge(config.judge_spec)
+        self.reasoner = reasoner if reasoner is not None else get_reasoner(config.reasoner_spec)
+        self.judge = judge if judge is not None else get_judge(config.judge_spec)
         cache_path = config.paths.cache_dir / "orchestrator" / "results.jsonl"
-        self.cache = cache or ResultCache(cache_path)
+        # Note: `is not None`, not `or` — an empty ResultCache is falsy (it
+        # defines __len__), so `cache or ...` would silently discard a fresh
+        # per-experiment cache and fall back to the shared default file.
+        self.cache = cache if cache is not None else ResultCache(cache_path)
         self.prediction_cache = prediction_cache
         self._page_count_cache: dict[str, int] = {}
 

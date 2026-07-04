@@ -229,29 +229,32 @@ envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 kaya/run_probe.py -- 
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 kaya/run_probe.py -- retrieval --run-heavy --json
 ```
 
-Stage M3 reasoner smoke:
+Single-experiment reasoner smoke (generate the headline table's predictions):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 --mem 64G kaya/reasoner_smoke.py -- --fresh-cache
+envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T1_headline
 ```
 
-Full smoke run (all 8 tables on the tiny corpus, real models). Two phases: the
-GPU phase generates and caches predictions; the login phase judges them with
-GPT-4o-mini and builds the tables. Put `OPENAI_API_KEY` in the local `.env`
-first (it is forwarded only to online login runs).
+Experiments (all 8 tables, real models). Generation runs on Kaya (GPU); the
+judge + table build run **locally** (no GPU, only an API key). Each table is its
+own experiment, so you can run one or all. Put `GEMINI_API_KEY` (or
+`OPENAI_API_KEY`) in your **local** `.env` — judge keys are not forwarded to Kaya.
 
 ```bash
-# phase 1: GPU, offline, caches predictions
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/smoke_generate.py
-# phase 2: login node, online, judges + writes results/tables/smoke/*.csv
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/smoke_judge.py
+# phase 1 on Kaya: generate + cache predictions on the GPU (one job per experiment)
+envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T1_headline
+# ...or all experiments in one job:
+envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment all
+
+# bring the prediction cache back
+envs/mpvrdu/bin/python -m kaya.kaya pull
+
+# phase 2 locally: judge + build the table CSVs (results/tables/smoke/*.csv)
+envs/mpvrdu-local-gpu/bin/python -m cli.experiments --phase judge --experiment all
 ```
 
-Locally (a GPU + internet in one env) run both phases in one process:
-
-```bash
-envs/mpvrdu-local-gpu/bin/python -m cli.run_smoke --phase all
-```
+Add `--full` for the full corpus/8B run. Locally (a GPU + internet in one env)
+you can also run both phases at once: `python -m cli.experiments --phase all`.
 
 ## GPU Allocation
 
