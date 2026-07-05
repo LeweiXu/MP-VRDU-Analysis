@@ -7,7 +7,7 @@ Purpose:
     staged files under `.data/`; heavy probes are opt-in and intended for Kaya.
 
 Pipeline role:
-    Produces structured `ProbeVerdict` objects used in `docs/DECISIONS.md` to
+    Produces structured `ProbeVerdict` objects used in `docs/AGENT_GUIDE.md` to
     decide what assumptions are safe before the MVP and full runs.
 
 CLI:

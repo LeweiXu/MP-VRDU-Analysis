@@ -79,15 +79,6 @@ def _safe_bin(row: ResultRow) -> str:
         return ""
 
 
-def _dataset(row: ResultRow) -> str:
-    """Return the source dataset recorded on a row, with a legacy fallback."""
-
-    value = row.metadata.get("source_dataset") if isinstance(row.metadata, dict) else None
-    if value:
-        return str(value)
-    return "mmlongbench" if _safe_bin(row) else str(row.doc_type).strip().casefold() or "unknown"
-
-
 def _normalise_source(source: str) -> str:
     """Map raw evidence-source labels to the five mechanism modalities."""
 
@@ -305,32 +296,31 @@ def build_table4_dataset_replication(
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> pd.DataFrame:
-    """Build Table 4: dataset replication over MMLongBench bins and LongDocURL slices."""
+    """Build Table 4: RQ1 replication on the held-out MMLongBench subset, per domain.
+
+    Rows come from a disjoint set of MMLongBench documents (text_heavy /
+    in_between) plus the reused visual_heavy questions (see
+    `experiments/corpus.py::sample_table4_replication`), so this bins by the same
+    three Option-A domains as Table 1 and marks each bin's frontier. Compare the
+    frontier column against Table 1 to judge whether the recipe replicates.
+    """
 
     out: list[dict[str, object]] = []
-    for dataset_name in sorted({_dataset(row) for row in rows}) or ["mmlongbench"]:
-        dataset_rows = [row for row in rows if _dataset(row) == dataset_name]
-        if dataset_name == "mmlongbench":
-            groups = [(bin_name, [row for row in dataset_rows if _safe_bin(row) == bin_name]) for bin_name in bins]
-        else:
-            groups = [
-                (doc_type, [row for row in dataset_rows if row.doc_type == doc_type])
-                for doc_type in sorted({row.doc_type for row in dataset_rows})
-            ]
-        for group_name, group_rows in groups:
-            columns, cells, costs = _rung_metrics(group_rows, n_bootstrap=n_bootstrap, seed=seed)
-            frontier = sufficiency_frontier(cells, margin_points=margin_points)
-            out.append(
-                {
-                    "dataset": dataset_name,
-                    "bin": group_name,
-                    "n_questions": _unique_question_count(group_rows),
-                    "n_docs": _unique_doc_count(group_rows),
-                    **columns,
-                    "frontier": frontier,
-                    "latency_at_frontier_s": costs[frontier].latency_bs1_s if frontier else 0.0,
-                }
-            )
+    for bin_name in bins:
+        group_rows = [row for row in rows if _safe_bin(row) == bin_name]
+        columns, cells, costs = _rung_metrics(group_rows, n_bootstrap=n_bootstrap, seed=seed)
+        frontier = sufficiency_frontier(cells, margin_points=margin_points)
+        out.append(
+            {
+                "dataset": "mmlongbench_heldout",
+                "bin": bin_name,
+                "n_questions": _unique_question_count(group_rows),
+                "n_docs": _unique_doc_count(group_rows),
+                **columns,
+                "frontier": frontier,
+                "latency_at_frontier_s": costs[frontier].latency_bs1_s if frontier else 0.0,
+            }
+        )
     return pd.DataFrame(out)
 
 

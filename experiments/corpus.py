@@ -94,6 +94,51 @@ def sample_questions_per_bin(
     return [question for question in questions if question.id in kept_ids]
 
 
+def sample_table4_replication(
+    questions: list[Question],
+    target: int,
+    *,
+    bins: tuple[str, ...],
+    seed: int = 0,
+    reuse_bins: tuple[str, ...] = ("visual_heavy",),
+) -> list[Question]:
+    """Held-out MMLongBench subset for the Table-4 dataset replication.
+
+    Table 4 asks whether the per-domain recipe replicates on a *different* set of
+    documents. For the big bins (text_heavy, in_between) this draws ~`target`
+    questions from documents NOT in the primary (T1) per-bin subset, so the
+    replication runs on a disjoint document set. The thin `reuse_bins`
+    (visual_heavy: only 101 Q / 15 docs) cannot be held out, so their questions
+    are reused from the primary subset unchanged; SlideVQA is the planned
+    visual-heavy replication (out of scope here). `seed` must match T1's
+    `sample_seed` so "primary" means the exact set T1 ran.
+    """
+
+    primary = sample_questions_per_bin(questions, target, bins=bins, seed=seed)
+    primary_ids = {question.id for question in primary}
+    primary_docs = {question.doc_id for question in primary}
+
+    kept_ids: set[str] = set()
+    for bin_name in bins:
+        bin_questions = [q for q in questions if _bin_or_none(q) == bin_name]
+        if bin_name in reuse_bins:
+            kept_ids.update(q.id for q in bin_questions if q.id in primary_ids)
+        else:
+            held_out = [q for q in bin_questions if q.doc_id not in primary_docs]
+            subset = sample_questions_per_bin(held_out, target, bins=(bin_name,), seed=seed)
+            kept_ids.update(q.id for q in subset)
+    return [question for question in questions if question.id in kept_ids]
+
+
+def _bin_or_none(question: Question) -> str | None:
+    """Return a question's Option-A bin, or None if its doc_type is unmapped."""
+
+    try:
+        return doc_type_bin(question.doc_type)
+    except (KeyError, ValueError):
+        return None
+
+
 def _draw_documents(bin_questions: list[Question], target: int, seed: int) -> set[str]:
     """Return the question ids of whole documents summing to ~`target` questions."""
 

@@ -1,14 +1,24 @@
-# Decisions and Implementation Log
+# Agent guide (decisions, implementation log, reference)
 
-Fixed decisions, the tree-to-paper map, frozen interfaces, and condensed stage
-findings. This file (with `docs/implementation_plan.md`) replaces a separate
-`ARCHITECTURE.md` — see `CLAUDE.md`. Treat fixed decisions as binding unless a
-checkpoint changes them.
+The coding agent's single reference for how this repo is built. It holds the
+fixed decisions, the tree-to-paper map, the frozen interfaces, the caching
+contract, condensed stage findings, and (at the end) the implementation
+reference for models, the data layer, tools, and evaluation. Together with
+`docs/implementation_plan.md` (the staged build plan) it replaces a separate
+`ARCHITECTURE.md`, see `CLAUDE.md`. The user-facing "what and why" plus the
+run commands live in `docs/USER_GUIDE.md`. Treat fixed decisions as binding
+unless a checkpoint changes them; you may edit this file directly to record
+implementation-relevant decisions and deviations.
+
+This file absorbed the former `MODELS.md`, `DATA.md`, `TOOLS.md`, and
+`EVALUATION.md` (now the "Implementation reference" section below). The old
+`context.md` was a pre-v3 conversation summary and was dropped as superseded by
+`USER_GUIDE.md` / `implementation_plan.md`.
 
 ## Fixed decisions (v3)
 
 The study is one EACL thesis: **the representation an MP-VRDU system needs is a
-function of document type.** `docs/implementation_plan.md` / `PROJECT_SPEC.md`
+function of document type.** `docs/implementation_plan.md` / `docs/USER_GUIDE.md`
 are v3; the old three-topic v1 plan is archived at
 `docs/implementation_plan_old.md`. Where they disagree, v3 wins.
 
@@ -145,12 +155,12 @@ Frozen list above.
 doc_type) + config knobs (`smoke`, `bins`, `cost_metric="latency_bs1"`,
 `sufficiency_margin=3`, `max_tokens`). M2: Marker `marker_text`/`marker_bbox_json`
 primary (PyMuPDF fallback for tests), PaddleOCR `ocr()`, visual channel, and a
-`kaya/prestage.py --smoke` barrier; `docs/TOOLS.md`. M3: resolved the Qwen3-VL
+`kaya/prestage.py --smoke` barrier (tools reference below). M3: resolved the Qwen3-VL
 load path (`transformers==4.57.6` exposes `Qwen3VLForConditionalGeneration`),
 `LocalVLMBackend`, frozen prompt `m3-qwen3vl-v1`, token/latency accounting;
-`docs/MODELS.md`. M4: oracle ladder end to end through the resumable cache. M5:
+(models reference below). M4: oracle ladder end to end through the resumable cache. M5:
 real judge, document-level bootstrap accuracy, cost, sufficiency frontier, and
-all eight table builders + `cli/build_tables.py`; `docs/EVALUATION.md`. M6:
+all eight table builders + `cli/build_tables.py` (evaluation reference below). M6:
 `BM25BGERetriever` + `ColQwenRetriever`, page R/P/F1 + evidence-modality slices,
 `QwenDocTypeClassifier`, and matched/cross + four routing policies.
 
@@ -215,7 +225,7 @@ shape are untouched.
 ## Section-2 gates and full-stage tooling (F1-F6)
 
 Gate tooling is implemented in `experiments/gates.py` and exposed through
-`cli.gates`; commands are recorded in `docs/RUNBOOK.md`.
+`cli.gates`; commands are recorded in `docs/USER_GUIDE.md` (Runbook).
 
 - **F1 frontier divergence.** `cli.gates frontier` reads the full Table-1 CSV and
   returns Go when at least two Option-A bins have different frontiers. The full
@@ -428,3 +438,103 @@ Paths are validated to stay inside `results/`/`logs/`.
 - **Live config to re-confirm (drifts):** modules `Anaconda3/2024.06`,
   `cuda/12.6.3`, partition `gpu` (nodes k[026-042], 34 GPUs, MaxTime 3d), GRES
   `gpu:1`; account/QOS blank (group membership grants access).
+
+---
+
+# Implementation reference
+
+Condensed from the former `MODELS.md`, `DATA.md`, `TOOLS.md`, and
+`EVALUATION.md`. The frozen contracts are in the decisions above; this is the
+"how each layer actually behaves" reference.
+
+## Models (reasoner backends + prompt)
+
+- **Load path.** `transformers==4.57.6` (top of the colpali `>=4.53.1,<4.58.0`
+  window) exposes `Qwen3VLForConditionalGeneration` / `...MoeForConditionalGeneration`
+  / `Qwen3VLProcessor`, resolving the Stage-1 class gap without moving Marker,
+  Surya, vLLM, or ColPali outside their windows.
+- **Registry.** `qwen3vl-{2b,4b,8b,32b}-local` dispatch to the shared HF backend
+  (`Qwen/Qwen3-VL-*-Instruct`); `internvl3-8b-local` -> `OpenGVLab/InternVL3-8B`
+  via `models.internvl.LocalInternVLBackend` (same `Reasoner.answer` contract).
+  A trailing `-4bit`/`-8bit` suffix selects a bitsandbytes-quantized load of the
+  same checkpoint (see "Quantized reasoner" above). Other families stay stubbed.
+- **Frozen prompt.** Qwen template `m3-qwen3vl-v1` (InternVL `f4-internvl3-v1`),
+  one fixed template held constant across the four rungs;
+  `ModelInput.to_local_prompt()` supplies `{context}` and each `<image>`
+  placeholder becomes a Qwen image block in page order.
+- **Accounting** per `Prediction`: `input_text_tokens` (tokenizer count, image
+  placeholders stripped), `input_visual_tokens` (Qwen `image_grid_thw` estimate),
+  `output_tokens` (generated ids after trimming), `latency_s` (batch=1 wall clock
+  around `generate`), plus metadata (backend, model id, template version,
+  `max_new_tokens`, `max_pixels`, `max_input_tokens`, `quantization`, image count).
+- **Closed models** are comparison/judge only, behind the same ABC via
+  `ModelInput.to_chat_messages()`; the pipeline never imports vendor SDKs.
+
+## Data layer
+
+- **Paths** (root-relative both machines): dataset `.data/mmlongbench`, parquet
+  `.data/mmlongbench/data/*.parquet`, PDFs `.data/mmlongbench/documents/*.pdf`,
+  render cache `results/cache/renders/<pdf-stem>__dpi<N>/page_XXXX.png`.
+- **`load_mmlongbench()`** -> `Question`: `id` (`mmlongbench:000000`), `doc_id`,
+  `question`, `gold_answer`, `answer_format`, `doc_type`, `evidence_pages`
+  (normalised 1-based -> 0-based), `evidence_sources`, `hop` (from evidence-page
+  count: none/single/multi), `is_unanswerable` (gold == "Not answerable"),
+  `raw_fields` (+`source_dataset="mmlongbench"`).
+- **`render_question_pages()`** resolves the PDF and renders the gold pages;
+  unanswerable questions with no gold pages render page 0. Each `Page` carries the
+  0-based index, PDF path, optional cached PNG, and PyMuPDF line spans.
+- **LongDocURL loader** (`load_longdocurl()`) still exists (reads
+  `.data/longdocurl/LongDocURL_public.jsonl` or the `dengchao/LongDocURL`
+  snapshot; PDFs staged under `.data/longdocurl/documents/<doc_no>.pdf`), but
+  **Table 4 no longer uses it** (see "Table 4" below); it is kept for a possible
+  future replication.
+
+## Tools (non-reasoner channels)
+
+- **Primary ladder (Marker).** `tools.layout.marker_text(pages)` and
+  `marker_bbox_json(pages)` feed `T`/`TL`/`TLV`; `tools.visual.full_page(pages)`
+  and `resolution(pages, scale)` feed `TLV`/`V`. Marker (`marker-pdf==1.10.2`,
+  GPL-3.0 code, Datalab OpenRail-M weights) is primary, run without LLM mode.
+  Marker output is disk-cached under `results/cache/marker/` (the pymupdf fallback
+  is not cached).
+- **Appendix/fallback.** `tools.text.embedded` (PyMuPDF), `tools.text.ocr`
+  (PaddleOCR PP-OCRv5), Docling parser-swap, and `tools.visual.region_crop` which
+  degrades to full page (MMLongBench has no in-page boxes). The pymupdf fallback in
+  `marker_bbox_json` exists only so local tests run before Marker is installed;
+  `prestage --smoke` calls Marker with `allow_fallback=False`.
+- **Prestage.** `kaya/prestage.py [--smoke]` stages Qwen weights, BGE, ColQwen,
+  Marker/Surya, PaddleOCR, Docling (idempotent, offline-probing). `--local --smoke`
+  uses local caches and CPU tool device.
+
+## Evaluation
+
+- **Judge.** Two API judges behind `Judge.score`: `GeminiJudge` (gemini, default,
+  free tier) and `GPT4oMiniJudge` (OpenAI, paid); `StubJudge` is offline plumbing.
+  Each returns verdict (`correct`/`incorrect`/`abstained`) + extracted answer +
+  rationale; an abstaining verdict on a native-unanswerable question counts
+  correct. Keys live in the local `.env` only, never forwarded to Kaya. Gate F2
+  (`cli.gates agreement-*`) computes Cohen's kappa vs 200 human labels, gated at
+  0.75.
+- **Accuracy.** `metrics.accuracy.accuracy_summary()` = mean correctness + 95%
+  bootstrap CI, resampled at the **document level** (draw `doc_id`s with
+  replacement, take all their rows), 1000 draws, seed 0.
+- **Cost.** `metrics.cost.cost_summary()` = mean latency@batch1 (primary) + split
+  text/vision/output token sums (secondary).
+- **Frontier.** `metrics.frontier.sufficiency_frontier()` orders `T->TL->TLV->V`;
+  the frontier is the cheapest rung whose upper CI reaches within the margin
+  (default 3 points) of the strongest rung's point estimate. `cli.gates frontier`
+  gates F1 (Go when >=2 Option-A bins differ).
+- **Retrieval.** `metrics.retrieval` scores page precision/recall/F1 vs gold
+  `evidence_pages`, sliced by `<retrieval-modality>:<evidence-source>` (e.g.
+  `text:table`) so matched/cross separates locating from evidence modality.
+- **Composition (Table 5).** Each bin decomposed into normalized evidence-source
+  shares (text/table/chart/figure/layout, summing to 1); predicted bin frontier =
+  strongest per-modality frontier among modalities with >=10% share.
+- **Classifier (Table 7 covariate).** `QwenDocTypeClassifier` renders the first
+  two pages, builds `TLV`, asks Qwen3-VL-2B for a native doc_type, maps it through
+  Option-A binning. Predicted routing counts classifier cost explicitly as total
+  classifier latency / evaluated rows, reported as its own `classifier_latency_bs1_s`
+  column. Gate F3 (`cli.gates classifier-pilot`) gates top-1 bin accuracy at 0.70.
+- **Tables 1-8** are emitted by `experiments.tables`; **Table 4 is now a held-out
+  MMLongBench subset** (disjoint documents for text_heavy/in_between, reused
+  visual_heavy), not LongDocURL, binned by the same three domains as Table 1.

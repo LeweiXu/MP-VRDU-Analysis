@@ -1,8 +1,8 @@
 # Implementation Plan — A Doc-Type Recipe for Multi-Page Document QA (v3)
 
 > A staged build plan for a coding agent. This document is the single source of truth for
-> *how* to build the codebase; `PROJECT_SPEC.md` (the v3 mirror) is the source of truth for
-> *what* the experiments are and *why*. Read both, plus `docs/DECISIONS.md` and
+> *how* to build the codebase; `docs/USER_GUIDE.md` (the v3 mirror) is the source of truth for
+> *what* the experiments are and *why*. Read both, plus `docs/AGENT_GUIDE.md` and
 > `dataset_stats.md`, before starting any stage.
 
 ---
@@ -11,15 +11,15 @@
 
 **Audience.** A strong coding agent (~258k context) working under human supervision, on a
 codebase where the skeleton, feasibility probes, data layer, frozen interfaces, and the Kaya
-execution substrate are **already implemented** (logged in `docs/DECISIONS.md`). This plan governs
+execution substrate are **already implemented** (logged in `docs/AGENT_GUIDE.md`). This plan governs
 the remaining work, restructured into three sections: an MVP that proves the whole pipeline runs
 fast, the full v3 runs, and optional extensions.
 
 **Operating loop (mandatory).**
 1. At the start of every stage, (re-)read this file in full and the relevant parts of
-   `PROJECT_SPEC.md`, `dataset_stats.md`, and the latest `docs/DECISIONS.md`.
+   `docs/USER_GUIDE.md`, `dataset_stats.md`, and the latest `docs/AGENT_GUIDE.md`.
 2. Implement exactly the one stage named, nothing from later stages.
-3. Produce the stage's **deliverables, docs, and tests**; update `docs/DECISIONS.md` with
+3. Produce the stage's **deliverables, docs, and tests**; update `docs/AGENT_GUIDE.md` with
    implementation-relevant deviations, migrations, operational notes, and findings from the run;
    run the tests; report results.
 4. **Stop at the human checkpoint.** Summarise what was built, what the tests showed, and any
@@ -29,11 +29,11 @@ fast, the full v3 runs, and optional extensions.
 **Why staged + compact.** Each stage is self-contained and re-readable from this plan plus the
 code already on disk. Do not rely on un-compacted conversational memory: if a decision, finding,
 deviation, migration, or operational note matters for a later stage, write it into code comments
-or `docs/DECISIONS.md`.
+or `docs/AGENT_GUIDE.md`.
 
 **Golden rules.**
 - **Interfaces are frozen.** The Stage 3 contracts (`schema.py`, the pipeline ABCs, `ModelInput`)
-  do not change. Pressure to change them is a checkpoint discussion recorded in `docs/DECISIONS.md`,
+  do not change. Pressure to change them is a checkpoint discussion recorded in `docs/AGENT_GUIDE.md`,
   never a silent edit. This invariant is what makes both the tooling and the model family
   swappable without rework.
 - **Concise, not fragmented.** Prefer a handful of cohesive modules over many tiny files. No build
@@ -43,7 +43,7 @@ or `docs/DECISIONS.md`.
   or data contracts; and, for runnable scripts/CLIs, the command form plus every accepted argument
   (or explicitly says there are no command-line arguments for import-only modules).
 - **The code mirrors the paper.** The four pipeline stages and two covariates from
-  `PROJECT_SPEC.md` are first-class objects with the same names. A reader who knows the paper
+  `docs/USER_GUIDE.md` are first-class objects with the same names. A reader who knows the paper
   should recognise the architecture in the file tree.
 
 ---
@@ -61,7 +61,7 @@ type.** The build serves three research questions, each producing paper tables:
   beat a uniform policy once the classifier's own cost is counted (Table 7)? Scale sanity is an
   appendix (Table 8).
 
-**Fixed pre-registered choices (mirror of `PROJECT_SPEC.md` §6):**
+**Fixed pre-registered choices (mirror of `docs/USER_GUIDE.md` §6):**
 - **Cost metric:** latency/question at batch=1 on one A100 80GB (primary); text/vision tokens
   (secondary).
 - **Sufficiency margin:** accuracy drop ≤ 3 points vs the strongest representation; sensitivity
@@ -94,7 +94,7 @@ robustness beyond one replication.
 **Already built (do not re-implement).** The repository skeleton, Stage-1 feasibility probes, the
 Kaya Python runner + static config, the Stage-2 data layer (loader + render), and the Stage-3
 frozen interfaces (`schema.py`, pipeline ABCs, `ModelInput`, caching contract) exist and are logged
-in `docs/DECISIONS.md`. This plan begins at the MVP, which fills those frozen interfaces with real
+in `docs/AGENT_GUIDE.md`. This plan begins at the MVP, which fills those frozen interfaces with real
 tools and models.
 
 ---
@@ -186,8 +186,10 @@ scripts/               # standalone ops utilities (not imported by the package)
   profile_datasets.py  # table-readiness profile of the 5 datasets (existing)
   dataset_stats.py     # full per-dataset statistics -> md + csv (existing prep script)
 docs/
-  DECISIONS.md         # fixed decisions, stage findings, implementation notes (created Stage 0)
-  ARCHITECTURE.md      # how the tree maps to the paper (created Stage 3)
+  implementation_plan.md # this staged build plan + target tree + frozen-interface rules
+  AGENT_GUIDE.md       # fixed decisions, tree-to-paper map, findings, models/data/tools/eval reference
+  USER_GUIDE.md        # what/why (the v3 spec) + the run Runbook
+  dataset_stats.md     # per-dataset statistics (+ dataset_label_distributions.csv)
 tests/
   ...                  # one test module per stage
 ```
@@ -266,7 +268,7 @@ root-relative: `HF_HOME=<root>/.cache`, `data_dir=<root>/.data`, conda env at
 - Keep all Kaya-specific source, config, and docs under `kaya/`; do not reintroduce `scripts/kaya/`
   or `docs/KAYA.md`.
 - Confirm Kaya's module names, CUDA version, and GPU partition before relying on them (they
-  drift); record what you find in `docs/DECISIONS.md`.
+  drift); record what you find in `docs/AGENT_GUIDE.md`.
 
 **Experiment execution model (generate on Kaya, judge locally, per experiment).**
 Every paper table is one reusable `Experiment` (`experiments/T*_*.py`), run in two
@@ -324,7 +326,7 @@ later MVP stage has a stable target.
 - Extend `config.ExperimentConfig` with `smoke: bool`, `bins`, `sufficiency_margin=3`,
   `cost_metric="latency_bs1"`, `representations=("T","TL","TLV","V")`. Keep paths root-relative.
 
-**Docs.** `docs/DECISIONS.md`: record the frozen smoke doc ids, the Option-A bin definitions with
+**Docs.** `docs/AGENT_GUIDE.md`: record the frozen smoke doc ids, the Option-A bin definitions with
 their Q/doc counts, and the Marker-vs-Docling primary-parser reconciliation.
 
 **Tests.** `tests/test_binning.py` — all 7 `doc_type` classes map to the correct bin; the smoke set
@@ -355,8 +357,8 @@ on Kaya, via a fast `--smoke` prestage path.
   token-cost estimate. `region_crop` degrades to page-level (no in-page boxes in MMLongBench per
   the Stage-1 verdict).
 
-**Docs.** `docs/TOOLS.md`: each tool's role, I/O, licence, and which table it serves; note Marker
-primary / PyMuPDF+Docling appendix. Update the prestage inventory in `docs/DECISIONS.md`.
+**Docs.** `docs/AGENT_GUIDE.md`: each tool's role, I/O, licence, and which table it serves; note Marker
+primary / PyMuPDF+Docling appendix. Update the prestage inventory in `docs/AGENT_GUIDE.md`.
 
 **Tests.** `tests/test_tools_smoke.py` — each tool returns a well-formed artifact on one smoke page;
 Marker bbox JSON parses; prestage `--smoke` idempotency holds.
@@ -376,7 +378,7 @@ risk in the whole build; do it first within the MVP.**
 - Resolve the environment so `Qwen3-VL-2B` loads and generates: either upgrade `transformers`
   within the `colpali-engine`/`vllm` compatibility window so `Qwen3VLForConditionalGeneration`
   exists, or use a vLLM path confirmed to serve Qwen3-VL. Record the exact working versions and the
-  chosen path in `docs/DECISIONS.md`.
+  chosen path in `docs/AGENT_GUIDE.md`.
 - `models/local_vlm.py`: real `LocalVLMBackend(spec)` consuming `ModelInput.to_local_prompt()` for
   text-only and text+image inputs; record input/output tokens (text vs vision split) and batch=1
   latency into `Prediction`. One frozen prompt template, versioned in code.
@@ -384,7 +386,7 @@ risk in the whole build; do it first within the MVP.**
 - Smoke-generate one answer per representation (`T`/`T+L`/`T+L+V`/`V`) for a few smoke questions on
   Kaya GPU (`kaya.kaya submit`).
 
-**Docs.** `docs/MODELS.md`: the working transformers/vLLM versions and load path, the frozen prompt
+**Docs.** `docs/AGENT_GUIDE.md`: the working transformers/vLLM versions and load path, the frozen prompt
 template, token accounting, and the note that closed models are comparison/judge only.
 
 **Tests.** `tests/test_reasoner.py` — 2B answers a text-only and an image+text smoke question;
@@ -435,7 +437,7 @@ filled with throwaway smoke numbers, proving the whole reporting path works befo
   composition-mediation; T6 matched-vs-cross; T7 routing (4 policies); T8 scale sanity. On smoke
   data these are near-empty but correctly shaped.
 
-**Docs.** `docs/EVALUATION.md`: judge protocol, the document-level bootstrap, the frontier rule.
+**Docs.** `docs/AGENT_GUIDE.md`: judge protocol, the document-level bootstrap, the frontier rule.
 
 **Tests.** `tests/test_judge_metrics.py` — judge returns a valid `Score`; document-level CI correct
 on a toy set; frontier rule picks the right rung on constructed inputs; every table builder emits a
@@ -461,7 +463,7 @@ MVP: the entire paper is now runnable end to end, fast.
   `experiments/T7_routing.py`: the **four routing policies** (oracle routing, predicted routing with
   classifier latency folded in, uniform-cheapest `T`, uniform-strongest `T+L+V`).
 
-**Docs.** Extend `docs/EVALUATION.md` with retrieval metric definitions (evidence-modality sliced),
+**Docs.** Extend `docs/AGENT_GUIDE.md` with retrieval metric definitions (evidence-modality sliced),
 the classifier's covariate role, and the routing-cost accounting (classifier latency counted).
 
 **Tests.** `tests/test_covariates.py` — retriever returns k pages, F1=1 on a perfect toy;
@@ -499,8 +501,8 @@ tables locally.
 **Sampling note.** Draw and report at the **document level**. Visual-heavy (Brochure, 101 Q / 15
 docs) will carry the widest CIs; surface them honestly rather than hiding the imbalance.
 
-**Docs.** `docs/RUNBOOK.md`: the exact local and Kaya invocations for Table 1. Record the Gate-1
-verdict and the per-bin frontiers in `docs/DECISIONS.md`.
+**Docs.** `docs/USER_GUIDE.md (Runbook)`: the exact local and Kaya invocations for Table 1. Record the Gate-1
+verdict and the per-bin frontiers in `docs/AGENT_GUIDE.md`.
 
 **Tests.** `tests/test_frontier_gate.py` — the gate predicate correctly returns Go/No-go on
 constructed frontier configurations (all-same → No-go; ≥2-differ → Go).
@@ -520,7 +522,7 @@ constructed frontier configurations (all-same → No-go; ≥2-differ → Go).
 - Compute Cohen's κ of GPT-4o-mini vs the human labels. **Go** if κ ≥ 0.75; else iterate the judge
   prompt or fall back to GPT-4o full before any main run.
 
-**Docs.** `docs/EVALUATION.md`: the κ result and the judge decision. Record in `docs/DECISIONS.md`.
+**Docs.** `docs/AGENT_GUIDE.md`: the κ result and the judge decision. Record in `docs/AGENT_GUIDE.md`.
 
 **Tests.** `tests/test_agreement.py` — κ computed correctly on a toy labelled set; the stratified
 sampler covers every non-empty doc-type × question-type cell.
@@ -540,7 +542,7 @@ is adopted).
   upgrade the classifier (Qwen3-VL-8B or a small trained head) or scope RQ3 to reporting the
   oracle-routing upper bound only.
 
-**Docs.** Record the classifier accuracy and the RQ3 scope decision in `docs/DECISIONS.md`.
+**Docs.** Record the classifier accuracy and the RQ3 scope decision in `docs/AGENT_GUIDE.md`.
 
 **Tests.** `tests/test_classifier_gate.py` — the gate predicate returns Go/No-go correctly; the
 pilot sampler draws 100 distinct documents.
@@ -563,7 +565,7 @@ pilot sampler draws 100 distinct documents.
   then run the headline on LongDocURL, **doc-type layer only** (LongDocURL lacks evidence-modality
   labels for finer slicing). Report whether frontiers match MMLongBench.
 
-**Docs.** `docs/DATA.md`: the LongDocURL loader (fetch strategy, field mapping) per `dataset_stats.md`.
+**Docs.** `docs/AGENT_GUIDE.md`: the LongDocURL loader (fetch strategy, field mapping) per `dataset_stats.md`.
 
 **Tests.** Extend `tests/test_data.py` for the LongDocURL loader (schema invariants hold);
 `tests/test_runner_tables.py` — Tables 2–4 emit the expected cell sets.
@@ -588,7 +590,7 @@ is it MMLongBench-specific).
   modality divergence (a page text-locatable but vision-reasoned) in one paragraph plus one
   qualitative figure (the chart-with-caption case).
 
-**Docs.** `docs/RUNBOOK.md`: how to build Tables 5–6 and the qualitative figure.
+**Docs.** `docs/USER_GUIDE.md (Runbook)`: how to build Tables 5–6 and the qualitative figure.
 
 **Tests.** `tests/test_mechanism.py` — the composition decomposition sums to 1 per bin; the
 predicted-frontier computation matches a hand-worked toy; matched/cross rows are well-formed.
@@ -609,7 +611,7 @@ or falls here.
   the classifier's own latency**, reported as a separate column, not hidden. Two uniform baselines
   prevent cherry-picking the comparison.
 
-**Docs.** `docs/RUNBOOK.md`: the routing run and its cost accounting.
+**Docs.** `docs/USER_GUIDE.md (Runbook)`: the routing run and its cost accounting.
 
 **Tests.** `tests/test_routing.py` — predicted-routing total latency equals recipe latency plus
 classifier latency; each policy yields a corpus-level accuracy+cost row.
@@ -626,7 +628,7 @@ accuracy–cost trade; an honest "uniform-strongest is good enough" is a legitim
 **Build/run.**
 - **Table 8 (scale sanity):** re-run the RQ1 headline on Qwen3-VL-2B and Qwen3-VL-32B. **32B is out
   of scope on our own hardware** (Kaya V100 16GB / 2×V100 32GB cannot hold it); run the 32B row on
-  the supervisor's A100 account, or have him run that one job (see `docs/DECISIONS.md` "Hardware
+  the supervisor's A100 account, or have him run that one job (see `docs/AGENT_GUIDE.md` "Hardware
   scope"). 2B runs on our V100s. Scope to oracle-only if still memory-bound. Main text cites one
   sentence: "the recipe is qualitatively stable across 2B–32B (Table 8)", or names the bins where
   the frontier moves.
@@ -634,7 +636,7 @@ accuracy–cost trade; an honest "uniform-strongest is good enough" is a legitim
 - **Parser swap:** re-run the headline with PyMuPDF (and/or Docling) in place of Marker; report
   whether the frontier ordering is parser-stable even if absolute numbers shift.
 
-**Docs.** `docs/RUNBOOK.md`: appendix runs. Record the appendix sentences in `docs/DECISIONS.md`.
+**Docs.** `docs/USER_GUIDE.md (Runbook)`: appendix runs. Record the appendix sentences in `docs/AGENT_GUIDE.md`.
 
 **Tests.** `tests/test_sensitivity.py` — margin sweep produces monotone frontier behaviour; parser
 swap runs through the same table builder.
@@ -664,7 +666,7 @@ even when Option A holds; it is cheap because it re-bins cached results with no 
   Pure-text+Layout vs Table) into three bins. Swap it in via config; re-aggregate the cached Table 1
   results under the new bins.
 
-**Docs.** `docs/DECISIONS.md`: the data-driven bin assignments and whether they agree with Option A.
+**Docs.** `docs/AGENT_GUIDE.md`: the data-driven bin assignments and whether they agree with Option A.
 
 **Tests.** `tests/test_binning.py` extended — the data-driven binner returns three non-empty bins
 and is a pure function of the evidence-source distribution.
@@ -683,7 +685,7 @@ if the visual-heavy bin was thin under A, decide whether B becomes primary.
 - SlideVQA loader → frozen `Question` schema (native `evidence_pages`, per-slide images). Re-run the
   RQ1 headline for the visual-heavy row only, clearly marked cross-dataset.
 
-**Docs.** `docs/DATA.md`: the SlideVQA loader per `dataset_stats.md`.
+**Docs.** `docs/AGENT_GUIDE.md`: the SlideVQA loader per `dataset_stats.md`.
 
 **Tests.** Reuse `tests/test_data.py` parameterised over the SlideVQA loader (schema invariants).
 
@@ -699,7 +701,7 @@ if the visual-heavy bin was thin under A, decide whether B becomes primary.
 - Sweep retriever quality (top-k ∈ {1,3,5}, the two retrievers) via `RetrievedTopK`; relate
   end-to-end accuracy to retriever page-F1 (from `metrics/retrieval.py`); locate the plateau.
 
-**Docs.** `docs/RUNBOOK.md`: the sweep and the accuracy-vs-page-F1 curve.
+**Docs.** `docs/USER_GUIDE.md (Runbook)`: the sweep and the accuracy-vs-page-F1 curve.
 
 **Tests.** `tests/test_retrieval_sufficiency.py` — the curve builder produces monotone-keyed points.
 
@@ -717,7 +719,7 @@ and otherwise unused.
 - Hold gold pages present, pad with same-corpus distractors at increasing counts via `BuriedOracle`;
   measure accuracy decay; full-doc is the endpoint.
 
-**Docs.** `docs/RUNBOOK.md`: the burying sweep.
+**Docs.** `docs/USER_GUIDE.md (Runbook)`: the burying sweep.
 
 **Tests.** `tests/test_burying.py` — distractor count increases monotonically; gold pages always
 present in the conditioned set.
@@ -736,7 +738,7 @@ abstention definition already logged.
   whose gold page a retriever missed (page-recall 0); report abstention and hallucination rates via
   `metrics/abstention.py`.
 
-**Docs.** `docs/EVALUATION.md`: the two-prompt manipulation and the abstention/hallucination
+**Docs.** `docs/AGENT_GUIDE.md`: the two-prompt manipulation and the abstention/hallucination
 definitions.
 
 **Tests.** `tests/test_abstention.py` — abstention/hallucination rates correct on a constructed
@@ -750,7 +752,7 @@ labelled set.
 
 | Section | Stage | Builds | Gate |
 |---|---|---|---|
-| built | 0–3 | skeleton, probes, Kaya runner, data layer, frozen interfaces | done (see `DECISIONS.md`) |
+| built | 0–3 | skeleton, probes, Kaya runner, data layer, frozen interfaces | done (see `AGENT_GUIDE.md`) |
 | 1 MVP | M1 | smoke corpus + Option-A binning + config | — |
 | 1 MVP | M2 | prestage + parser/OCR/Marker-layout/retrieval-weight smoke | — |
 | 1 MVP | M3 | Qwen3-VL load/generate (critical-path unblock) | **MVP hard gate** |
@@ -773,4 +775,4 @@ labelled set.
 **Invariant across every stage:** the Stage 3 interfaces (schema, ABCs, `ModelInput`) do not change.
 The MVP proves the plumbing on a smoke corpus; Section 2 fills it at full scale under three gates;
 Section 3 extends only if the paper has room. Any pressure to change a frozen interface is a
-checkpoint conversation recorded in `docs/DECISIONS.md`, never a silent edit.
+checkpoint conversation recorded in `docs/AGENT_GUIDE.md`, never a silent edit.

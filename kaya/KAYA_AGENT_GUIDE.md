@@ -210,7 +210,7 @@ jobs offline.
 - Do not put code, secrets, or generated results in `.cache`, `.data`, `envs`,
   `results`, or `logs`.
 - Do not hand-edit the remote mirror; `push` uses `rsync --delete`.
-- Record persistent operational findings in `docs/DECISIONS.md`.
+- Record persistent operational findings in `docs/AGENT_GUIDE.md`.
 
 ## Common Failures
 

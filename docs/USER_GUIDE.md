@@ -1,9 +1,12 @@
-# Project Specification — A Doc-Type Recipe for Multi-Page Document QA (v3)
+# User guide: A Doc-Type Recipe for Multi-Page Document QA (v3)
 
-> The authoritative statement of *what* the paper claims and *why*. The companion
-> `implementation_plan.md` governs *how* the codebase is built. This spec mirrors the v3
-> experimental plan and supersedes all earlier multi-topic / nine-RQ / three-topic specs.
-> Where an older doc disagrees, this file is current.
+> The user-facing guide: *what* the paper claims and *why* (below), plus *how to
+> run* the experiments (the Runbook at the end). The companion
+> `implementation_plan.md` governs how the codebase is built, and
+> `docs/AGENT_GUIDE.md` holds the implementation decisions and reference. This
+> guide mirrors the v3 experimental plan and supersedes all earlier
+> multi-topic / nine-RQ / three-topic specs. Where an older doc disagrees, this
+> file is current.
 
 ---
 
@@ -163,3 +166,85 @@ Cut from the paper, retained for the honours thesis / future work: the full retr
 and distractor-burying sweep; scaling as a *story* (kept only as an Appendix sanity check);
 fail-safe abstention; the multi-dataset robustness suite beyond one replication. These are real but
 do not serve the single thesis at 8 pages.
+
+---
+
+# Runbook (how to run)
+
+All commands are root-relative and use `envs/mpvrdu/bin/python`. The model is
+two-phase: **generate** on Kaya (GPU, offline), then **judge + build tables**
+locally (needs an API key, loads no models). A full mmlongbench run defaults to
+**~100 questions per Option-A bin** (document-level subset, ~309 Q); pass
+`--per-bin-questions 0` for the whole corpus, or `--sample-seed N` for a
+different subset. Add `--quantization 4bit` (or `8bit`) to load the reasoner
+quantized so the 8B fits a single 16GB V100 (bf16 needs 2x V100; see
+`SINGLE_GPU_8B_FEASIBILITY.md`). The judge defaults to `gemini`
+(`--judge gpt-4o-mini` / `stub`); its flags (`--full`, `--per-bin-questions`,
+`--quantization`) must match the generate phase so it reads the right predictions.
+
+**Kaya resources.** Pick GPUs/RAM/walltime with `scripts/kaya_status.py`. bf16 8B
+uses `--gres gpu:v100:2`; 4-bit fits `--gres gpu:v100:1`. Short walltimes backfill
+faster. Reconnect with `kaya.kaya watch`, or `kaya.kaya pull` when done.
+
+## F1 frontier divergence (Table 1)
+
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:2 --time 16:00:00 \
+  --job-name t1-full kaya/generate.py -- --experiment T1_headline --full --continue-on-error
+envs/mpvrdu/bin/python -m kaya.kaya pull
+envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T1_headline --full
+envs/mpvrdu/bin/python -m cli.gates frontier \
+  --table results/tables/full/table1_headline.csv \
+  --json-output results/gates/F1_frontier_divergence.json
+```
+Go if at least two of `text_heavy`/`in_between`/`visual_heavy` have different
+`frontier` values. Record the verdict in `docs/AGENT_GUIDE.md`.
+
+## F2 judge-human agreement / F3 classifier feasibility
+
+```bash
+# F2: build the 200-row sheet from judged T1 rows, hand-label, then score kappa (gate 0.75)
+envs/mpvrdu/bin/python -m cli.gates agreement-sample --full \
+  --results results/cache/full/T1_headline/results.jsonl --output results/gates/agreement_sample.csv
+envs/mpvrdu/bin/python -m cli.gates agreement-score \
+  --sheet results/gates/agreement_sample.csv --json-output results/gates/F2_judge_human_agreement.json
+# F3: 100-doc classifier pilot (gate top-1 bin accuracy 0.70); --sample-only for a dry run
+envs/mpvrdu/bin/python -m cli.gates classifier-pilot --full \
+  --output results/gates/classifier_pilot.csv --json-output results/gates/F3_classifier_feasibility.json
+```
+
+## Replications and mechanism (Tables 2-7)
+
+```bash
+# T2 (analytical) and T5 (composition) are aggregation-only from judged T1 rows:
+envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T2_analytical --full
+envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T5_composition --full
+# T3 (InternVL family), T4 (held-out MMLongBench subset), T6 (matched/cross), T7 (routing)
+# each generate on Kaya then judge locally, e.g.:
+envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:2 --job-name t4 \
+  kaya/generate.py -- --experiment T4_dataset --full --continue-on-error
+envs/mpvrdu/bin/python -m kaya.kaya pull
+envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T4_dataset --full
+```
+Notes: **Table 4** replicates on a held-out subset of MMLongBench documents
+(disjoint docs for text_heavy/in_between, reused visual_heavy), not LongDocURL.
+**Table 6** is only populated for bins whose Table-1 frontier is `TLV`/`V` (an
+empty CSV with stable columns means no bin qualified). **Table 7** predicted
+routing reports the classifier's amortized latency as its own column.
+
+## One-machine and quantized runs
+
+```bash
+# GPU + internet on one box: run both phases at once
+envs/mpvrdu/bin/python -m cli.experiments --phase all --experiment T1_headline --full
+# all 7 main tables on one 16GB GPU in 4-bit (T3 InternVL / T4 need extra work; see AGENT_GUIDE)
+envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:1 --job-name full7-4bit \
+  kaya/generate.py -- --experiment section2 --full --quantization 4bit --continue-on-error
+```
+
+## Reset
+
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya clear-cache --logs        # wipe remote generation cache + logs
+envs/mpvrdu/bin/python -m kaya.kaya clear-cache --logs --local --yes   # also locally, no prompt
+```

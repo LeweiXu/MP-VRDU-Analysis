@@ -78,7 +78,7 @@ that. Memory is solved; wall-clock is the thing to watch.
 ## Recommendation for this project
 
 - **Keep the pre-registered main runs (Table 1 / the F1 gate) on 2×V100 bf16.**
-  That is the exact setup in `PROJECT_SPEC.md` §6; the frontier numbers should not
+  That is the exact setup in `docs/USER_GUIDE.md` §6; the frontier numbers should not
   be defined on quantized weights. The current `t1-full` (1001899) is doing this.
 - **Use 1×V100 4-bit for fast iteration** (smoke, plumbing, memory-fix checks) and
   optionally as an explicit **quantization-sensitivity appendix** row. This is

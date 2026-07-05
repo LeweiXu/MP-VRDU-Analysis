@@ -268,4 +268,4 @@ SLURM rejects a job for accounting, set those fields in `kaya/config.json`.
 2. Run quick local checks.
 3. `envs/mpvrdu/bin/python -m kaya.kaya submit <script.py|job.sbatch>`.
 4. Inspect local `logs/` after the runner pulls results.
-5. Record durable findings in `docs/DECISIONS.md`.
+5. Record durable findings in `docs/AGENT_GUIDE.md`.

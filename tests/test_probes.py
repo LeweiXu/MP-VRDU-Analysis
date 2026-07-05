@@ -6,7 +6,7 @@ Purpose:
 
 Test role:
     Protects the feasibility layer that records early assumptions in
-    `docs/DECISIONS.md`.
+    `docs/AGENT_GUIDE.md`.
 
 Arguments:
     None. Run with `python -m pytest tests/test_probes.py`.

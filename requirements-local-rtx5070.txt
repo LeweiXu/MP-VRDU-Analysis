@@ -41,6 +41,9 @@ langchain-text-splitters==0.3.11
 rank-bm25==0.2.2
 FlagEmbedding==1.3.5
 colpali-engine==0.3.13
+# Quantized reasoner dependency (4-bit/8-bit). Quant runs on Kaya's V100s; on the
+# local Blackwell (sm_120) card it may be unused, but pinned here for parity.
+bitsandbytes==0.49.2
 datasets==3.6.0
 huggingface_hub==0.34.4
 hf_xet>=1.1.5,<2.0.0

@@ -175,7 +175,7 @@ class ExperimentConfig:
     # OOM the GPU. Size-aware override in `max_input_tokens_for_spec` /
     # `MAX_INPUT_TOKENS_BY_SIZE` (tighter for 8B/32B). When a cell's context
     # exceeds the budget the local backend truncates the text (keeping all image
-    # placeholders); documents this deviation in docs/DECISIONS.md.
+    # placeholders); documents this deviation in docs/AGENT_GUIDE.md.
     max_input_tokens: int = 8192
 
     paths: ProjectPaths = field(default_factory=ProjectPaths)
