@@ -16,8 +16,8 @@ rendering, payload construction, model calls, judging, and caches.
 
 ```text
                    setup/stage assets
-                 kaya/setup_env.py
-                 kaya/prestage.py
+                 scripts/setup_env.py
+                 scripts/prestage.py
                          |
                          v
  .data/ PDFs + rows   .cache/ HF/tool weights   results/cache/
@@ -128,20 +128,20 @@ envs/mpvrdu/bin/python -m kaya.kaya push
 Create/update the remote conda env:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py
 ```
 
 Stage the full configured inventory on the Kaya login node:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py
 ```
 
 For a smaller first setup pass:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --smoke
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --smoke
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
 ```
 
 The full prestage path downloads/stages MMLongBench, configured reasoner
@@ -182,7 +182,7 @@ Generate one smoke experiment on Kaya:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:10:00 --mem 16G --cpus-per-task 2 \
-  kaya/generate.py -- --experiment T1_headline
+  cli/generate.py -- --experiment T1_headline
 ```
 
 Pull remote artifacts:
@@ -200,7 +200,7 @@ envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T1_headline
 Run all smoke experiments:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 kaya/generate.py -- --experiment all
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/generate.py -- --experiment all
 envs/mpvrdu/bin/python -m kaya.kaya pull
 envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment all --judge gpt-4o-mini
 ```
@@ -220,7 +220,7 @@ Generate a 10-question full-mode Table-1 pilot on Kaya:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:20:00 --mem 32G --cpus-per-task 2 --gres gpu:v100:2 \
-  kaya/generate.py -- --experiment T1_headline --full --questions 10
+  cli/generate.py -- --experiment T1_headline --full --questions 10
 ```
 
 Kaya's `gpu` partition is V100-based. Full-mode Qwen3-VL-8B can OOM on a
@@ -230,7 +230,7 @@ generation. Smoke mode uses Qwen3-VL-2B and can use one GPU.
 Generate full Table 1:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T1_headline --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T1_headline --full
 ```
 
 Judge/build full Table 1 locally:
@@ -263,10 +263,10 @@ envs/mpvrdu/bin/python -m cli.gates classifier-pilot --full \
 F4-F6 generation jobs:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T3_family --full
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T4_dataset --full
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T6_matched_cross --full
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T7_routing --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T3_family --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T4_dataset --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T6_matched_cross --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T7_routing --full
 ```
 
 Run the Section-2 generation set (T1-T7) as one SLURM job, continuing past
@@ -279,7 +279,7 @@ envs/mpvrdu/bin/python -m kaya.kaya submit \
   --cpus-per-task 2 \
   --mem 32G \
   --time 1-00:00:00 \
-  kaya/generate.py -- --experiment section2 --full --continue-on-error
+  cli/generate.py -- --experiment section2 --full --continue-on-error
 ```
 
 Each experiment writes its own cache directory under
@@ -317,14 +317,14 @@ envs/mpvrdu/bin/python -m kaya.kaya submit \
   --cpus-per-task 2 \
   --mem 32G \
   --time 00:20:00 \
-  kaya/generate.py -- --experiment T1_headline --full --questions 10
+  cli/generate.py -- --experiment T1_headline --full --questions 10
 ```
 
 Short walltimes usually matter most for queue backfill. Use `--no-wait` to
 submit and return immediately, then watch later:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --no-wait kaya/generate.py -- --experiment T1_headline --full
+envs/mpvrdu/bin/python -m kaya.kaya submit --no-wait cli/generate.py -- --experiment T1_headline --full
 envs/mpvrdu/bin/python -m kaya.kaya watch
 ```
 

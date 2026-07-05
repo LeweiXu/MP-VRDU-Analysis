@@ -228,7 +228,7 @@ for the GPU-heavy grid. The two-machine model is the thing to internalise; the m
 - **Local** (this repo): edit and run here. Small samples, the API backend, or whatever local GPU
   you have. Everything is root-relative so the repo is fully self-contained.
 - **Kaya login node** (`ssh kaya`): has internet, no GPU. Runs setup/staging scripts through
-  `python -m kaya.kaya run kaya/setup_env.py` and `python -m kaya.kaya run kaya/prestage.py`.
+  `python -m kaya.kaya run scripts/setup_env.py` and `python -m kaya.kaya run scripts/prestage.py`.
   `module` loading needs a login shell; the Python CLI always uses `bash --login`.
 - **Kaya compute node** (via `sbatch`/`srun`): has the GPU, no internet. SLURM jobs default to HF
   offline mode so HF reads the pre-staged `.cache`/`.data` instead of phoning home.
@@ -274,7 +274,7 @@ root-relative: `HF_HOME=<root>/.cache`, `data_dir=<root>/.data`, conda env at
 Every paper table is one reusable `Experiment` (`experiments/T*_*.py`), run in two
 phases split across machines because the reasoner/retrievers/classifier need a GPU
 while the judge needs the internet:
-- **Generate** on Kaya (GPU, offline): `kaya.kaya submit kaya/generate.py --
+- **Generate** on Kaya (GPU, offline): `kaya.kaya submit cli/generate.py --
   --experiment <name|group>`. One experiment per job keeps jobs small and
   fast-queueing; a single table re-runs in isolation. Predictions cache per
   experiment under `results/cache/<smoke|full>/<name>/`.
@@ -343,7 +343,7 @@ Docling) is the primary parser for v3.
 on Kaya, via a fast `--smoke` prestage path.
 
 **Build.**
-- Extend `kaya/prestage.py` with a `--smoke` mode that stages only what the smoke run needs
+- Extend `scripts/prestage.py` with a `--smoke` mode that stages only what the smoke run needs
   (Qwen3-VL-2B, BGE-small or BGE-large per config, ColQwen, Marker weights, PaddleOCR warm) and
   verifies each import plus one tiny call. Most of this is wiring the existing config-driven
   prestage into a fast subset; do not add ad-hoc setup outside the config-driven path.

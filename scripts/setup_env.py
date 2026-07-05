@@ -11,7 +11,7 @@ Pipeline role:
     and prints the installed torch/CUDA versions.
 
 CLI:
-    `python -m kaya.kaya run kaya/setup_env.py -- [--skip-pip-check]`
+    `python -m kaya.kaya run scripts/setup_env.py -- [--skip-pip-check]`
 
 Arguments:
     --skip-pip-check: do not run `python -m pip check` after installation.

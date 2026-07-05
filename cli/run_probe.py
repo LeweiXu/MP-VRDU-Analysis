@@ -711,7 +711,7 @@ def probe_model_family(config: ProbeConfig) -> ProbeVerdict:
         "load_generate": "not run",
         "target": "Kaya compute node with pre-staged HF cache",
         "run_command": (
-            "envs/mpvrdu/bin/python -m kaya.kaya submit kaya/run_probe.py "
+            "envs/mpvrdu/bin/python -m kaya.kaya submit cli/run_probe.py "
             "-- model-family --run-heavy --json"
         ),
     }
@@ -804,7 +804,7 @@ def probe_vision_retrieval(config: ProbeConfig) -> ProbeVerdict:
             "reason": "ColPali/ColQwen indexing requires GPU memory check on Kaya",
         },
         "run_command": (
-            "envs/mpvrdu/bin/python -m kaya.kaya submit kaya/run_probe.py "
+            "envs/mpvrdu/bin/python -m kaya.kaya submit cli/run_probe.py "
             "-- retrieval --run-heavy --json"
         ),
     }

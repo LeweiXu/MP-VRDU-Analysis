@@ -1,83 +1,108 @@
 # Session handoff — 2026-07-05
 
-Written at the end of a long working session. Read top to bottom. The durable
-record is in `docs/AGENT_GUIDE.md`; this is the "what changed today and what's
-next" summary.
+End of a long session. Read top to bottom. Durable details are in
+`docs/AGENT_GUIDE.md`; how to run is in `docs/USER_GUIDE.md` (local) and
+`kaya/KAYA_USER_GUIDE.md` (cluster). Nothing is committed — everything is
+uncommitted on `main`.
 
-## Live job to watch
+## The full T1 run: OOM'd at ~56% (needs a decision)
 
-- **`t1-full` (job 1006495)**: bf16 Qwen3-VL-8B on `--gres gpu:v100:2`, the
-  ~309-question (100/domain) T1 headline. Running healthy on k030, no OOM,
-  resumable cache. When it finishes:
-  1. `kaya.kaya pull`
-  2. `cli.experiments --phase judge --experiment T1_headline --full` (gemini judge; needs `GEMINI_API_KEY` exported from `.env`)
-  3. Also judge T2 and T5 (aggregation-only from T1): same command with `T2_analytical` / `T5_composition`.
-  4. F1 gate: `cli.gates frontier --table results/tables/full/table1_headline.csv --json-output results/gates/F1_frontier_divergence.json`. Go if >=2 of the 3 bins have different frontiers. Record the verdict in `docs/AGENT_GUIDE.md`.
-- A background monitor is polling it and will pull + report on completion or OOM.
+The bf16 Qwen3-VL-8B T1 headline on 2×V100 (job **1006495**) ran 2h34m and the
+SLURM job exited 0, but with `--continue-on-error` the **T1_headline experiment
+itself failed with a CUDA OOM at ~56% (698 of 1236 bf16 cells cached)**. The
+predictions already generated are safe in
+`results/cache/full/T1_headline/predictions.jsonl` (append-only, resumable).
 
-## What changed today
+**Why it OOM'd (diagnosed):** the `max_input_tokens` cap truncates *text* but not
+*vision* tokens. A full-corpus question with 7-8 gold pages contributes ~6000
+vision tokens, past the 4096 cap, and the attention score (~4.3 GiB, V100 has
+only the O(seq²) math kernel) tips a bf16 GPU over. The earlier memtest passed
+because its documents topped out at 4 evidence pages. Full write-up:
+`docs/AGENT_GUIDE.md` → "Third OOM: vision tokens are not capped (open)".
 
-**Three real OOM/critical-path bugs found (via the 4-bit smoke) and fixed:**
-1. **Attention math kernel OOM** (~105 GiB). Probe `1004834` proved the V100
-   (sm_70) has *no* memory-efficient or flash attention for Qwen3-VL, only the
-   O(seq^2) math kernel. A dense-page `TL` layout-JSON cell (~30k tokens) blows
-   up. Fix: size-aware **input-token cap** (`config.max_input_tokens`, 8B->4096)
-   that truncates long context, keeping image placeholders.
-2. **2xV100 shard-headroom OOM** (missed by 0.14 GiB). `device_map="auto"` left
-   no activation room. Fix: `LocalVLMBackend._max_memory_map` reserves ~5 GiB/GPU.
-   Both fixes verified by a small 2xV100 memtest before the full resubmit.
-3. These would have broken the real bf16 runs too, not just 4-bit.
+### Your options (pick one)
 
-**Quantization** (`--quantization {4bit,8bit}` on `cli.experiments` and
-`kaya.generate`): a model-spec suffix (`qwen3vl-8b-local-4bit`) with its own
-cache rows. 4-bit fits one 16GB V100 (~7 GiB) and is verified end-to-end
-(generate -> Gemini judge -> tables). `bitsandbytes==0.49.2` added to both
-requirements files and installed on Kaya. Feasibility writeup:
-`SINGLE_GPU_8B_FEASIBILITY.md` (repo root). Main tables stay bf16 for fidelity.
+1. **Judge what's cached now (partial Table 1).** Fastest way to see numbers:
+   ```bash
+   set -a; . ./.env; set +a                 # export GEMINI_API_KEY
+   python -m cli.experiments --phase judge --experiment T1_headline --full --continue-on-error
+   ```
+   You'll get a Table 1 built from the 698 cached cells (not all bins fully
+   covered). Good enough to eyeball the frontier; not the final gate number.
 
-**Per-bin subset**: a full mmlongbench run defaults to ~100 questions/domain
-(document-level, ~309 Q); `--per-bin-questions 0` for the whole corpus,
-`--sample-seed N` for a different draw.
+2. **Switch the full run to 4-bit on ONE V100 (recommended).** 4-bit weights are
+   ~7GB vs bf16's ~13GB, so the many-page cell that OOM'd bf16 *fits* in 4-bit
+   (7 + 5 < 16), and 1-GPU jobs backfill in minutes instead of waiting for a
+   scarce 2-GPU node. The 4-bit path is already verified end-to-end. This is a
+   *different reasoner* (quantized ≠ pre-registered bf16), so treat it as the
+   working/preview run or an appendix, per your call:
+   ```bash
+   # on the cluster (see kaya/KAYA_USER_GUIDE.md for push/submit/pull):
+   kaya.kaya clear-cache --mode full --experiment T1_headline --local --yes   # optional clean start
+   kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 --job-name t1-4bit \
+     cli/generate.py -- --experiment T1_headline --full --quantization 4bit --continue-on-error
+   ```
 
-**Table 4 reworked**: it was silently *not* binning LongDocURL into the 3
-domains. Now it is a **held-out MMLongBench subset** — text_heavy/in_between draw
-~100 Q from documents disjoint from T1 (verified 0 doc overlap), visual_heavy
-reuses T1's questions (too thin to hold out; SlideVQA is the planned visual
-replication, out of scope). The LongDocURL loader still exists but is unused.
+3. **Keep bf16 on 2×V100 but cap vision tokens first.** Implement the missing fix
+   (cap total vision tokens per cell: limit page count or shrink `max_pixels`
+   when a cell has many pages), smoke-test it, then resubmit — it resumes from the
+   698 cached cells. This is the "correct pre-registered" path but needs the code
+   fix + another smoke cycle.
 
-**`clear-cache`**: `kaya.kaya clear-cache [--mode --experiment --renders --logs --all --local --dry-run --yes]`
-removes cached generation results on Kaya (and locally with `--local`),
-path-guarded to `results/`/`logs/`.
+## How to monitor a (re)submitted job
 
-**Docs consolidated**: `docs/` is now just `implementation_plan.md`,
-`dataset_stats.md`, `dataset_label_distributions.csv`, plus two merged guides:
-`USER_GUIDE.md` (what/why + Runbook) and `AGENT_GUIDE.md` (decisions + findings +
-models/data/tools/eval reference). The former DECISIONS/MODELS/DATA/TOOLS/
-EVALUATION/RUNBOOK/PROJECT_SPEC/context files were merged or dropped; references
-updated in `CLAUDE.md`, `implementation_plan.md`, code, and the kaya guides.
+```bash
+python scripts/kaya_status.py                                   # queue + node view
+ssh kaya 'squeue -u lxu -o "%.10i %.10j %.8T %.10M"'            # your jobs
+ssh kaya 'sacct -j <jobid> -o JobID,State,Elapsed,ExitCode'    # REAL end state (not squeue)
+```
+Gotcha learned this session: a transient `squeue` blip returns empty and looks
+like "job gone". Always confirm a finished job's state with `sacct` (COMPLETED /
+FAILED / TIMEOUT) before trusting it. After it ends: `kaya.kaya pull`, then check
+`results/cache/full/<name>/generate_status.json`.
 
-All 82 tests pass (1 skipped: the bnb-config test, bitsandbytes is Kaya-only).
+## How to run the judge phase + gates
 
-## Next steps / open items
+Full detail (every arg, the cache format, judge output format) is in
+`docs/USER_GUIDE.md` → Runbook. Short version:
+```bash
+set -a; . ./.env; set +a
+python -m cli.experiments --phase judge --experiment T1_headline --full   # + T2_analytical, T5_composition (aggregation-only from T1)
+python -m cli.gates frontier --table results/tables/full/table1_headline.csv \
+    --json-output results/gates/F1_frontier_divergence.json               # F1: Go if >=2 bins differ
+```
+The judge phase MUST use the same corpus/model flags as the generate phase
+(`--full`, `--per-bin-questions`, `--quantization`) or it looks for predictions
+that were never generated. If you ran generate in 4-bit, add `--quantization 4bit`
+to the judge command too.
 
-- **Rerun T4** after the current job: its cache is stale from the rework, so
-  `kaya.kaya submit --gres gpu:v100:2 ... kaya/generate.py -- --experiment T4_dataset --full`,
-  then judge + build. (Cheap: one table.)
-- **Held 4-bit full-7 job** (user decided to wait for bf16 t1-full first): once
-  it's done and the cache is clear, `kaya.kaya submit --gres gpu:v100:1 ... -- --experiment section2 --full --quantization 4bit --continue-on-error`.
-  Caveat: `section2` includes T3 (InternVL, a separate bf16 backend that
-  `--quantization` doesn't touch, won't fit 1 GPU) and T4 is now MMLongBench, so
-  the 1-GPU-4bit runnable set is T1,T2,T4,T5,T6,T7 (T3 needs InternVL quant support added).
-- **F2/F3 gates** (judge-human kappa, classifier pilot) still pending, per the plan.
+## What this session changed (all uncommitted)
 
-## Gotchas
+- **Repo restructure:** `kaya/` now holds only the SLURM dispatcher (`kaya.py`,
+  `config.json`, the two KAYA guides). Moved to `scripts/`: `download_hf`,
+  `prestage`, `setup_env`, and the probes (`gpu_test`, `single_gpu_probe`,
+  `attn_probe`); `scripts/` is now an importable package. Moved to `cli/`:
+  `generate.py` (was `kaya/generate.py`); `kaya/run_probe.py` deleted (use
+  `cli/run_probe.py`). All imports/refs updated; 82 tests pass.
+- **Docs consolidated + split by audience.** `docs/` = `implementation_plan.md`,
+  `dataset_stats.md`, `dataset_label_distributions.csv`, plus `USER_GUIDE.md`
+  (what/why + a comprehensive local Runbook: args, cache format, judge format) and
+  `AGENT_GUIDE.md` (decisions + findings + models/data/tools/eval reference).
+  Kaya operational how-to lives only in `kaya/KAYA_*_GUIDE.md`.
+- **Table 4 reworked** to a held-out MMLongBench subset (disjoint docs for
+  text_heavy/in_between, reused visual_heavy), not LongDocURL. Its cached rows are
+  stale; rerun T4 when convenient.
+- **Quantization** (`--quantization {4bit,8bit}`) wired end-to-end;
+  `bitsandbytes==0.49.2` in both requirements files. Feasibility:
+  `docs/SINGLE_GPU_8B_FEASIBILITY.md`.
+- Earlier fixes still in place: input-token cap, `max_memory` shard headroom,
+  per-bin subset default, `clear-cache` command.
 
-- Judge phase flags (`--full`, `--per-bin-questions`, `--quantization`) MUST
-  match the generate phase, or it resolves a different corpus/spec and the
-  prediction-cache guard fires.
-- Two jobs writing the same experiment dir on `/group` (Lustre) can corrupt
-  `predictions.jsonl` via concurrent appends. Don't run overlapping generates for
-  the same experiment.
-- V100 per-image-cell latency is ~40-50s (math attention), so a 309-Q T1 is
-  ~8-12h. 4-bit on 1 GPU is the fast/schedulable alternative (backfills in minutes).
-- Nothing is committed (per standing instruction). Everything is uncommitted on `main`.
+## Deferred / next
+
+- Decide the T1 path above (4-bit recommended). Then judge + F1 gate.
+- Rerun **T4** (held-out subset) once a reasoner run is chosen.
+- **T3** (InternVL) and **T8-32B** don't fit one V100; T3 needs InternVL quant
+  support added for a 1-GPU 4-bit `section2` run; 32B is supervisor's-A100 scope.
+- Gates **F2** (judge-human κ) and **F3** (classifier pilot) still pending.
+- Nothing committed; `git status` shows the full set of changes.

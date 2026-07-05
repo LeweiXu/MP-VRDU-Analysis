@@ -92,7 +92,7 @@ Use `kaya/config.json` for durable site/project values:
 - local secret forwarding rules.
 
 `HF_TOKEN` is read from the root `.env` file locally and forwarded only into
-online login-node runs, such as `kaya/prestage.py`. `.env` is excluded from
+online login-node runs, such as `scripts/prestage.py`. `.env` is excluded from
 rsync and should never be copied to Kaya.
 
 ## kaya.py Contract
@@ -112,11 +112,11 @@ It does not contain task-specific subcommands. Setup, prestage, GPU smoke, and
 probe commands are separate runnable scripts:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-models
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/run_probe.py -- loader --json
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 kaya/gpu_test.py
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-models
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m kaya.kaya run cli/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --job-arg value
 ```
 
@@ -179,7 +179,7 @@ CLI flags override headers.
 
 ## Hugging Face Staging
 
-Use `kaya/prestage.py` on the login node. It calls
+Use `scripts/prestage.py` on the login node. It calls
 `huggingface_hub.snapshot_download` for model snapshots and Hugging Face file
 APIs for file-by-file MMLongBench staging; no direct URL downloader should be
 added. The project depends on `hf_xet` so Xet-backed cache downloads use the
@@ -215,14 +215,58 @@ jobs offline.
 ## Common Failures
 
 - `module: command not found`: use a login shell.
-- `conda activate` fails: run `kaya/setup_env.py` and check module names.
-- HF asks to download on compute: run `kaya/prestage.py` on login first, then
+- `conda activate` fails: run `scripts/setup_env.py` and check module names.
+- HF asks to download on compute: run `scripts/prestage.py` on login first, then
   keep GPU jobs offline.
 - Xet warning says `hf_xet` missing: rerun setup after requirements update.
 - PaddleOCR `PaddlePredictorOption` TypeError during prestage: the remote env
-  has an incompatible transitive PaddleX; rerun `kaya/setup_env.py` so the
+  has an incompatible transitive PaddleX; rerun `scripts/setup_env.py` so the
   `paddlex>=3.1,<3.2` pin is applied.
 - No SLURM logs: ensure `logs/` exists and the `.sbatch` output paths point
   there.
 - SLURM rejects partition/GRES/account: inspect `sinfo`, `scontrol show
   partition gpu`, and update `kaya/config.json`.
+
+## clear-cache command
+
+`kaya.kaya clear-cache` removes cached generation results on the remote to start
+fresh. Default drops `results/cache/{full,smoke}` + `results/tables/{full,smoke}`
+and keeps the expensive `renders`/`marker` parse caches; `--renders` also drops
+those, `--all` nukes all of `results/cache` + `results/tables` + logs, `--logs`
+empties `logs/` (keeps the dir, sbatch needs it), `--mode`/`--experiment` scope
+it, `--local` mirrors the removals locally, `--dry-run`/`--yes` gate execution.
+Paths are validated to stay inside `results/`/`logs/`.
+
+## Operational notes (hazards that recur)
+
+- **Queue waits.** The GPU request (`--partition=gpu --gres=gpu:1`) never changed;
+  what grew was the resource envelope. `slurm` defaults are `cpus=4, mem=24G,
+  time=00:30:00`. A long walltime is the main backfill killer, short jobs slot
+  into gaps, a 2h job waits for a full slot. Raise per-job with
+  `--time/--mem/--cpus-per-task` for the Section-2 grid. bf16 8B needs
+  `--gres gpu:v100:2` (32GB); a 2-GPU node is scarce, so it queues. 4-bit fits
+  `--gres gpu:v100:1` and backfills in minutes.
+- **`run` vs `submit`.** `run` executes on the login node (SSH, no SLURM) unless
+  the `.py` header says `target=gpu`; `submit` always goes through SLURM (generated
+  sbatch for `.py`, as-is for `.sbatch`). GPU resources come from `kaya/config.json`
+  or `--partition/--gres/--cpus-per-task/--mem/--time/--account/--qos`.
+- **Offline caches.** Compute jobs run HF-offline and must read root-relative
+  caches: the runner exports `HF_HOME`/`HF_HUB_CACHE=<root>/.cache`, unsets
+  inherited `TRANSFORMERS_CACHE`, and sets `MODEL_CACHE_DIR=<root>/.cache/datalab/
+  models` (Marker/Surya) plus Paddle/Docling/Torch/Xet paths. `scripts/prestage.py`
+  stages Qwen weights, BGE, ColQwen, Marker/Surya, PaddleOCR, Docling; it is
+  idempotent (probes the Hub cache with `local_files_only` before any network).
+- **Orphaned remote processes.** Long login-node runs use `ssh -tt` (pty) +
+  keepalives + a `trap … HUP TERM INT` process-group kill so a local Ctrl-C tears
+  down the remote tree instead of orphaning it (HF's blocking sockets have no read
+  timeout and would hang forever). Never hand-edit the remote mirror, `push` is
+  `rsync --delete`. `logs/` must exist before `sbatch`.
+- **Don't push while a job runs.** `push`/`submit` do `rsync --delete` on the
+  code mirror; a running job already loaded its modules so it survives, but avoid
+  it to prevent surprises.
+- **A transient `squeue` blip reads as an empty result.** When polling job state,
+  confirm a "gone" job's real end state with `sacct -j <id> -o State` (COMPLETED /
+  FAILED / TIMEOUT) before concluding it finished.
+- **Live config to re-confirm (drifts):** modules `Anaconda3/2024.06`,
+  `cuda/12.6.3`, partition `gpu` (nodes k[026-042], 34 GPUs, MaxTime 3d), GRES
+  `gpu:1`; account/QOS blank (group membership grants access).

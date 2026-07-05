@@ -18,7 +18,7 @@ Purpose:
 
 Pipeline role:
     Sits between `registry.py` and the CLIs (`cli/experiments.py`,
-    `kaya/generate.py`). It owns the per-experiment cache layout, the phase-2
+    `cli/generate.py`). It owns the per-experiment cache layout, the phase-2
     retriever/reasoner guards, and nothing about individual table shapes.
 
 Arguments:
@@ -369,7 +369,7 @@ def judge(
     if specs and len(prediction_cache) == 0:
         raise SystemExit(
             f"{exp.name}: no cached predictions at {paths.predictions}; run the "
-            "generate phase first (kaya/generate.py or cli.experiments --phase generate)"
+            "generate phase first (cli/generate.py or cli.experiments --phase generate)"
         )
 
     for spec in specs:

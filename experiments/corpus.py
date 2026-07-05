@@ -69,7 +69,7 @@ def sample_questions_per_bin(
 ) -> list[Question]:
     """Subset to ~`target` questions per bin by drawing whole documents.
 
-    Questions cluster within documents (PROJECT_SPEC §9), so the subset is drawn
+    Questions cluster within documents (USER_GUIDE §9), so the subset is drawn
     at the document level: within each bin, documents are shuffled by `seed` and
     added whole until the bin reaches `target` questions. A bin already at or
     below `target` is kept whole. The returned list preserves the original

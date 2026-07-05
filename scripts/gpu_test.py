@@ -9,7 +9,7 @@ Pipeline role:
     partition/GRES/module/environment configuration must be fixed before M3.
 
 CLI:
-    `python -m kaya.kaya submit kaya/gpu_test.py`
+    `python -m kaya.kaya submit scripts/gpu_test.py`
 
 Arguments:
     None. SLURM resource overrides, if needed, are supplied to `kaya.kaya

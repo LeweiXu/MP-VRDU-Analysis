@@ -68,14 +68,14 @@ MODULES = [
     "cli.run_probe",
     "cli.experiments",
     "cli.build_tables",
+    "cli.generate",
     "kaya",
     "kaya.kaya",
-    "kaya.download_hf",
-    "kaya.setup_env",
-    "kaya.prestage",
-    "kaya.gpu_test",
-    "kaya.generate",
-    "kaya.run_probe",
+    "scripts",
+    "scripts.download_hf",
+    "scripts.setup_env",
+    "scripts.prestage",
+    "scripts.gpu_test",
 ]
 
 

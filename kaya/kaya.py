@@ -995,10 +995,10 @@ def build_parser() -> argparse.ArgumentParser:
             Examples:
               python -m kaya.kaya show-config
               python -m kaya.kaya push
-              python -m kaya.kaya run kaya/setup_env.py
-              python -m kaya.kaya run kaya/prestage.py -- --skip-models
-              python -m kaya.kaya run kaya/run_probe.py -- loader --json
-              python -m kaya.kaya submit --time 00:05:00 kaya/gpu_test.py
+              python -m kaya.kaya run scripts/setup_env.py
+              python -m kaya.kaya run scripts/prestage.py -- --skip-models
+              python -m kaya.kaya run cli/run_probe.py -- loader --json
+              python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
               python -m kaya.kaya submit kaya/example.sbatch -- --script-arg value
               python -m kaya.kaya watch
 

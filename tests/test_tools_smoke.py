@@ -101,7 +101,7 @@ def test_marker_bbox_json_falls_back_to_pymupdf_layout(tmp_path: Path, monkeypat
 
 
 def test_prestage_smoke_selects_small_subset_and_is_repeatable(tmp_path: Path, monkeypatch) -> None:
-    import kaya.prestage as prestage
+    import scripts.prestage as prestage
 
     class FakeConfig:
         remote_root = str(tmp_path)
@@ -148,7 +148,7 @@ def test_prestage_smoke_selects_small_subset_and_is_repeatable(tmp_path: Path, m
 
 
 def test_local_prestage_defaults_marker_surya_to_cpu(tmp_path: Path, monkeypatch) -> None:
-    import kaya.prestage as prestage
+    import scripts.prestage as prestage
 
     class FakeConfig:
         remote_root = str(tmp_path)
@@ -176,7 +176,7 @@ def test_local_prestage_defaults_marker_surya_to_cpu(tmp_path: Path, monkeypatch
 
 
 def test_prestage_tool_device_override_wins(tmp_path: Path, monkeypatch) -> None:
-    import kaya.prestage as prestage
+    import scripts.prestage as prestage
 
     monkeypatch.setenv("TORCH_DEVICE", "cuda")
     prestage.prepare_tool_cache_env(tmp_path / ".cache", tool_device="cpu")
@@ -185,7 +185,7 @@ def test_prestage_tool_device_override_wins(tmp_path: Path, monkeypatch) -> None
 
 
 def test_prestage_cache_env_overrides_home_defaults(tmp_path: Path, monkeypatch) -> None:
-    import kaya.prestage as prestage
+    import scripts.prestage as prestage
 
     cache_dir = tmp_path / ".cache"
     monkeypatch.setenv("MODEL_CACHE_DIR", "/home/lxu/.cache/datalab/models")

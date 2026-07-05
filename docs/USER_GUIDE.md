@@ -169,82 +169,153 @@ do not serve the single thesis at 8 pages.
 
 ---
 
-# Runbook (how to run)
+# Runbook: running the experiments locally
 
-All commands are root-relative and use `envs/mpvrdu/bin/python`. The model is
-two-phase: **generate** on Kaya (GPU, offline), then **judge + build tables**
-locally (needs an API key, loads no models). A full mmlongbench run defaults to
-**~100 questions per Option-A bin** (document-level subset, ~309 Q); pass
-`--per-bin-questions 0` for the whole corpus, or `--sample-seed N` for a
-different subset. Add `--quantization 4bit` (or `8bit`) to load the reasoner
-quantized so the 8B fits a single 16GB V100 (bf16 needs 2x V100; see
-`SINGLE_GPU_8B_FEASIBILITY.md`). The judge defaults to `gemini`
-(`--judge gpt-4o-mini` / `stub`); its flags (`--full`, `--per-bin-questions`,
-`--quantization`) must match the generate phase so it reads the right predictions.
+This is the local guide: the pipeline runs on your own machine here. To dispatch
+the GPU-heavy generation to a SLURM/HPC cluster instead, see
+`kaya/KAYA_USER_GUIDE.md` (the same commands, wrapped in push / submit / pull).
 
-**Kaya resources.** Pick GPUs/RAM/walltime with `scripts/kaya_status.py`. bf16 8B
-uses `--gres gpu:v100:2`; 4-bit fits `--gres gpu:v100:1`. Short walltimes backfill
-faster. Reconnect with `kaya.kaya watch`, or `kaya.kaya pull` when done.
+Commands assume the project environment is active (or prefix each with
+`envs/<your-env>/bin/`). Everything is root-relative and self-contained under the
+repo root.
 
-## F1 frontier divergence (Table 1)
+## The two phases
 
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:2 --time 16:00:00 \
-  --job-name t1-full kaya/generate.py -- --experiment T1_headline --full --continue-on-error
-envs/mpvrdu/bin/python -m kaya.kaya pull
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T1_headline --full
-envs/mpvrdu/bin/python -m cli.gates frontier \
-  --table results/tables/full/table1_headline.csv \
-  --json-output results/gates/F1_frontier_divergence.json
-```
-Go if at least two of `text_heavy`/`in_between`/`visual_heavy` have different
-`frontier` values. Record the verdict in `docs/AGENT_GUIDE.md`.
+Every paper table is produced in two phases, split because the reasoner needs a
+GPU while the judge needs the internet:
 
-## F2 judge-human agreement / F3 classifier feasibility
+1. **generate** (GPU): runs each experiment's cells (conditioner -> render ->
+   representation -> reasoner) plus any GPU side work (retrievers, the doc-type
+   classifier), and caches the raw predictions per experiment. No internet needed.
+2. **judge** (internet, no GPU): reads the cached predictions, scores each with
+   an LLM judge, and builds the table CSVs. Loads no models.
+
+`cli.experiments` runs either or both:
 
 ```bash
-# F2: build the 200-row sheet from judged T1 rows, hand-label, then score kappa (gate 0.75)
-envs/mpvrdu/bin/python -m cli.gates agreement-sample --full \
-  --results results/cache/full/T1_headline/results.jsonl --output results/gates/agreement_sample.csv
-envs/mpvrdu/bin/python -m cli.gates agreement-score \
-  --sheet results/gates/agreement_sample.csv --json-output results/gates/F2_judge_human_agreement.json
-# F3: 100-doc classifier pilot (gate top-1 bin accuracy 0.70); --sample-only for a dry run
-envs/mpvrdu/bin/python -m cli.gates classifier-pilot --full \
-  --output results/gates/classifier_pilot.csv --json-output results/gates/F3_classifier_feasibility.json
+python -m cli.experiments --phase all      --experiment T1_headline --full   # both, one machine
+python -m cli.experiments --phase generate --experiment T1_headline --full   # GPU only
+python -m cli.experiments --phase judge    --experiment T1_headline --full   # judge + build only
 ```
 
-## Replications and mechanism (Tables 2-7)
+`cli.generate` is a generate-only entry point (the one a cluster submits); it
+takes the same corpus/model flags as the generate phase of `cli.experiments`.
+
+## `cli.experiments` arguments
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--experiment SEL` | `all` | An experiment name (`T1_headline`), a group (`all`, `section2`, `rq1`, `rq2`, `rq3`, `appendix`), or a comma list of either. |
+| `--phase {generate,judge,all}` | `all` | Which phase(s) to run. |
+| `--full` | off (smoke) | Full corpus + 8B reasoner. Without it: the frozen ~7-doc smoke corpus + 2B. |
+| `--judge SPEC` | `gemini` | Judge for the judge phase: `gemini` (free tier), `gpt-4o-mini` (paid), or `stub` (offline, deterministic). |
+| `--questions N` | none | Global cap: first N questions. Overrides `--per-bin-questions`. |
+| `--per-bin-questions N` | 100 | Full mmlongbench only: ~N questions per Option-A bin, drawn as whole documents. `0` = whole corpus (1091 Q). |
+| `--sample-seed N` | 0 | Which documents fill the per-bin subset. A different seed draws a disjoint-ish subset. |
+| `--quantization {4bit,8bit}` | off (bf16) | Load the local reasoner quantized (bitsandbytes) so the 8B fits one 16GB GPU. Appends `-4bit`/`-8bit` to the reasoner spec, so quantized rows get their own cache. |
+| `--continue-on-error` | off | In a grouped run, record a failing experiment's status and continue to the next. |
+| `--verbose` / `--quiet` | smoke=verbose | DEBUG per-cell/per-stage logging / force INFO. |
+
+**Phase-matching rule:** the judge phase re-resolves the same cells as generate,
+so the corpus/model flags (`--experiment`, `--full`, `--per-bin-questions`,
+`--sample-seed`, `--quantization`) MUST match between the two phases, or the
+judge looks for predictions that were never generated and errors.
+
+## Running individual vs all experiments
 
 ```bash
-# T2 (analytical) and T5 (composition) are aggregation-only from judged T1 rows:
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T2_analytical --full
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T5_composition --full
-# T3 (InternVL family), T4 (held-out MMLongBench subset), T6 (matched/cross), T7 (routing)
-# each generate on Kaya then judge locally, e.g.:
-envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:2 --job-name t4 \
-  kaya/generate.py -- --experiment T4_dataset --full --continue-on-error
-envs/mpvrdu/bin/python -m kaya.kaya pull
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T4_dataset --full
+python -m cli.experiments --phase all --experiment T1_headline --full                       # one table
+python -m cli.experiments --phase all --experiment T1_headline,T6_matched_cross,T7_routing --full  # a subset
+python -m cli.experiments --phase all --experiment section2 --full                          # all seven main tables (T1-T7)
+python -m cli.experiments --phase all --experiment all --full                               # + the T8 scale appendix
 ```
-Notes: **Table 4** replicates on a held-out subset of MMLongBench documents
-(disjoint docs for text_heavy/in_between, reused visual_heavy), not LongDocURL.
-**Table 6** is only populated for bins whose Table-1 frontier is `TLV`/`V` (an
-empty CSV with stable columns means no bin qualified). **Table 7** predicted
+
+Registry groups: `all` = T1-T8; `section2` = T1-T7; `rq1` = T1,T2,T3,T4;
+`rq2` = T5,T6; `rq3` = T7; `appendix` = T8. Experiments run in dependency order
+(T1 first); the aggregation-only tables (T2, T5) build from T1's cached rows with
+no new generation, so a judge-phase run of them just needs T1 already generated.
+
+## Generation cache: what the GPU phase writes
+
+Everything lands under `results/cache/<mode>/<experiment>/`, where `<mode>` is
+`smoke` or `full`. For `T1_headline` in full mode:
+
+```text
+results/cache/full/T1_headline/
+  predictions.jsonl       # durable reasoner outputs (the real GPU artifact)
+  generate_results.jsonl  # predictions scored by a throwaway STUB judge (ignore its scores)
+  generate_status.json    # {status: success|failed, error, traceback, ...} for this run
+  <side artifacts>        # e.g. retrieval.jsonl (T6), classifier.jsonl (T7)
+```
+
+- **`predictions.jsonl`** is one JSON object per cell (append-only, resumable).
+  Fields: `prediction_key` (SHA-256 over question_id + doc_id + condition +
+  representation + **model_spec** + dpi), `question_id`, `doc_id`, `condition`,
+  `representation`, `model_spec`, `text` (the model's answer), `page_indices`,
+  `input_text_tokens`, `input_visual_tokens`, `output_tokens`, `latency_s`,
+  `provenance`, `note`. Because `model_spec` is in the key, a bf16 run and a
+  `-4bit` run (or 2B vs 8B) write distinct rows into the same file and never
+  collide, so caches merge cleanly.
+- **`generate_results.jsonl`** mirrors predictions but scored by a throwaway stub
+  judge (`judge_spec: generate-throwaway`) just so the generate phase can print
+  rough counts. Do not read accuracy from it.
+- **`generate_status.json`** records whether the experiment finished
+  (`status: success`) or its error + traceback. `--continue-on-error` writes one
+  per experiment in a grouped run.
+- The cache is **append-only and resumable**: re-running skips cells already in
+  `predictions.jsonl` (keyed as above) and only generates missing/failed ones.
+  Delete an experiment's dir (`rm -rf results/cache/full/<name>`) to force a clean
+  regenerate.
+
+Two shared, reproducible caches sit alongside (not per-experiment) and are worth
+keeping between runs: `results/cache/renders/` (rasterized PDF pages) and
+`results/cache/marker/` (Marker parse output).
+
+## Judge phase: how it reads the cache and what it writes
+
+`--phase judge` re-resolves the same cells but, instead of calling the reasoner,
+**reads the cached prediction** for each cell (a prediction-cache hit keyed
+without the judge), sends (question, gold answer, model answer) to the judge, and
+writes the scored row. It loads no models; a missing prediction raises (that cell
+was never generated). It produces:
+
+```text
+results/cache/full/T1_headline/results.jsonl   # predictions + REAL judge scores
+results/tables/full/table1_headline.csv         # the built table
+```
+
+- **`results.jsonl`** is one row per cell with the real verdict. Fields:
+  `cache_key`, `question_id`, `doc_id`, `doc_type`, `condition`, `representation`,
+  `model_spec`, `judge_spec`, `answer` (judge-extracted answer), `correct`
+  (bool), `abstained` (bool), `score`, `is_unanswerable`, `hop`,
+  `evidence_sources`, the token/latency fields, and `metadata`. This is the file
+  every table builder and gate reads.
+- **`results/tables/<mode>/tableN_*.csv`** are the final tables (e.g.
+  `table1_headline.csv`, `table7_routing.csv`): one row per bin/policy with
+  accuracy, document-level bootstrap CIs, latency, token splits, and the marked
+  frontier. `python -m cli.build_tables` can rebuild these from cached rows
+  without re-judging.
+
+Judge API keys live only in the local `.env` (`GEMINI_API_KEY` /
+`OPENAI_API_KEY`), read from the environment, so export them (e.g.
+`set -a; . ./.env; set +a`) before the judge phase.
+
+## Gates
+
+```bash
+python -m cli.gates frontier --table results/tables/full/table1_headline.csv \
+    --json-output results/gates/F1_frontier_divergence.json      # F1: Go if >=2 bins differ
+python -m cli.gates agreement-sample --full --results results/cache/full/T1_headline/results.jsonl \
+    --output results/gates/agreement_sample.csv                  # F2: 200-row sheet to hand-label
+python -m cli.gates agreement-score --sheet results/gates/agreement_sample.csv \
+    --json-output results/gates/F2_judge_human_agreement.json    # F2: Cohen's kappa, gate 0.75
+python -m cli.gates classifier-pilot --full \
+    --output results/gates/classifier_pilot.csv \
+    --json-output results/gates/F3_classifier_feasibility.json   # F3: gate top-1 bin accuracy 0.70
+```
+
+Table notes: **Table 4** replicates on a held-out subset of MMLongBench documents
+(disjoint docs for text_heavy/in_between, reused visual_heavy). **Table 6** is
+only populated for bins whose Table-1 frontier is `TLV`/`V`. **Table 7** predicted
 routing reports the classifier's amortized latency as its own column.
 
-## One-machine and quantized runs
-
-```bash
-# GPU + internet on one box: run both phases at once
-envs/mpvrdu/bin/python -m cli.experiments --phase all --experiment T1_headline --full
-# all 7 main tables on one 16GB GPU in 4-bit (T3 InternVL / T4 need extra work; see AGENT_GUIDE)
-envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:1 --job-name full7-4bit \
-  kaya/generate.py -- --experiment section2 --full --quantization 4bit --continue-on-error
-```
-
-## Reset
-
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya clear-cache --logs        # wipe remote generation cache + logs
-envs/mpvrdu/bin/python -m kaya.kaya clear-cache --logs --local --yes   # also locally, no prompt
-```

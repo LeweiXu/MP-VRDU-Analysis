@@ -15,7 +15,7 @@ Pipeline role:
 
 CLI:
     `python -m kaya.kaya submit --gres gpu:v100:1 --time 00:30:00 --mem 48G \
-        --job-name attn-probe kaya/attn_probe.py`
+        --job-name attn-probe scripts/attn_probe.py`
 
 Arguments:
     None. SLURM resource overrides go to `kaya.kaya submit` before the script

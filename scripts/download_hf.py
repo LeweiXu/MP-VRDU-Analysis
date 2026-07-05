@@ -2,7 +2,7 @@
 
 Purpose:
     Provides robust Hugging Face snapshot/file staging utilities for
-    `kaya/prestage.py`, including local-cache probing, retry cleanup for partial
+    `scripts/prestage.py`, including local-cache probing, retry cleanup for partial
     Hub/Xet state, and a file-by-file MMLongBench staging path.
 
 Pipeline role:
@@ -11,7 +11,7 @@ Pipeline role:
     normal loader expects it. Compute jobs then run offline from those assets.
 
 CLI:
-    `python -m kaya.download_hf (--model ID | --dataset ID) [options]`
+    `python -m scripts.download_hf (--model ID | --dataset ID) [options]`
 
 Arguments:
     --model ID: Hugging Face model repo to snapshot.

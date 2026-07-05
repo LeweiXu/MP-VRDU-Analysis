@@ -13,7 +13,7 @@ Pipeline role:
     its own small, fast-queueing job (or `--experiment all` in one job).
 
 CLI:
-    `python -m kaya.kaya submit kaya/generate.py -- --experiment SEL [--full]`
+    `python -m kaya.kaya submit cli/generate.py -- --experiment SEL [--full]`
 
 Arguments:
     --experiment SEL: experiment name (e.g. T1_headline) or group
@@ -52,7 +52,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 from config import ExperimentConfig
 from experiments.corpus import load_questions
 from experiments.driver import configure_logging, run_generate
-from kaya.prestage import prepare_tool_cache_env
+from scripts.prestage import prepare_tool_cache_env
 
 
 def build_parser() -> argparse.ArgumentParser:

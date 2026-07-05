@@ -58,22 +58,22 @@ envs/mpvrdu/bin/python -m kaya.kaya push
 Build/update the Kaya env:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py
 ```
 
 Stage the dataset, all configured model weights, and tool caches on the login
 node:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py
 ```
 
 For a smaller first pass:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-models
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/prestage.py -- --skip-reasoner-models --retrieval-model-id BAAI/bge-small-en-v1.5
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-models
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-reasoner-models --retrieval-model-id BAAI/bge-small-en-v1.5
 ```
 
 `prestage.py` uses the Hugging Face Python package. Models are downloaded as
@@ -85,7 +85,7 @@ for Xet-backed cache downloads. `HF_TOKEN` is read from local `.env` and
 forwarded to the remote login-node process. `.env` itself is never rsynced.
 
 If prestage fails in PaddleOCR with a `PaddlePredictorOption` `TypeError`, rerun
-`envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py` first. The env needs
+`envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py` first. The env needs
 the PaddleX 3.1 pin from `requirements.txt`.
 
 ## kaya.py Commands
@@ -133,8 +133,8 @@ declares `# kaya: target=gpu`, or you pass `--target gpu`, `run` generates and
 submits a GPU sbatch wrapper.
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/run_probe.py -- loader --json
-envs/mpvrdu/bin/python -m kaya.kaya run --target gpu --time 00:05:00 kaya/gpu_test.py
+envs/mpvrdu/bin/python -m kaya.kaya run cli/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya run --target gpu --time 00:05:00 scripts/gpu_test.py
 ```
 
 Options:
@@ -157,7 +157,7 @@ Everything after `--` is passed to the script or command.
 Submits a repo-local `.py` or `.sbatch` file to SLURM.
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 kaya/gpu_test.py
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --arg-for-job value
 ```
 
@@ -213,26 +213,26 @@ CLI flags override these headers.
 Login-node data probe:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run kaya/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya run cli/run_probe.py -- loader --json
 ```
 
 GPU smoke:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 kaya/gpu_test.py
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 ```
 
 Heavy Stage 1 probes:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 kaya/run_probe.py -- model-family --run-heavy --json --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 kaya/run_probe.py -- retrieval --run-heavy --json
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/run_probe.py -- model-family --run-heavy --json --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/run_probe.py -- retrieval --run-heavy --json
 ```
 
 Single-experiment reasoner smoke (generate the headline table's predictions):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T1_headline
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T1_headline
 ```
 
 Experiments (all 8 tables, real models). Generation runs on Kaya (GPU); the
@@ -242,9 +242,9 @@ own experiment, so you can run one or all. Put `GEMINI_API_KEY` (or
 
 ```bash
 # phase 1 on Kaya: generate + cache predictions on the GPU (one job per experiment)
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment T1_headline
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T1_headline
 # ...or all experiments in one job:
-envs/mpvrdu/bin/python -m kaya.kaya submit kaya/generate.py -- --experiment all
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment all
 
 # bring the prediction cache back
 envs/mpvrdu/bin/python -m kaya.kaya pull

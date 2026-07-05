@@ -82,7 +82,7 @@ Data flow: `Question` → `InputConditioner.condition` → render pages →
 | `metrics/*` | accuracy (doc-level CI), retrieval, cost, frontier, abstention. |
 | `experiments/T*_*.py` | One reusable `Experiment` per paper table (T1-T8); smoke and full share them. |
 | `experiments/{base,registry,driver,corpus,tables}.py` | Experiment contract, name→experiment map, two-phase runner, corpus resolver, table primitives. |
-| `cli/experiments.py`, `kaya/generate.py` | Run experiments: generate on GPU, judge/build anywhere. |
+| `cli/experiments.py`, `cli/generate.py` | Run experiments: generate on GPU, judge/build anywhere. |
 
 **Frozen interfaces (Stage-3 freeze; change only via a checkpoint recorded
 here):** `schema.py` contracts; `models/payload.py::ModelInput` + its
@@ -155,7 +155,7 @@ Frozen list above.
 doc_type) + config knobs (`smoke`, `bins`, `cost_metric="latency_bs1"`,
 `sufficiency_margin=3`, `max_tokens`). M2: Marker `marker_text`/`marker_bbox_json`
 primary (PyMuPDF fallback for tests), PaddleOCR `ocr()`, visual channel, and a
-`kaya/prestage.py --smoke` barrier (tools reference below). M3: resolved the Qwen3-VL
+`scripts/prestage.py --smoke` barrier (tools reference below). M3: resolved the Qwen3-VL
 load path (`transformers==4.57.6` exposes `Qwen3VLForConditionalGeneration`),
 `LocalVLMBackend`, frozen prompt `m3-qwen3vl-v1`, token/latency accounting;
 (models reference below). M4: oracle ladder end to end through the resumable cache. M5:
@@ -164,7 +164,7 @@ all eight table builders + `cli/build_tables.py` (evaluation reference below). M
 `BM25BGERetriever` + `ColQwenRetriever`, page R/P/F1 + evidence-modality slices,
 `QwenDocTypeClassifier`, and matched/cross + four routing policies.
 
-## Per-experiment runs (two-phase: generate on Kaya, judge locally)
+## Per-experiment runs (two-phase: generate then judge)
 
 Each paper table is one reusable `Experiment` (`experiments/T1_headline.py` …
 `T8_scale.py`); the same object serves the tiny smoke run and the full run (only
@@ -187,7 +187,7 @@ stub reasoners or injected scorers on this path.
   `results/`). The local judge phase loads **no models** (prediction-cache hits
   only), which keeps the workstation responsive. The phase-2 `_GuardRetriever` /
   `_SpecOnlyReasoner` raise if a cell was missed in generation.
-- **Commands.** Kaya generate: `kaya.kaya submit kaya/generate.py -- --experiment
+- **Commands.** Kaya generate: `kaya.kaya submit cli/generate.py -- --experiment
   T1_headline` (or `all`), then `kaya.kaya pull`. Local judge+build:
   `cli.experiments --phase judge --experiment all`. One-machine (GPU + internet):
   `cli.experiments --phase all`. Add `--full` for the full corpus/8B. Judge
@@ -201,7 +201,7 @@ clears the Kaya queue in a couple of hours (short walltime backfills) rather tha
 needing a 2-day slot. `ExperimentConfig.per_bin_sample` (default 100) +
 `sample_seed` (default 0) drive it; `experiments/corpus.py::sample_questions_per_bin`
 draws **whole documents** per bin (never splitting a document) until the bin
-reaches the target, honoring the PROJECT_SPEC §9 document-level sampling rule.
+reaches the target, honoring the USER_GUIDE §9 document-level sampling rule.
 Bins below the target are kept whole, so visual-heavy stays at all 101 Q / 15 docs
 (it cannot be subset; SlideVQA is the planned visual robustness anchor). Default
 subset = 309 Q (text_heavy 100/11 docs, in_between 108/13, visual_heavy 101/15).
@@ -276,7 +276,7 @@ tokens/page) plus a size-aware override `config.max_pixels_for_spec` /
 max_pixels=)` -> `LocalVLMBackend`, applied via the per-image `max_pixels` key
 that `qwen_vl_utils.process_vision_info` honors. Same wiring also fixed
 `_reasoner_for` ignoring `config.max_tokens` (full runs were capped at 64 new
-tokens). `kaya/generate.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
+tokens). `cli/generate.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
 True` as a fragmentation mitigation. InternVL is untouched (fixed 448px tiling
 already bounds its vision tokens). Not a frozen-interface change: `get_reasoner`
 gained optional kwargs; `Reasoner.answer` and the cache key are unchanged.
@@ -288,7 +288,7 @@ and per-cell start/result lines; the orchestrator logs each stage (conditioner -
 render -> representation -> reasoner -> judge) at DEBUG, so an OOM/crash points at
 the exact cell and stage. On failure the full traceback is logged to stdout (the
 SLURM log), not just the per-experiment `generate_status.json`. One
-`kaya.kaya submit kaya/generate.py -- --experiment section2 --continue-on-error`
+`kaya.kaya submit cli/generate.py -- --experiment section2 --continue-on-error`
 job runs all seven Section-2 tables (T1-T7) with per-experiment isolation: a
 failing table records its status and the run continues to the next.
 
@@ -384,6 +384,20 @@ are untouched. (2) Tightened the 8B input cap 5120 -> 4096 (attention score
 ~3.4GiB -> ~2.1GiB). Both keep the peak comfortably inside 16GB per GPU. Verified
 by a small `t1-memtest` on 2xV100 before resubmitting the full run.
 
+**Third OOM: vision tokens are not capped (open).** The full bf16 t1-full (job
+1006495) still OOM'd at ~56% (698/1236 cells): `Tried to allocate 4.30GiB` in
+SDPA. Cause: `max_input_tokens` truncates the *text* context but not the *vision*
+tokens. A full-corpus question with many gold pages (7-8) contributes ~768 vision
+tokens/page = ~6000 vision tokens, which blows past the 4096 cap (the memtest's
+per-bin-1 docs topped out at 4 evidence pages, so it never hit this). The bf16
+weights leave only ~3GB headroom on a V100, so a ~5GB attention score OOMs. The
+fix is to also cap total vision tokens per cell (limit the page count, or shrink
+`max_pixels` further when a cell has many pages) — not yet implemented.
+**Important:** 4-bit weights are ~7GB vs bf16's ~13GB resident, so the same cell
+fits in 4-bit (7 + 5 < 16). The 4-bit-on-1-GPU path is therefore the more robust
+full run on V100s, and it also schedules far more easily (1 GPU vs a scarce 2-GPU
+node). See `docs/HANDOFF.md`.
+
 ## Quantized reasoner as a model-spec variant
 
 To run the 8B on one 16GB V100 (see feasibility above), quantization is exposed
@@ -396,48 +410,20 @@ structurally) and `size` still resolves to `8b` for the per-size pixel cap.
 bitsandbytes `BitsAndBytesConfig` (4-bit NF4 double-quant, or 8-bit) in
 `_load_components`; `model_id_for_spec` strips the suffix to find the base
 checkpoint. `config.quantization` (None/"4bit"/"8bit") appends the suffix to
-`reasoner_spec`; `--quantization` on `cli.experiments` and `kaya.generate` sets
+`reasoner_spec`; `--quantization` on `cli.experiments` and `cli.generate` sets
 it (must match between generate and judge phases). Not a frozen-interface change:
 `get_reasoner`/`LocalVLMBackend` gained an optional kwarg, cache key + ResultRow
 unchanged. `bitsandbytes==0.49.2` is in the remote env only, so the config-build
 test skips locally. Mains stay bf16; 4-bit is single-GPU iteration + a possible
 appendix row.
 
-## clear-cache command
+## Kaya operations (elsewhere)
 
-`kaya.kaya clear-cache` removes cached generation results on the remote to start
-fresh. Default drops `results/cache/{full,smoke}` + `results/tables/{full,smoke}`
-and keeps the expensive `renders`/`marker` parse caches; `--renders` also drops
-those, `--all` nukes all of `results/cache` + `results/tables` + logs, `--logs`
-empties `logs/` (keeps the dir, sbatch needs it), `--mode`/`--experiment` scope
-it, `--local` mirrors the removals locally, `--dry-run`/`--yes` gate execution.
-Paths are validated to stay inside `results/`/`logs/`.
-
-## Kaya operational notes (hazards that recur)
-
-- **Queue waits.** The GPU request (`--partition=gpu --gres=gpu:1`) never changed;
-  what grew was the resource envelope. `slurm` defaults are now `cpus=4, mem=24G,
-  time=00:30:00` (were `8/64G/02:00:00`). A long walltime is the main backfill
-  killer — short jobs slot into gaps, a 2h job waits for a full slot. Raise
-  per-job with `--time/--mem/--cpus-per-task` for the Section-2 grid.
-- **`run` vs `submit`.** `run` executes on the login node (SSH, no SLURM) unless
-  the `.py` header says `target=gpu`; `submit` always goes through SLURM (generated
-  sbatch for `.py`, as-is for `.sbatch`). GPU resources come from `kaya/config.json`
-  or `--partition/--gres/--cpus-per-task/--mem/--time/--account/--qos`.
-- **Offline caches.** Compute jobs run HF-offline and must read root-relative
-  caches: the runner exports `HF_HOME`/`HF_HUB_CACHE=<root>/.cache`, unsets
-  inherited `TRANSFORMERS_CACHE`, and sets `MODEL_CACHE_DIR=<root>/.cache/datalab/
-  models` (Marker/Surya) plus Paddle/Docling/Torch/Xet paths. `prestage.py`
-  stages Qwen weights, BGE, ColQwen, Marker/Surya, PaddleOCR, Docling; it is
-  idempotent (probes the Hub cache with `local_files_only` before any network).
-- **Orphaned remote processes.** Long login-node runs use `ssh -tt` (pty) +
-  keepalives + a `trap … HUP TERM INT` process-group kill so a local Ctrl-C tears
-  down the remote tree instead of orphaning it (HF's blocking sockets have no read
-  timeout and would hang forever). Never hand-edit the remote mirror — `push` is
-  `rsync --delete`. `logs/` must exist before `sbatch`.
-- **Live config to re-confirm (drifts):** modules `Anaconda3/2024.06`,
-  `cuda/12.6.3`, partition `gpu` (nodes k[026-042], 34 GPUs, MaxTime 3d), GRES
-  `gpu:1`; account/QOS blank (group membership grants access).
+The Kaya operational how-to, the `clear-cache` command, SLURM queue hazards,
+offline-cache setup, and module/config drift live in `kaya/KAYA_AGENT_GUIDE.md`,
+not here. This guide stays about the local pipeline and its decisions; the
+hardware findings above name the V100 only as the context those fixes were made
+for.
 
 ---
 
@@ -502,7 +488,7 @@ Condensed from the former `MODELS.md`, `DATA.md`, `TOOLS.md`, and
   degrades to full page (MMLongBench has no in-page boxes). The pymupdf fallback in
   `marker_bbox_json` exists only so local tests run before Marker is installed;
   `prestage --smoke` calls Marker with `allow_fallback=False`.
-- **Prestage.** `kaya/prestage.py [--smoke]` stages Qwen weights, BGE, ColQwen,
+- **Prestage.** `scripts/prestage.py [--smoke]` stages Qwen weights, BGE, ColQwen,
   Marker/Surya, PaddleOCR, Docling (idempotent, offline-probing). `--local --smoke`
   uses local caches and CPU tool device.
 

@@ -10,7 +10,7 @@ Purpose:
     - `--phase all`: both, in one process (a machine with GPU + internet).
 
     The intended Kaya flow keeps the heavy half on the cluster and the light half
-    local: `kaya.kaya submit kaya/generate.py -- --experiment X`, then
+    local: `kaya.kaya submit cli/generate.py -- --experiment X`, then
     `kaya.kaya pull`, then `python -m cli.experiments --phase judge --experiment X`
     locally.
 
@@ -48,7 +48,7 @@ import argparse
 from config import ExperimentConfig
 from experiments.corpus import load_questions
 from experiments.driver import configure_logging, run_generate, run_judge
-from kaya.prestage import prepare_tool_cache_env
+from scripts.prestage import prepare_tool_cache_env
 from pipeline.judge import get_judge
 
 

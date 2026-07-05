@@ -1,6 +1,6 @@
 # Can Qwen3-VL-8B run on a single 16GB V100?
 
-Written 2026-07-05. Evidence from probe job `1003970` (`kaya/single_gpu_probe.py`)
+Written 2026-07-05. Evidence from probe job `1003970` (`scripts/single_gpu_probe.py`)
 on one `Tesla V100-PCIE-16GB` (15.77 GiB usable), transformers 4.57.6, torch
 2.7.0+cu126, bitsandbytes 0.49.2.
 
@@ -103,7 +103,7 @@ Not implemented here since the main runs stay bf16; say the word if you want the
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:1 --time 00:30:00 \
-  --mem 48G --job-name qwen8b-1gpu-probe kaya/single_gpu_probe.py
+  --mem 48G --job-name qwen8b-1gpu-probe scripts/single_gpu_probe.py
 # then: kaya.kaya pull ; see logs/qwen8b-1gpu-probe_<id>.out
 ```
 

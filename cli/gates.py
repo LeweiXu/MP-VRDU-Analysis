@@ -43,7 +43,7 @@ from experiments.gates import (
     write_gate_json,
 )
 from experiments.tables import load_result_rows
-from kaya.prestage import prepare_tool_cache_env
+from scripts.prestage import prepare_tool_cache_env
 
 
 DEFAULT_TABLE1 = ROOT / "results" / "tables" / "full" / "table1_headline.csv"

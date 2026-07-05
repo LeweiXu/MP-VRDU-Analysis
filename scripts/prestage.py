@@ -11,8 +11,8 @@ Pipeline role:
     PyMuPDF embedded text, PaddleOCR, Marker text/layout, and visual helpers.
 
 CLI:
-    Remote: `python -m kaya.kaya run kaya/prestage.py -- [options]`
-    Local verification: `python -m kaya.prestage --local [options]`
+    Remote: `python -m kaya.kaya run scripts/prestage.py -- [options]`
+    Local verification: `python -m scripts.prestage --local [options]`
 
 Arguments:
     --local: use this checkout's `.cache` and `.data` instead of Kaya remote
@@ -53,7 +53,7 @@ from pathlib import Path
 from data.loader import resolve_pdf
 from data.render import render_pdf
 from experiments.smoke import SMOKE_DOC_IDS
-from kaya.download_hf import snapshot, stage_longdocurl_from_hub, stage_mmlongbench_from_hub
+from scripts.download_hf import snapshot, stage_longdocurl_from_hub, stage_mmlongbench_from_hub
 from kaya.kaya import load_config
 
 
@@ -208,7 +208,7 @@ def warm_paddleocr_cache() -> None:
         raise RuntimeError(
             "PaddleOCR/PaddleX version mismatch: "
             f"PaddlePredictorOption signature is {signature}, versions={versions}. "
-            "Run `envs/mpvrdu/bin/python -m kaya.kaya run kaya/setup_env.py` "
+            "Run `envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py` "
             "so requirements.txt pins `paddlex[ie,multimodal,ocr]>=3.1.0,<3.2.0`."
         )
 
