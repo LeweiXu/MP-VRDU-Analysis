@@ -45,7 +45,11 @@ class Routing(Experiment):
         from covariates.classifier import QwenDocTypeClassifier
 
         classifier = QwenDocTypeClassifier(
-            data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi
+            data_dir=config.paths.data_dir,
+            cache_dir=config.paths.cache_dir,
+            dpi=config.dpi,
+            max_pixels=config.max_pixels,
+            max_input_tokens=config.max_input_tokens,
         )
         seen: set[str] = set()
         side_dir.mkdir(parents=True, exist_ok=True)

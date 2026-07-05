@@ -16,7 +16,11 @@ CLI:
 
 Arguments:
     --config PATH: alternate Kaya JSON config (default: `kaya/config.json`).
-    COMMAND: one of `show-config`, `push`, `pull`, `run`, `submit`, `watch`.
+    COMMAND: one of `show-config`, `push`, `pull`, `run`, `submit`, `watch`,
+        `cancel`.
+
+    Runner options (`--gres`, `--time`, `--no-wait`, …) may appear before or
+    after PROGRAM; everything after the first `--` is forwarded to PROGRAM.
 
     `run` options: --target {auto,login,gpu}, --env/--no-env,
     --offline/--online, SLURM overrides for generated GPU Python jobs,
@@ -28,6 +32,9 @@ Arguments:
     (`.py` or `.sbatch`), and forwarded PROGRAM arguments after `--`.
 
     `watch` options: optional JOB_ID, --job-name, --no-pull, --tail-lines.
+
+    `cancel` options: JOB_ID... (explicit ids), --all (all your jobs),
+    --job-name NAME, --state STATE (restrict --all/--job-name).
 """
 
 from __future__ import annotations
@@ -35,7 +42,9 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
+import shutil
 import subprocess
+import sys
 import textwrap
 import time
 from dataclasses import dataclass
@@ -687,6 +696,170 @@ def handle_watch(config: KayaConfig, args: argparse.Namespace) -> None:
     print_log_tails(config, job_id, args.tail_lines, job_name=args.job_name)
 
 
+def user_jobs(config: KayaConfig) -> list[SqueueJobStatus]:
+    """Return the current user's queued/running jobs (empty if none)."""
+
+    fmt = "%i|%P|%j|%u|%t|%M|%l|%D|%R"
+    result = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "ConnectTimeout=10",
+            config.ssh_alias,
+            f'squeue -h -u "$(whoami)" -o {quote(fmt)}',
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or f"squeue exited {result.returncode}"
+        raise RuntimeError(message)
+    statuses: list[SqueueJobStatus] = []
+    for line in result.stdout.splitlines():
+        status = parse_squeue_row(line)
+        if status is not None:
+            statuses.append(status)
+    return statuses
+
+
+def print_user_jobs(config: KayaConfig, label: str) -> int:
+    """Print the user's current jobs and return the count."""
+
+    try:
+        jobs = user_jobs(config)
+    except RuntimeError as exc:
+        print(f"[cancel] could not list jobs ({label}): {exc}")
+        return -1
+    print(f"[cancel] {len(jobs)} job(s) {label}:")
+    for status in jobs:
+        print("  " + format_wait_status(status))
+    return len(jobs)
+
+
+def handle_cancel(config: KayaConfig, args: argparse.Namespace) -> None:
+    """Cancel SLURM jobs: explicit id(s), by --job-name, or --all (this user)."""
+
+    if not (args.all or args.job_name or args.job_id):
+        raise SystemExit("cancel needs one or more job ids, --job-name NAME, or --all")
+
+    print_user_jobs(config, "before cancel")
+
+    scope = f" --state={quote(args.state)}" if args.state else ""
+    commands: list[str] = []
+    if args.job_id:
+        commands.append("scancel " + " ".join(quote(job_id) for job_id in args.job_id))
+    if args.all:
+        commands.append(f'scancel -u "$(whoami)"{scope}')
+    if args.job_name:
+        commands.append(f'scancel -u "$(whoami)" --name={quote(args.job_name)}{scope}')
+
+    remote = " && ".join(commands)
+    print(f"[cancel] running on {config.ssh_alias}: {remote}")
+    result = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=10", config.ssh_alias, remote],
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(f"scancel exited {result.returncode}")
+    print_user_jobs(config, "remaining")
+
+
+def _clear_cache_targets(config: KayaConfig, args: argparse.Namespace) -> tuple[list[str], str | None]:
+    """Return (paths to rm -rf, logs dir to empty or None), all relative to root.
+
+    Scopes the removal to the generation caches and built tables so a stray
+    argument can never delete the whole remote root. `renders`/`marker` (the
+    expensive reproducible parse caches) are kept unless --renders/--all, so a
+    fresh run does not re-parse every page.
+    """
+
+    results_rel = str(config.raw["paths"]["results"]).strip("/")
+    logs_rel = str(config.raw["paths"]["logs"]).strip("/")
+    cache_rel = f"{results_rel}/cache"
+    tables_rel = f"{results_rel}/tables"
+
+    rm_targets: list[str] = []
+    clear_logs: str | None = None
+    if args.all:
+        rm_targets = [cache_rel, tables_rel]
+        clear_logs = logs_rel
+    else:
+        modes = [args.mode] if args.mode else ["full", "smoke"]
+        for mode in modes:
+            if args.experiment:
+                rm_targets.append(f"{cache_rel}/{mode}/{args.experiment}")
+            else:
+                rm_targets.append(f"{cache_rel}/{mode}")
+            rm_targets.append(f"{tables_rel}/{mode}")
+        if args.renders:
+            rm_targets.append(f"{cache_rel}/renders")
+            rm_targets.append(f"{cache_rel}/marker")
+        if args.logs:
+            clear_logs = logs_rel
+
+    # Safety: every target must stay inside results/ or logs/, no traversal.
+    allowed = (results_rel, logs_rel)
+    for rel in [*rm_targets, *( [clear_logs] if clear_logs else [] )]:
+        if ".." in rel.split("/") or not rel.startswith(allowed):
+            raise SystemExit(f"refusing to clear unexpected path: {rel!r}")
+    return rm_targets, clear_logs
+
+
+def handle_clear_cache(config: KayaConfig, args: argparse.Namespace) -> None:
+    """Remove cached generation results (and optionally logs) on Kaya.
+
+    Clears the per-experiment prediction/result caches and built tables so the
+    next run starts fresh. Remote by default; --local mirrors the same removals
+    in the local repo. Destructive, so it prints the targets and needs --yes
+    (or a 'y' confirmation) unless --dry-run.
+    """
+
+    rm_targets, clear_logs = _clear_cache_targets(config, args)
+    scope = "remote+local" if args.local else "remote"
+
+    print(f"[clear-cache] {scope} under {config.remote_root} :")
+    for rel in rm_targets:
+        print(f"  rm -rf   {rel}")
+    if clear_logs:
+        print(f"  empty    {clear_logs}/ (keep the dir; sbatch needs it)")
+    if args.local:
+        print(f"  (and the same paths under {LOCAL_ROOT})")
+
+    if args.dry_run:
+        print("[clear-cache] dry run, nothing removed")
+        return
+    if not args.yes:
+        reply = input("[clear-cache] proceed? [y/N] ").strip().lower()
+        if reply not in {"y", "yes"}:
+            print("[clear-cache] aborted")
+            return
+
+    lines = ["set -u"]
+    for rel in rm_targets:
+        lines.append(f"rm -rf {quote(config.remote_root + '/' + rel)}")
+    if clear_logs:
+        logs_abs = quote(config.remote_root + "/" + clear_logs)
+        lines.append(f"mkdir -p {logs_abs}")
+        lines.append(f"find {logs_abs} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +")
+    lines.append("echo '[clear-cache] remote done'")
+    ssh_script(config, "\n".join(lines))
+
+    if args.local:
+        for rel in rm_targets:
+            shutil.rmtree(LOCAL_ROOT / rel, ignore_errors=True)
+        if clear_logs:
+            logs_dir = LOCAL_ROOT / clear_logs
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            for child in logs_dir.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink(missing_ok=True)
+        print("[clear-cache] local done")
+
+
 def handle_run(config: KayaConfig, args: argparse.Namespace) -> None:
     """Run a Python file or command on login, or dispatch a Python file to GPU."""
 
@@ -855,7 +1028,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_slurm_args(run)
     add_job_lifecycle_args(run)
     run.add_argument("program", help="repo-local .py file to run, or a command name for login-node execution")
-    run.add_argument("program_args", nargs=argparse.REMAINDER, help="arguments forwarded after --")
 
     submit = sub.add_parser(
         "submit",
@@ -871,18 +1043,54 @@ def build_parser() -> argparse.ArgumentParser:
     add_slurm_args(submit)
     add_job_lifecycle_args(submit)
     submit.add_argument("program", help="repo-local .py or .sbatch file")
-    submit.add_argument("program_args", nargs=argparse.REMAINDER, help="arguments forwarded after --")
 
     watch = sub.add_parser("watch", help="wait for a job id, pull logs/results, and print matching log tails")
     watch.add_argument("job_id", nargs="?", help="SLURM job id; defaults to .kaya_last_job")
     watch.add_argument("--job-name", help="job name used in logs/<job>_<id>.out matching")
     watch.add_argument("--no-pull", action="store_true", help="do not pull logs/results before printing tails")
     watch.add_argument("--tail-lines", type=int, default=120, help="number of log lines to print")
+
+    cancel = sub.add_parser("cancel", help="cancel your SLURM jobs: explicit ids, --job-name, or --all")
+    cancel.add_argument("job_id", nargs="*", help="specific job id(s) to cancel")
+    cancel.add_argument("--all", action="store_true", help="cancel all of your jobs")
+    cancel.add_argument("--job-name", help="cancel your jobs with this SLURM job name")
+    cancel.add_argument("--state", help="restrict --all/--job-name to a SLURM state, e.g. PENDING or RUNNING")
+
+    clear = sub.add_parser(
+        "clear-cache",
+        help="remove cached generation results (and optionally logs) on Kaya to start fresh",
+    )
+    clear.add_argument("--mode", choices=("full", "smoke"), help="restrict to one mode (default: both)")
+    clear.add_argument("--experiment", help="restrict to one experiment dir under the mode(s)")
+    clear.add_argument("--renders", action="store_true", help="also drop the render/marker parse caches (else kept)")
+    clear.add_argument("--logs", action="store_true", help="also empty the logs/ directory (keeps the dir)")
+    clear.add_argument("--all", action="store_true", help="drop the whole results/cache + results/tables + logs")
+    clear.add_argument("--local", action="store_true", help="mirror the same removals in the local repo")
+    clear.add_argument("--dry-run", action="store_true", help="print targets without removing anything")
+    clear.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     return parser
 
 
+def split_forwarded_args(argv: list[str]) -> tuple[list[str], list[str]]:
+    """Split argv on the first standalone `--` into (runner args, forwarded).
+
+    Everything after the first `--` is forwarded verbatim to the program. This
+    is done before argparse so runner options (`--gres`, `--time`, `--no-wait`)
+    work whether they come before or after the program path, instead of being
+    swallowed by a REMAINDER positional when placed after it.
+    """
+
+    if "--" in argv:
+        index = argv.index("--")
+        return argv[:index], argv[index + 1 :]
+    return list(argv), []
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    runner_args, forwarded = split_forwarded_args(raw)
+    args = build_parser().parse_args(runner_args)
+    args.program_args = forwarded
     config = load_config(args.config)
 
     if args.command == "show-config":
@@ -897,6 +1105,10 @@ def main(argv: list[str] | None = None) -> int:
         handle_submit(config, args)
     elif args.command == "watch":
         handle_watch(config, args)
+    elif args.command == "cancel":
+        handle_cancel(config, args)
+    elif args.command == "clear-cache":
+        handle_clear_cache(config, args)
     return 0
 
 

@@ -15,6 +15,13 @@ are v3; the old three-topic v1 plan is archived at
 - **Dataset:** MMLongBench-Doc primary (only source with doc type, evidence-
   modality labels, gold pages, and the unanswerable signal). LongDocURL is the
   dataset replication (Stage F4); other datasets are optional.
+- **Hardware scope (this team):** the only GPUs we can reach are Kaya V100 16GB
+  (1 or 2 per node → 16 or 32GB). **The 32B model is out of scope for us** — it
+  does not fit our V100s. When the 32B scale-sanity row (Table 8) is actually
+  needed, run it on the supervisor's A100 account (his QOS/allocation), or have
+  him run that job for us; it is the only piece that requires A100-class VRAM.
+  The 8B primary runs on 2×V100 (32GB, `device_map="auto"` shards it) or on 1×
+  V100 only via CPU-offload/quantisation (bf16 8B weights alone are ~16GB).
 - **Reasoner:** Qwen3-VL-8B primary; 2B/32B appendix scale sanity (4B unused);
   InternVL3-8B replicates the RQ1 headline only. All behind one `Reasoner` ABC
   with local-weight and HTTP-API backends. Closed models are for comparison/
@@ -178,6 +185,25 @@ stub reasoners or injected scorers on this path.
   <smoke|full>/`. Judge keys are **not** forwarded to Kaya (only `HF_TOKEN` is);
   keep `GEMINI_API_KEY`/`OPENAI_API_KEY` in the local `.env`.
 
+**Default per-bin document-level subset for full runs.** A full mmlongbench run
+now defaults to ~100 questions per Option-A bin instead of all 1091, so a full T1
+clears the Kaya queue in a couple of hours (short walltime backfills) rather than
+needing a 2-day slot. `ExperimentConfig.per_bin_sample` (default 100) +
+`sample_seed` (default 0) drive it; `experiments/corpus.py::sample_questions_per_bin`
+draws **whole documents** per bin (never splitting a document) until the bin
+reaches the target, honoring the PROJECT_SPEC §9 document-level sampling rule.
+Bins below the target are kept whole, so visual-heavy stays at all 101 Q / 15 docs
+(it cannot be subset; SlideVQA is the planned visual robustness anchor). Default
+subset = 309 Q (text_heavy 100/11 docs, in_between 108/13, visual_heavy 101/15).
+A second `--sample-seed` gives a largely disjoint subset for a robustness rerun.
+CLI: `--per-bin-questions N` (0 = whole corpus, the old behaviour), `--sample-seed
+N`; an explicit `--questions N` global cap still overrides. Applies to mmlongbench
+full runs only (smoke and LongDocURL ignore it). **Gate provenance:** the F1
+frontier-divergence gate as specced wants the whole corpus, so a subset run is a
+fast preview; record whether an F1 verdict came from the 100/bin subset or
+`--per-bin-questions 0`. Not a frozen-interface change (additive config +
+corpus-resolver logic; cache key/`ResultRow` untouched).
+
 **Orchestrator cache-selection fix (bug found during the refactor).** `ResultCache`
 defines `__len__`, so an empty one is falsy; `Orchestrator.__init__` used
 `self.cache = cache or ResultCache(default)`, which silently discarded a fresh
@@ -255,6 +281,127 @@ SLURM log), not just the per-experiment `generate_status.json`. One
 `kaya.kaya submit kaya/generate.py -- --experiment section2 --continue-on-error`
 job runs all seven Section-2 tables (T1-T7) with per-experiment isolation: a
 failing table records its status and the run continues to the next.
+
+## GPU memory management (parser/reasoner co-residence)
+
+After the `max_pixels` cap, a full smoke run still OOM'd — but for a different
+reason the verbose logs exposed: **multiple model stacks piling onto one 16GB
+V100 and never being freed.** `create_model_dict()` in `tools/layout.py` reloads
+the whole Surya stack for every page/cell (the ~170s stalls), and nothing in the
+pipeline ever ran `torch.cuda.empty_cache()`. So the Marker/Surya parser, the
+ColQwen retriever, and the Qwen reasoner/classifier all sat on the GPU at once,
+and a single `section2` job accumulated them until T7 started at ~15GB in use.
+
+Fix (implemented): make the parser and the reasoner never share VRAM, and free
+GPU memory between stages/experiments.
+
+- **Marker disk cache** (`tools/layout.py`): `marker_text`/`marker_bbox_json`
+  cache each page's artifact under `results/cache/marker/` (root derived from the
+  page's render path, so tests use their tmp cache and prod uses the repo cache;
+  the frozen `Representation.build(pages)` signature is untouched). Real Marker
+  output is cached; the pymupdf fallback is not. On a warm cache the reasoner
+  phase never loads Surya. Also kills the per-cell reparse.
+- **Parse pre-pass** (`experiments/driver.py::generate` + `Orchestrator.prewarm_cell`):
+  before the reasoner weights load, run condition→render→`build` for every cell to
+  warm the Marker (and retrieval) caches, then `retriever.unload()` +
+  `free_gpu()`. The reason pass then has the whole GPU; `prewarm_cell` skips cells
+  whose prediction is already cached.
+- **Explicit frees**: `free_gpu()` (gc + `empty_cache` + `synchronize`) runs after
+  the pre-pass, after each spec's reason pass (`LocalVLMBackend.free()` drops the
+  weights), and after `run_side`. Retrievers gained `unload()`
+  (`ColQwenRetriever`/`BM25BGERetriever`/`MemoizedRetriever` keep their memoized
+  rankings, drop the model). The T7 classifier now also receives `max_pixels`.
+- **GPU count is controlled by `--gres`, not code.** `device_map="auto"` adapts:
+  1×V100 → CPU-offload for 8B (slow), 2×V100 → shard (fits). Testing plan: run
+  T1/T6/T7 with the 8B on `--gres gpu:v100:1` vs `gpu:v100:2` to see whether one
+  GPU suffices after this memory management or two are required.
+
+Not a frozen-interface change: additive caches + `unload`/`free`/`prewarm_cell`
+methods; the cache keys and `ResultRow` are untouched.
+
+## Single-16GB-GPU 8B feasibility (quantization option)
+
+Probe `1003970` (`kaya/single_gpu_probe.py`, 2026-07-05) on one V100 16GB:
+8B **bf16 does not fit** one V100 (OOM at load), but **4-bit NF4 fits at 7.1GiB
+peak and 8-bit at 10.2GiB**, both generating correct answers. Quantization is not
+faster (Volta has no FA2; image cells ~30s either way) — the payoff is
+schedulability (1-GPU jobs backfill in minutes vs an overnight wait for a 2-GPU
+node). Tradeoff: quantized weights are not the pre-registered bf16, so main/table
+numbers stay on **2×V100 bf16**; 4-bit is for fast iteration and a possible
+appendix quant-sensitivity row. `bitsandbytes==0.49.2` installed into the remote
+`envs/mpvrdu` (rsync-excluded, persists). Running the pipeline quantized would need
+a `quantization` kwarg threaded `get_reasoner -> LocalVLMBackend` plus
+`quantization` added to the cache key (additive, not a frozen-interface change);
+not wired yet. Full writeup: `SINGLE_GPU_8B_FEASIBILITY.md`.
+
+## V100 has no efficient attention: reasoner input-token cap
+
+Probe `1004834` (`kaya/attn_probe.py`) established on a real V100 that **Qwen3-VL
+has no memory-efficient attention kernel available on Volta (sm_70)**: forcing
+`SDPBackend.EFFICIENT_ATTENTION` raises "No available kernel" for both bf16 and
+fp16, and there is no FlashAttention-2 on sm_70. So attention **always** runs the
+math kernel, which materializes the full `[heads, seq, seq]` score matrix
+(O(seq^2) memory). A single dense-page `TL` cell (serialized bbox-layout JSON is
+~30k tokens) then tries to allocate ~105 GiB and OOMs — **on 2xV100 too**, since
+attention runs per-GPU. This is a critical-path bug the 4-bit smoke surfaced
+(the earlier runs never reached the reasoner, dying in the parse pre-pass).
+
+Fix: a size-aware **input-token cap** (`config.max_input_tokens`, default 8192;
+`MAX_INPUT_TOKENS_BY_SIZE` = 8B->5120, 32B->3072) threaded
+`_reasoner_for -> get_reasoner -> LocalVLMBackend` (and into
+`QwenDocTypeClassifier`). `LocalVLMBackend.render_prompt`/`_truncate_context`
+trims the context text to the budget left after reserving for images + template,
+**keeping every image placeholder** so image counts still match; truncated cells
+put images first then trimmed text. 5120 keeps the 8B score matrix ~3.4 GiB,
+which fits on one 16GB V100 (4-bit) and per-GPU on 2xV100 (bf16).
+
+**Deviation recorded:** this truncates the text of very long `T`/`TL`/`TLV` cells
+(dense pages) on the main runs, not just the smoke. It is forced by V100 hardware
+(no O(seq) attention). The `TL` bbox-layout JSON is the main offender and is a
+candidate for a more compact serialization later (would raise the effective text
+budget). Not a frozen-interface change: additive optional kwargs; cache key +
+ResultRow unchanged. `_sdpa_context` still prefers the efficient kernel when one
+exists (e.g. an A100), and is a harmless no-op on the V100.
+
+**Second OOM: 2xV100 weight-shard headroom.** With the input cap in place, the
+bf16 8B on 2xV100 still OOM'd after ~50 real cells (`GPU 1: 13.0GiB in use, a
+2.9GiB alloc, 2.76GiB free` — missed by 0.14GiB). Cause: `device_map="auto"`
+fills each GPU with weights and leaves almost no room for the activation/KV/
+attention peak, so a longer-text cell tips one GPU over. Fixes: (1)
+`LocalVLMBackend._max_memory_map` reserves ~5GiB/GPU when sharding across >1 GPU
+(caps each V100 at ~10GiB of weights, leaving ~5GiB free); single-GPU/4-bit loads
+are untouched. (2) Tightened the 8B input cap 5120 -> 4096 (attention score
+~3.4GiB -> ~2.1GiB). Both keep the peak comfortably inside 16GB per GPU. Verified
+by a small `t1-memtest` on 2xV100 before resubmitting the full run.
+
+## Quantized reasoner as a model-spec variant
+
+To run the 8B on one 16GB V100 (see feasibility above), quantization is exposed
+as a **spec suffix**, not a new cache-key field: `qwen3vl-8b-local-4bit` /
+`-8bit`. `ModelSpec.parse` strips the trailing `-4bit`/`-8bit` into
+`ModelSpec.quantization` while `name` keeps the full string, so quantized runs
+get **their own cache rows** (the cache key uses the spec string, unchanged
+structurally) and `size` still resolves to `8b` for the per-size pixel cap.
+`get_reasoner` passes `quantization` to `LocalVLMBackend`, which builds a
+bitsandbytes `BitsAndBytesConfig` (4-bit NF4 double-quant, or 8-bit) in
+`_load_components`; `model_id_for_spec` strips the suffix to find the base
+checkpoint. `config.quantization` (None/"4bit"/"8bit") appends the suffix to
+`reasoner_spec`; `--quantization` on `cli.experiments` and `kaya.generate` sets
+it (must match between generate and judge phases). Not a frozen-interface change:
+`get_reasoner`/`LocalVLMBackend` gained an optional kwarg, cache key + ResultRow
+unchanged. `bitsandbytes==0.49.2` is in the remote env only, so the config-build
+test skips locally. Mains stay bf16; 4-bit is single-GPU iteration + a possible
+appendix row.
+
+## clear-cache command
+
+`kaya.kaya clear-cache` removes cached generation results on the remote to start
+fresh. Default drops `results/cache/{full,smoke}` + `results/tables/{full,smoke}`
+and keeps the expensive `renders`/`marker` parse caches; `--renders` also drops
+those, `--all` nukes all of `results/cache` + `results/tables` + logs, `--logs`
+empties `logs/` (keeps the dir, sbatch needs it), `--mode`/`--experiment` scope
+it, `--local` mirrors the removals locally, `--dry-run`/`--yes` gate execution.
+Paths are validated to stay inside `results/`/`logs/`.
 
 ## Kaya operational notes (hazards that recur)
 

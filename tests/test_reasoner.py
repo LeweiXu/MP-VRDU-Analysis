@@ -24,7 +24,7 @@ from typing import Any
 import torch
 from PIL import Image
 
-from models import get_reasoner
+from models import ModelSpec, get_reasoner
 from models.internvl import LocalInternVLBackend
 from models.local_vlm import LocalVLMBackend, PROMPT_TEMPLATE_VERSION, hf_cache_dir_from_env, render_prompt
 from models.payload import ModelInput
@@ -179,6 +179,66 @@ def test_registry_dispatches_full_qwen_specs_to_local_backend() -> None:
         reasoner = get_reasoner(spec)
         assert isinstance(reasoner, LocalVLMBackend)
         assert reasoner.model_id == model_id
+
+
+def test_render_prompt_truncates_long_context_and_keeps_image_placeholders() -> None:
+    from models.local_vlm import IMAGE_PLACEHOLDER, _truncate_context
+
+    class WordTokenizer:
+        """Toy whitespace tokenizer: one token per word."""
+
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": text.split()}
+
+        def decode(self, ids, skip_special_tokens=True):
+            return " ".join(ids)
+
+    tok = WordTokenizer()
+    long_text = " ".join(f"w{i}" for i in range(5000))
+    # No images: text trimmed to the budget (cap - reserve).
+    out = _truncate_context(tok, long_text, 0, max_input_tokens=1000, per_image_tokens=800)
+    assert len(out.split()) <= 1000 - 256
+    # Two images: every placeholder is preserved so the image count still matches.
+    context = f"{IMAGE_PLACEHOLDER}{long_text}{IMAGE_PLACEHOLDER}"
+    out2 = _truncate_context(tok, context, 2, max_input_tokens=4096, per_image_tokens=800)
+    assert out2.count(IMAGE_PLACEHOLDER) == 2
+    # Short context is returned unchanged.
+    assert _truncate_context(tok, "short text", 0, 4096, 800) == "short text"
+
+
+def test_model_spec_parses_quantization_suffix() -> None:
+    plain = ModelSpec.parse("qwen3vl-8b-local")
+    assert plain.quantization is None
+    assert plain.size == "8b"
+    assert plain.base_name == "qwen3vl-8b-local"
+
+    quant = ModelSpec.parse("qwen3vl-8b-local-4bit")
+    # The full name is the cache identity; base_name resolves the checkpoint.
+    assert quant.name == "qwen3vl-8b-local-4bit"
+    assert quant.quantization == "4bit"
+    assert quant.size == "8b"          # per-size pixel cap still resolves
+    assert quant.base_name == "qwen3vl-8b-local"
+    assert ModelSpec.parse("qwen3vl-2b-local-8bit").quantization == "8bit"
+
+
+def test_registry_dispatches_quantized_spec_with_base_model_id() -> None:
+    reasoner = get_reasoner("qwen3vl-8b-local-4bit")
+
+    assert isinstance(reasoner, LocalVLMBackend)
+    assert reasoner.spec == "qwen3vl-8b-local-4bit"      # distinct cache identity
+    assert reasoner.model_id == "Qwen/Qwen3-VL-8B-Instruct"  # base checkpoint
+    assert reasoner.quantization == "4bit"
+
+
+def test_quantization_config_builds_bnb_4bit_and_8bit() -> None:
+    import pytest
+
+    pytest.importorskip("bitsandbytes")  # installed on Kaya, not the local env
+    four = LocalVLMBackend("qwen3vl-8b-local-4bit", quantization="4bit")._quantization_config()
+    assert four is not None and four.load_in_4bit
+    eight = LocalVLMBackend("qwen3vl-8b-local-8bit", quantization="8bit")._quantization_config()
+    assert eight is not None and eight.load_in_8bit
+    assert LocalVLMBackend("qwen3vl-8b-local", quantization=None)._quantization_config() is None
 
 
 def test_registry_dispatches_internvl_family_spec() -> None:

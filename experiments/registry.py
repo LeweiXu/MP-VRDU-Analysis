@@ -16,8 +16,6 @@ Arguments:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from experiments.base import Experiment
 from experiments.T1_headline import Headline
 from experiments.T2_analytical import Analytical
@@ -55,16 +53,27 @@ GROUPS: dict[str, tuple[str, ...]] = {
 
 
 def resolve(selector: str) -> list[Experiment]:
-    """Expand a selector (an experiment name or a group) to experiments in order."""
+    """Expand a selector to experiments, in registry order, de-duplicated.
 
-    key = selector.strip()
-    if key in GROUPS:
-        names: Sequence[str] = GROUPS[key]
-    elif key in EXPERIMENTS:
-        names = (key,)
-    else:
-        raise ValueError(
-            f"unknown experiment/group {selector!r}; choose from "
-            f"{sorted(EXPERIMENTS)} or groups {sorted(GROUPS)}"
-        )
-    return [EXPERIMENTS[name] for name in names]
+    A selector is an experiment name (`T1_headline`), a group (`section2`), or a
+    comma-separated list of either (`T1_headline,T6_matched_cross,T7_routing`),
+    so an ad-hoc subset runs as one job without needing its own group.
+    """
+
+    names: list[str] = []
+    for token in selector.split(","):
+        key = token.strip()
+        if not key:
+            continue
+        if key in GROUPS:
+            names.extend(GROUPS[key])
+        elif key in EXPERIMENTS:
+            names.append(key)
+        else:
+            raise ValueError(
+                f"unknown experiment/group {key!r}; choose from "
+                f"{sorted(EXPERIMENTS)} or groups {sorted(GROUPS)}"
+            )
+    # De-dupe while keeping the registry's dependency order (T1 before its dependents).
+    ordered = [name for name in ORDER if name in set(names)]
+    return [EXPERIMENTS[name] for name in ordered]

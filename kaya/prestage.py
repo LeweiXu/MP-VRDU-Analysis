@@ -19,6 +19,7 @@ Arguments:
         paths; intended for local smoke verification, not cluster staging.
     --smoke: stage only the MVP smoke subset and run fast tool smoke checks.
     --skip-dataset: do not stage MMLongBench-Doc.
+    --skip-longdocurl: do not stage the LongDocURL replication set (T4, ~2.6GB).
     --skip-models: skip all configured model snapshots.
     --skip-reasoner-models: skip Qwen reasoner snapshots only.
     --skip-retrieval-models: skip BGE/ColPali/ColQwen snapshots only.
@@ -52,7 +53,7 @@ from pathlib import Path
 from data.loader import resolve_pdf
 from data.render import render_pdf
 from experiments.smoke import SMOKE_DOC_IDS
-from kaya.download_hf import snapshot, stage_mmlongbench_from_hub
+from kaya.download_hf import snapshot, stage_longdocurl_from_hub, stage_mmlongbench_from_hub
 from kaya.kaya import load_config
 
 
@@ -72,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="stage only the MVP smoke subset and run fast tool smoke checks",
     )
     parser.add_argument("--skip-dataset", action="store_true", help="do not stage MMLongBench-Doc")
+    parser.add_argument(
+        "--skip-longdocurl",
+        action="store_true",
+        help="do not stage the LongDocURL replication dataset (T4; ~2.6GB of PDFs)",
+    )
     parser.add_argument(
         "--skip-models",
         action="store_true",
@@ -441,6 +447,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mmlongbench staged -> {staged}")
     else:
         print("[prestage] skipping dataset staging")
+
+    # LongDocURL is the Section-F4 (Table 4) replication set, only needed by full
+    # runs. Staged independently of MMLongBench so it can be fetched on its own,
+    # and skipped for smoke (T4 is aggregation-only there).
+    if args.skip_longdocurl or args.smoke:
+        print("[prestage] skipping LongDocURL staging")
+    else:
+        longdocurl_id = config.raw.get("datasets", {}).get("longdocurl", "dengchao/LongDocURL")
+        print(f"[prestage] downloading/staging LongDocURL {longdocurl_id}")
+        staged_ldu = stage_longdocurl_from_hub(
+            longdocurl_id,
+            args.revision,
+            cache_dir,
+            data_dir,
+            args.copy,
+            args.force_download,
+        )
+        print(f"longdocurl staged -> {staged_ldu}")
 
     if not args.skip_tool_caches:
         warm_tool_caches(

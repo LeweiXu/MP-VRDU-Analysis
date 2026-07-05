@@ -26,11 +26,68 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from config import DEFAULT_PATHS
 from schema import Page
 
 
 class MarkerUnavailableError(RuntimeError):
     """Raised when Marker is required but cannot produce an artifact."""
+
+
+def _safe_stem(name: str) -> str:
+    """Filesystem-safe PDF stem (mirrors data.render.safe_stem, kept local to
+    avoid importing the renderer into the tool layer)."""
+
+    stem = Path(name).stem
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_") or "document"
+
+
+def _marker_cache_root(page: Page) -> Path:
+    """Cache root beside `results/cache/renders`, derived from the page image.
+
+    Using the render path means tests (which render into a tmp cache) and prod
+    (repo cache) both land their Marker cache in the same tree, without threading
+    a cache_dir through the frozen `Representation.build(pages)` interface.
+    """
+
+    if page.image_path is not None:
+        try:
+            # <root>/renders/<stem>__dpiN/page_XXXX.png -> parents[2] == <root>
+            return Path(page.image_path).parents[2]
+        except IndexError:
+            pass
+    return Path(DEFAULT_PATHS.cache_dir)
+
+
+def _marker_cache_file(page: Page, kind: str) -> Path:
+    """Disk path for one page's cached Marker artifact (`kind` = text|bbox)."""
+
+    stem = _safe_stem(Path(page.pdf_path).name)
+    ext = "md" if kind == "text" else "json"
+    return _marker_cache_root(page) / "marker" / f"{stem}__p{page.index:04d}__{kind}.{ext}"
+
+
+def _read_marker_cache(page: Page, kind: str) -> str | None:
+    """Return a cached Marker artifact string, or None on miss/error."""
+
+    path = _marker_cache_file(page, kind)
+    if not path.exists():
+        return None
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
+def _write_marker_cache(page: Page, kind: str, value: str) -> None:
+    """Persist one real Marker artifact (best effort; never raises)."""
+
+    path = _marker_cache_file(page, kind)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value)
+    except OSError:
+        pass
 
 
 def _jsonable(value: Any) -> Any:
@@ -176,17 +233,29 @@ def _marker_text_from_rendered(rendered: Any) -> str:
 
 
 def marker_text(pages: Sequence[Page], *, allow_fallback: bool = True) -> tuple[str, ...]:
-    """Return Marker-extracted text for each page."""
+    """Return Marker-extracted text for each page.
+
+    Results are cached to disk per page so Marker/Surya (which load onto the GPU)
+    run once. On a warm cache the reasoner phase never loads Surya, which is what
+    keeps the parser and the reasoner from sharing VRAM. Fallback text is not
+    cached, so a real Marker artifact can replace it on a later warm pass.
+    """
 
     out: list[str] = []
     for page in pages:
+        cached = _read_marker_cache(page, "text")
+        if cached is not None:
+            out.append(cached)
+            continue
         try:
-            text = _marker_text_from_rendered(_marker_render(page, "markdown"))
+            text = _marker_text_from_rendered(_marker_render(page, "markdown")).strip()
         except Exception as exc:
             if not allow_fallback:
                 raise MarkerUnavailableError(f"Marker text failed for {page.pdf_path} page {page.index}: {exc}") from exc
-            text = page.text
-        out.append(text.strip())
+            out.append(page.text.strip())
+            continue
+        _write_marker_cache(page, "text", text)
+        out.append(text)
     return tuple(out)
 
 
@@ -195,6 +264,11 @@ def marker_bbox_json(pages: Sequence[Page], *, allow_fallback: bool = True) -> t
 
     out: list[str] = []
     for page in pages:
+        cached = _read_marker_cache(page, "bbox")
+        if cached is not None:
+            out.append(cached)
+            continue
+        cache_ok = True
         try:
             rendered = _marker_render(page, "json")
             blocks = _collect_marker_blocks(rendered)
@@ -213,7 +287,11 @@ def marker_bbox_json(pages: Sequence[Page], *, allow_fallback: bool = True) -> t
                     f"Marker bbox JSON failed for {page.pdf_path} page {page.index}: {exc}"
                 ) from exc
             artifact = _fallback_layout(page, source="pymupdf-fallback", error=str(exc))
-        out.append(json.dumps(artifact, sort_keys=True))
+            cache_ok = False  # do not cache the pymupdf fallback
+        serialized = json.dumps(artifact, sort_keys=True)
+        if cache_ok:
+            _write_marker_cache(page, "bbox", serialized)
+        out.append(serialized)
     return tuple(out)
 
 

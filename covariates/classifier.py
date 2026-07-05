@@ -149,11 +149,18 @@ class QwenDocTypeClassifier(DocTypeClassifier):
         reasoner_spec: str = CLASSIFIER_REASONER_SPEC,
         representation: str = "TLV",
         max_pages: int = 2,
+        max_pixels: int | None = None,
+        max_input_tokens: int | None = None,
     ) -> None:
         self.data_dir = Path(data_dir or DEFAULT_PATHS.data_dir)
         self.cache_dir = Path(cache_dir or DEFAULT_PATHS.cache_dir)
         self.dpi = int(dpi)
-        self.reasoner = reasoner or get_reasoner(reasoner_spec)
+        # Cap the classifier's own vision tokens and input length too (it feeds
+        # first-page images + few-shot text through the same local VLM); without
+        # this its pages/context are uncapped and can OOM the math attention kernel.
+        self.reasoner = reasoner or get_reasoner(
+            reasoner_spec, max_pixels=max_pixels, max_input_tokens=max_input_tokens
+        )
         self.reasoner_spec = reasoner_spec
         self.representation = representation
         self.max_pages = max(1, int(max_pages))

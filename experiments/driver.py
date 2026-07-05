@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import ExperimentConfig, max_pixels_for_spec
+from config import ExperimentConfig, max_input_tokens_for_spec, max_pixels_for_spec
 from covariates.retriever import (
     BM25BGERetriever,
     ColQwenRetriever,
@@ -79,6 +79,28 @@ def _answer_preview(text: str, limit: int = 160) -> str:
 
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def free_gpu() -> None:
+    """Best-effort release of freed CUDA memory back to the driver.
+
+    Python-drops of model objects return their tensors to torch's caching
+    allocator, but not to the driver until `empty_cache`. Calling this after each
+    heavyweight stage (parser, retriever, reasoner) is what lets the next stage
+    have the whole GPU on a 16GB V100. Never raises.
+    """
+
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
 
 
 def mode(config: ExperimentConfig) -> str:
@@ -223,13 +245,20 @@ def _reasoner_for(spec: str, config: ExperimentConfig | None = None):
     if config is None:
         return get_reasoner(spec)
     max_pixels = max_pixels_for_spec(spec, config.max_pixels)
+    max_input_tokens = max_input_tokens_for_spec(spec, config.max_input_tokens)
     log.info(
-        "building reasoner spec=%s max_new_tokens=%d max_pixels=%d",
+        "building reasoner spec=%s max_new_tokens=%d max_pixels=%d max_input_tokens=%d",
         spec,
         config.max_tokens,
         max_pixels,
+        max_input_tokens,
     )
-    return get_reasoner(spec, max_new_tokens=config.max_tokens, max_pixels=max_pixels)
+    return get_reasoner(
+        spec,
+        max_new_tokens=config.max_tokens,
+        max_pixels=max_pixels,
+        max_input_tokens=max_input_tokens,
+    )
 
 
 def generate(config: ExperimentConfig, exp: Experiment, questions: Sequence[Question]) -> None:
@@ -250,16 +279,38 @@ def generate(config: ExperimentConfig, exp: Experiment, questions: Sequence[Ques
         list(specs) or "(aggregation-only)",
     )
 
+    reasoner = None
     for spec in specs:
+        reasoner = _reasoner_for(spec, config)
         orchestrator = Orchestrator(
             config,
-            reasoner=_reasoner_for(spec, config),
+            reasoner=reasoner,
             judge=StubJudge("generate-throwaway"),
             cache=generate_cache,
             prediction_cache=prediction_cache,
         )
         cells = exp.generation_cells(config, exp_questions, retrievers=retrievers)
         log.info("%s spec=%s: %d cells to run", exp.name, spec, len(cells))
+
+        # Parse pre-pass: warm the Marker/Surya (and retrieval) disk caches with
+        # the reasoner NOT yet loaded, then free those model stacks. This is what
+        # stops the parser and the reasoner from sharing VRAM on a 16GB V100.
+        log.info("%s spec=%s: parse pre-pass (warming caches, reasoner not loaded)", exp.name, spec)
+        prewarm_started = time.perf_counter()
+        for index, cell in enumerate(cells, start=1):
+            try:
+                orchestrator.prewarm_cell(cell.question, cell.conditioner, cell.representation)
+            except Exception:
+                log.error(
+                    "prewarm FAILED %s cell %d/%d q=%s cond=%s rep=%s",
+                    exp.name, index, len(cells), cell.question.id, cell.conditioner.name, cell.representation,
+                )
+                raise
+        retrievers.text.unload()
+        retrievers.vision.unload()
+        free_gpu()
+        log.info("%s spec=%s: pre-pass done (%.1fs); GPU freed for reasoner", exp.name, spec, time.perf_counter() - prewarm_started)
+
         for index, cell in enumerate(cells, start=1):
             label = (
                 f"{exp.name} spec={spec} cell {index}/{len(cells)} "
@@ -284,9 +335,18 @@ def generate(config: ExperimentConfig, exp: Experiment, questions: Sequence[Ques
                 _answer_preview(row.answer),
             )
 
+        # Release the reasoner before the next spec or the side work, so a
+        # multi-spec table (or the classifier in run_side) starts from a clean GPU.
+        if hasattr(reasoner, "free"):
+            reasoner.free()
+        del orchestrator
+        reasoner = None
+        free_gpu()
+
     log.info("%s: running side work in %s", exp.name, paths.side_dir)
     started = time.perf_counter()
     exp.run_side(config, exp_questions, paths.side_dir)
+    free_gpu()  # side work (retriever/classifier) also holds GPU weights
     log.info("%s: side work done (%.1fs)", exp.name, time.perf_counter() - started)
 
 

@@ -31,8 +31,13 @@ import argparse
 import importlib.metadata
 import os
 import shutil
+import tarfile
 from pathlib import Path
 from typing import Iterable
+
+
+LONGDOCURL_ANNOTATION = "LongDocURL_public.jsonl"
+LONGDOCURL_PDF_ARCHIVE = "pdf_files.tar.gz"
 
 
 RETRYABLE_DOWNLOAD_ERRORS = (
@@ -496,6 +501,70 @@ def stage_mmlongbench_from_hub(
         )
     print(f"[download_hf] mmlongbench staging skipped {skipped}/{total} already-staged file(s)")
 
+    return target_root
+
+
+def stage_longdocurl_from_hub(
+    repo_id: str,
+    revision: str | None,
+    cache_dir: Path,
+    data_dir: Path,
+    copy: bool,
+    force_download: bool,
+) -> Path:
+    """Download LongDocURL and lay it out the way the loader expects.
+
+    Grabs only the annotation JSONL and `pdf_files.tar.gz` (the ~5GB of PNG
+    tarballs are unused), and exposes:
+
+    - `.data/longdocurl/LongDocURL_public.jsonl`
+    - `.data/longdocurl/documents/<doc_no>.pdf` (flattened out of the tarball)
+
+    which is what `data.loader.load_longdocurl` / `resolve_longdocurl_pdf` read
+    offline. Idempotent: staged files are skipped and a `.pdfs_staged` marker
+    short-circuits re-extraction (use `--force-download` to redo it).
+    """
+
+    os.environ.setdefault("HF_HOME", str(cache_dir))
+    os.environ.setdefault("HF_XET_CACHE", str(cache_dir / "xet"))
+    target_root = data_dir / "longdocurl"
+    docs_target = target_root / "documents"
+    docs_target.mkdir(parents=True, exist_ok=True)
+
+    annotation_target = target_root / LONGDOCURL_ANNOTATION
+    if force_download or not target_is_staged(annotation_target):
+        print(f"[download_hf] longdocurl annotations {LONGDOCURL_ANNOTATION} -> {annotation_target}")
+        source = download_file(repo_id, "dataset", LONGDOCURL_ANNOTATION, revision, cache_dir, force_download)
+        replace_link_or_copy(source, annotation_target, copy)
+    else:
+        print(f"[download_hf] longdocurl annotations already staged -> {annotation_target}, skipping")
+
+    marker = target_root / ".pdfs_staged"
+    if not force_download and marker.is_file():
+        print(f"[download_hf] longdocurl PDFs already extracted (marker {marker}); skipping")
+        return target_root
+
+    print(f"[download_hf] downloading {LONGDOCURL_PDF_ARCHIVE} (~2.6GB) for {repo_id}")
+    archive = download_file(repo_id, "dataset", LONGDOCURL_PDF_ARCHIVE, revision, cache_dir, force_download)
+    print(f"[download_hf] extracting PDFs from {archive} -> {docs_target} (flattening)")
+    extracted = 0
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar:
+            if not member.isfile() or not member.name.lower().endswith(".pdf"):
+                continue
+            # doc_no is the PDF filename, so flatten by basename (unique per doc).
+            target = docs_target / Path(member.name).name
+            if not force_download and target_is_staged(target):
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            with handle, open(target, "wb") as out:
+                shutil.copyfileobj(handle, out)
+            extracted += 1
+    marker.write_text("ok\n")
+    staged_total = len(list(docs_target.glob("*.pdf")))
+    print(f"[download_hf] longdocurl staged {extracted} new PDF(s); {staged_total} total -> {docs_target}")
     return target_root
 
 

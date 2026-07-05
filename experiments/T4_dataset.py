@@ -38,7 +38,12 @@ class Dataset(Experiment):
         return () if config.smoke else (config.reasoner_spec,)
 
     def resolve_questions(self, config: ExperimentConfig, questions: Sequence) -> Sequence:
-        return questions if config.smoke else load_longdocurl(config.paths.data_dir)
+        if config.smoke:
+            return questions
+        rows = load_longdocurl(config.paths.data_dir)
+        # Honor the run's question cap (config.sample, set from --questions) so a
+        # smoke-sized full run does not expand into the whole LongDocURL set.
+        return rows[: config.sample] if config.sample else rows
 
     def generation_cells(
         self, config: ExperimentConfig, questions: Sequence, *, retrievers: Retrievers

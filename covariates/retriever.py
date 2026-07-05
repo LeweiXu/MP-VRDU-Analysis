@@ -172,6 +172,14 @@ class Retriever(ABC):
     def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
         """Return page indices ranked most- to least-relevant (at most `k`)."""
 
+    def unload(self) -> None:
+        """Release any GPU-resident model weights (no-op by default).
+
+        The generate phase calls this after warming the retrieval cache so the
+        retriever's weights free the GPU before the reasoner loads. Any cached
+        rankings survive, so later cache-hit `retrieve` calls need no model.
+        """
+
 
 class StubRetriever(Retriever):
     """Deterministic placeholder: return the first `k` pages in document order."""
@@ -195,6 +203,11 @@ class MemoizedRetriever(Retriever):
         if key not in self._cache:
             self._cache[key] = self.inner.retrieve(question, page_count, k)
         return self._cache[key]
+
+    def unload(self) -> None:
+        """Drop the inner retriever's model but keep the memoized rankings."""
+
+        self.inner.unload()
 
 
 class BM25BGERetriever(Retriever):
@@ -246,6 +259,11 @@ class BM25BGERetriever(Retriever):
                 use_fp16 = False
             self.embedder = FlagModel(self.model_id, use_fp16=use_fp16)
         return self.embedder
+
+    def unload(self) -> None:
+        """Drop the BGE embedder so it stops holding GPU memory."""
+
+        self.embedder = None
 
     def _bge_scores(self, query: str, page_texts: Sequence[str]) -> list[float]:
         """Return dense query/page cosine scores, or raise if BGE is unavailable."""
@@ -348,6 +366,12 @@ class ColQwenRetriever(Retriever):
         self._model = model_cls.from_pretrained(self.model_id, **kwargs).eval()
         self._processor = processor_cls.from_pretrained(self.model_id)
         return self._model, self._processor
+
+    def unload(self) -> None:
+        """Drop the ColQwen weights/processor so they free the GPU."""
+
+        self._model = None
+        self._processor = None
 
     def _colqwen_scores(self, question: Question, pages: Sequence[Any]) -> list[float]:
         """Return ColQwen multi-vector scores for the rendered page images."""

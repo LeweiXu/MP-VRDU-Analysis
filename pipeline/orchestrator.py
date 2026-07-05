@@ -304,6 +304,35 @@ class Orchestrator:
 
     # -- the run loop -----------------------------------------------------
 
+    def prewarm_cell(
+        self,
+        question: Question,
+        conditioner: InputConditioner,
+        representation: Representation | str,
+    ) -> None:
+        """Run the A->B path only (condition, render, build) to warm disk caches.
+
+        This exists so the generate phase can materialise the Marker/Surya parse
+        and retrieval side records *before* the reasoner weights are loaded, then
+        free those model stacks. On a warm cache the later `run_cell` never loads
+        the parser, so the parser and the reasoner never share VRAM. Cells whose
+        prediction is already cached are skipped (nothing to parse).
+        """
+
+        if isinstance(representation, str):
+            representation = get_representation(representation)  # type: ignore[arg-type]
+
+        if self.prediction_cache is not None:
+            key = make_prediction_key(
+                question, conditioner.name, representation.modality, self.reasoner.spec, self.config.dpi
+            )
+            if self.prediction_cache.get(key) is not None:
+                return
+
+        page_set = conditioner.condition(question, self.page_count(question))
+        pages = self.render_pages(question, page_set)
+        representation.build(pages)  # side effect: warms the Marker disk cache
+
     def run_cell(
         self,
         question: Question,

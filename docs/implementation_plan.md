@@ -624,8 +624,10 @@ accuracy–cost trade; an honest "uniform-strongest is good enough" is a legitim
 **Goal.** The appendix items the main text cites in one line each.
 
 **Build/run.**
-- **Table 8 (scale sanity):** re-run the RQ1 headline on Qwen3-VL-2B and Qwen3-VL-32B. Confirm 32B
-  feasibility on the A100/Kaya first; scope to oracle-only if memory-bound. Main text cites one
+- **Table 8 (scale sanity):** re-run the RQ1 headline on Qwen3-VL-2B and Qwen3-VL-32B. **32B is out
+  of scope on our own hardware** (Kaya V100 16GB / 2×V100 32GB cannot hold it); run the 32B row on
+  the supervisor's A100 account, or have him run that one job (see `docs/DECISIONS.md` "Hardware
+  scope"). 2B runs on our V100s. Scope to oracle-only if still memory-bound. Main text cites one
   sentence: "the recipe is qualitatively stable across 2B–32B (Table 8)", or names the bins where
   the frontier moves.
 - **Margin sensitivity:** recompute the Table 1 frontier at margin ∈ {2, 3, 5}.

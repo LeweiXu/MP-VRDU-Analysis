@@ -81,6 +81,30 @@ def max_pixels_for_spec(spec: str, default: int) -> int:
     return MAX_PIXELS_BY_SIZE.get(ModelSpec.parse(spec).size, default)
 
 
+# Per-reasoner-size cap on the reasoner's *input* sequence length (text + vision
+# tokens). Kaya V100s are Volta (sm_70): they have no FlashAttention-2 and, as
+# probe 1004834 showed, no memory-efficient SDPA kernel for Qwen3-VL either, so
+# attention always runs the O(seq^2) math kernel that materializes the full
+# [heads, seq, seq] score matrix. A dense page's serialized bbox-layout JSON (the
+# `TL` rung) can be ~30k tokens, whose score matrix is ~100GiB and OOMs any single
+# GPU (bf16 on 2xV100 too, since attention runs per-GPU). Capping the input keeps
+# the score matrix bounded. The bigger reasoners hold more resident weights so get
+# a tighter cap. Sizes not listed use `ExperimentConfig.max_input_tokens`.
+MAX_INPUT_TOKENS_BY_SIZE: dict[str, int] = {
+    "8b": 4096,    # score ~= 32*4096^2*4B ~= 2.1GiB; leaves headroom next to the
+                   # ~8GB/GPU bf16 weight shard on 2xV100 (5120 tipped one GPU over)
+    "32b": 3072,
+}
+
+
+def max_input_tokens_for_spec(spec: str, default: int) -> int:
+    """Return the size-aware reasoner input-token cap for a spec."""
+
+    from models import ModelSpec
+
+    return MAX_INPUT_TOKENS_BY_SIZE.get(ModelSpec.parse(spec).size, default)
+
+
 @dataclass(frozen=True)
 class ExperimentConfig:
     """The knobs one experiment run reads. Defaults describe the v3 study."""
@@ -118,6 +142,24 @@ class ExperimentConfig:
     # Rendering / sampling knobs.
     dpi: int = 144
     sample: int | None = None
+    # Per-bin document-level subset for full MMLongBench runs. The default keeps
+    # each Option-A bin to roughly this many questions by drawing whole documents
+    # (never splitting a document across the in/out boundary) until the bin
+    # reaches the target, so a full T1 clears the Kaya queue in a couple of hours
+    # instead of a couple of days. A bin with fewer questions than the target is
+    # taken whole (visual-heavy's 101 Q is effectively all of it). Set to 0/None
+    # (CLI `--per-bin-questions 0`) to run the whole corpus. `sample_seed` picks
+    # which documents land in the subset, so a second seed gives a disjoint-ish
+    # robustness subset. An explicit global `--questions`/`sample` cap overrides
+    # this. Applies to mmlongbench full runs only (smoke and LongDocURL ignore it).
+    per_bin_sample: int | None = 100
+    sample_seed: int = 0
+    # Optional bitsandbytes quantization for the local reasoner: None (bf16),
+    # "4bit", or "8bit". When set, it is appended to `reasoner_spec` as a
+    # `-4bit`/`-8bit` suffix so the quantized run gets its own cache rows and the
+    # 8B fits a single 16GB V100. Main tables stay bf16; this is for single-GPU
+    # iteration / the appendix quant-sensitivity row (see SINGLE_GPU_8B_FEASIBILITY.md).
+    quantization: str | None = None
     max_tokens: int = DEFAULT_MAX_TOKENS
 
     # Cap on how many pixels of a rendered page reach the local VLM image
@@ -128,6 +170,14 @@ class ExperimentConfig:
     # the O(seq^2) math kernel). Tune down for the 8B or docs with many gold pages.
     max_pixels: int = 1_003_520
 
+    # Cap on the reasoner's input sequence (text + vision tokens). Bounds the
+    # O(seq^2) math-attention score matrix so a very long text/layout cell cannot
+    # OOM the GPU. Size-aware override in `max_input_tokens_for_spec` /
+    # `MAX_INPUT_TOKENS_BY_SIZE` (tighter for 8B/32B). When a cell's context
+    # exceeds the budget the local backend truncates the text (keeping all image
+    # placeholders); documents this deviation in docs/DECISIONS.md.
+    max_input_tokens: int = 8192
+
     paths: ProjectPaths = field(default_factory=ProjectPaths)
 
     def __post_init__(self) -> None:
@@ -136,3 +186,7 @@ class ExperimentConfig:
         if self.smoke:
             object.__setattr__(self, "reasoner_spec", SMOKE_REASONER_SPEC)
             object.__setattr__(self, "max_tokens", min(int(self.max_tokens), SMOKE_MAX_TOKENS))
+        if self.quantization is not None:
+            if self.quantization not in ("4bit", "8bit"):
+                raise ValueError(f"quantization must be None, '4bit', or '8bit', got {self.quantization!r}")
+            object.__setattr__(self, "reasoner_spec", f"{self.reasoner_spec}-{self.quantization}")
