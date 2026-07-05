@@ -21,13 +21,49 @@ Arguments:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from metrics.abstention import is_abstention
 from schema import Prediction, Question, Score
+
+log = logging.getLogger("mpvrdu.judge")
+
+_T = TypeVar("_T")
+
+# HTTP statuses worth another try: rate limits (429) and transient server errors
+# (5xx). Free-tier judge endpoints (gemini flash especially) return sporadic 503s
+# and 429s; without a retry one blip kills a whole judge run mid-corpus even
+# though the work so far is cached. Non-transient errors (400 bad request, 401
+# auth) fall through and raise on the first attempt.
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_RETRYABLE_NAMES = {"ServerError", "APIConnectionError", "APITimeoutError"}
+
+
+def _is_retryable(exc: Exception) -> bool:
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if isinstance(code, int) and code in _RETRYABLE_STATUS:
+        return True
+    return type(exc).__name__ in _RETRYABLE_NAMES
+
+
+def _with_retry(call: Callable[[], _T], *, attempts: int = 6, base_delay: float = 2.0) -> _T:
+    """Call an API judge with exponential backoff on transient 429/5xx errors."""
+
+    for attempt in range(attempts):
+        try:
+            return call()
+        except Exception as exc:  # narrowed by _is_retryable; non-transient re-raises
+            if attempt == attempts - 1 or not _is_retryable(exc):
+                raise
+            delay = base_delay * (2**attempt)
+            log.warning("judge call failed (%s), retry %d/%d in %.0fs", exc, attempt + 1, attempts - 1, delay)
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # loop either returns or raises
 
 
 class Judge(ABC):
@@ -174,14 +210,16 @@ class GPT4oMiniJudge(Judge):
         self.client = client
 
     def score(self, question: Question, prediction: Prediction) -> Score:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": _judge_user_payload(question, prediction)},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
+        response = _with_retry(
+            lambda: self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                    {"role": "user", "content": _judge_user_payload(question, prediction)},
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
         )
         payload = _extract_json_object(_response_text(response))
         return _score_from_verdict(question, prediction, payload, judge_spec=self.spec, model=self.model)
@@ -217,14 +255,16 @@ class GeminiJudge(Judge):
     def score(self, question: Question, prediction: Prediction) -> Score:
         from google.genai import types
 
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=_judge_user_payload(question, prediction),
-            config=types.GenerateContentConfig(
-                system_instruction=JUDGE_SYSTEM_PROMPT,
-                temperature=0,
-                response_mime_type="application/json",
-            ),
+        response = _with_retry(
+            lambda: self.client.models.generate_content(
+                model=self.model,
+                contents=_judge_user_payload(question, prediction),
+                config=types.GenerateContentConfig(
+                    system_instruction=JUDGE_SYSTEM_PROMPT,
+                    temperature=0,
+                    response_mime_type="application/json",
+                ),
+            )
         )
         payload = _extract_json_object(response.text or "")
         return _score_from_verdict(question, prediction, payload, judge_spec=self.spec, model=self.model)

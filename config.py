@@ -19,7 +19,7 @@ Arguments:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -79,6 +79,35 @@ def max_pixels_for_spec(spec: str, default: int) -> int:
     from models import ModelSpec
 
     return MAX_PIXELS_BY_SIZE.get(ModelSpec.parse(spec).size, default)
+
+
+# Named visual-resolution presets. Value = per-page pixel cap = tokens_per_page *
+# 28 * 28 (Qwen packs a 28x28 patch per vision token). The CLI
+# `--visual-resolution` selects one; when set it overrides the size-aware
+# `max_pixels_for_spec` default for *every* spec, so a run can downscale vision to
+# fit a tighter GPU budget (fewer vision tokens per page -> a smaller O(seq^2)
+# attention score, which is what OOMs a many-gold-page cell on a Volta V100).
+# `high` equals the current 8B default (~768 tok/page); lower levels downscale
+# more aggressively. Not passing the flag keeps the size-aware default.
+VISUAL_RESOLUTION_PRESETS: dict[str, int] = {
+    "full": 1280 * 28 * 28,  # 1,003,520 px  ~1280 tok/page
+    "high": 768 * 28 * 28,   #   602,112 px   ~768 tok/page (current 8B default)
+    "med": 512 * 28 * 28,    #   401,408 px   ~512 tok/page
+    "low": 320 * 28 * 28,    #   250,880 px   ~320 tok/page
+    "min": 224 * 28 * 28,    #   175,616 px   ~224 tok/page
+}
+
+
+def max_pixels_for_resolution(spec: str, config: "ExperimentConfig") -> int:
+    """Per-page pixel cap for a spec, honoring an explicit visual-resolution.
+
+    When `config.visual_resolution` is set it wins (a deliberate downscale for the
+    whole run); otherwise fall back to the size-aware `max_pixels_for_spec`.
+    """
+
+    if config.visual_resolution is not None:
+        return VISUAL_RESOLUTION_PRESETS[config.visual_resolution]
+    return max_pixels_for_spec(spec, config.max_pixels)
 
 
 # Per-reasoner-size cap on the reasoner's *input* sequence length (text + vision
@@ -170,6 +199,24 @@ class ExperimentConfig:
     # the O(seq^2) math kernel). Tune down for the 8B or docs with many gold pages.
     max_pixels: int = 1_003_520
 
+    # Optional named visual-resolution override (`full`/`high`/`med`/`low`/`min`,
+    # see VISUAL_RESOLUTION_PRESETS). When set it fixes the per-page pixel cap for
+    # every reasoner, overriding the size-aware default so a run can downscale
+    # vision to fit a tighter GPU budget. None = keep the size-aware default.
+    visual_resolution: str | None = None
+
+    # Optional per-run cache namespace. When set, every cache this run writes
+    # (predictions, generate_results, renders, marker parses, retrieval side
+    # records, results, tables) moves under `results/cache/<run_tag>/` and
+    # `results/tables/<mode>-<run_tag>/`, so two runs that share an experiment
+    # selection (e.g. two `--experiment all` full runs with different reasoners)
+    # never write the same files. That matters on Kaya: the render cache is a
+    # non-atomic check-then-write and the prediction cache is a plain append, so
+    # two concurrent jobs writing one shared path can corrupt it. Judge/build
+    # must pass the same `--run-tag` to read the right cache. None = shared
+    # default tree.
+    run_tag: str | None = None
+
     # Cap on the reasoner's input sequence (text + vision tokens). Bounds the
     # O(seq^2) math-attention score matrix so a very long text/layout cell cannot
     # OOM the GPU. Size-aware override in `max_input_tokens_for_spec` /
@@ -190,3 +237,13 @@ class ExperimentConfig:
             if self.quantization not in ("4bit", "8bit"):
                 raise ValueError(f"quantization must be None, '4bit', or '8bit', got {self.quantization!r}")
             object.__setattr__(self, "reasoner_spec", f"{self.reasoner_spec}-{self.quantization}")
+        if self.visual_resolution is not None and self.visual_resolution not in VISUAL_RESOLUTION_PRESETS:
+            raise ValueError(
+                f"visual_resolution must be one of {sorted(VISUAL_RESOLUTION_PRESETS)} or None, "
+                f"got {self.visual_resolution!r}"
+            )
+        if self.run_tag is not None:
+            tag = self.run_tag
+            if not tag or not all(ch.isalnum() or ch in "-_" for ch in tag):
+                raise ValueError(f"run_tag must be non-empty alphanumeric/dash/underscore, got {tag!r}")
+            object.__setattr__(self, "paths", replace(self.paths, cache_dir=self.paths.cache_dir / tag))

@@ -40,7 +40,7 @@ because its documents topped out at 4 evidence pages. Full write-up:
    # on the cluster (see kaya/KAYA_USER_GUIDE.md for push/submit/pull):
    kaya.kaya clear-cache --mode full --experiment T1_headline --local --yes   # optional clean start
    kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 --job-name t1-4bit \
-     cli/generate.py -- --experiment T1_headline --full --quantization 4bit --continue-on-error
+     cli/experiments.py -- --phase generate --experiment T1_headline --full --quantization 4bit --continue-on-error
    ```
 
 3. **Keep bf16 on 2×V100 but cap vision tokens first.** Implement the missing fix

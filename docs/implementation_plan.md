@@ -178,7 +178,6 @@ mpvrdu/                 # == the working directory / repo root
 kaya/
   config.json          # static Kaya site/project/module/SLURM/path config
   kaya.py              # Python SSH/rsync/SLURM runner for login and GPU jobs
-  generate.py          # GPU generate phase for one experiment or a group
   download_hf.py       # login-node HF snapshot download + MMLongBench .data staging
   KAYA_AGENT_GUIDE.md  # definitive agent guide to Kaya operations
   KAYA_USER_GUIDE.md   # human quick guide for setup and run commands
@@ -274,7 +273,7 @@ root-relative: `HF_HOME=<root>/.cache`, `data_dir=<root>/.data`, conda env at
 Every paper table is one reusable `Experiment` (`experiments/T*_*.py`), run in two
 phases split across machines because the reasoner/retrievers/classifier need a GPU
 while the judge needs the internet:
-- **Generate** on Kaya (GPU, offline): `kaya.kaya submit cli/generate.py --
+- **Generate** on Kaya (GPU, offline): `kaya.kaya submit cli/experiments.py -- --phase generate
   --experiment <name|group>`. One experiment per job keeps jobs small and
   fast-queueing; a single table re-runs in isolation. Predictions cache per
   experiment under `results/cache/<smoke|full>/<name>/`.

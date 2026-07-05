@@ -245,4 +245,5 @@ kaya/config.local.json
 AGENTS.md
 CLAUDE.md
 
+temp/
 .vscode/

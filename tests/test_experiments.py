@@ -14,7 +14,7 @@ Purpose:
 Test role:
     Fixture PDFs + injected fake reasoner/judge, so the wiring is exercised
     without Marker, Qwen, ColQwen, or a judge API. The heavy generate path is
-    validated on hardware via `cli.experiments` / `cli/generate.py`.
+    validated on hardware via `cli.experiments --phase generate`.
 
 Arguments:
     None. Run with `python -m pytest tests/test_experiments.py`.

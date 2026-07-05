@@ -82,7 +82,7 @@ Data flow: `Question` → `InputConditioner.condition` → render pages →
 | `metrics/*` | accuracy (doc-level CI), retrieval, cost, frontier, abstention. |
 | `experiments/T*_*.py` | One reusable `Experiment` per paper table (T1-T8); smoke and full share them. |
 | `experiments/{base,registry,driver,corpus,tables}.py` | Experiment contract, name→experiment map, two-phase runner, corpus resolver, table primitives. |
-| `cli/experiments.py`, `cli/generate.py` | Run experiments: generate on GPU, judge/build anywhere. |
+| `cli/experiments.py` | Run experiments: generate on GPU (`--phase generate`, the half a cluster submits), judge/build anywhere. |
 
 **Frozen interfaces (Stage-3 freeze; change only via a checkpoint recorded
 here):** `schema.py` contracts; `models/payload.py::ModelInput` + its
@@ -187,7 +187,7 @@ stub reasoners or injected scorers on this path.
   `results/`). The local judge phase loads **no models** (prediction-cache hits
   only), which keeps the workstation responsive. The phase-2 `_GuardRetriever` /
   `_SpecOnlyReasoner` raise if a cell was missed in generation.
-- **Commands.** Kaya generate: `kaya.kaya submit cli/generate.py -- --experiment
+- **Commands.** Kaya generate: `kaya.kaya submit cli/experiments.py -- --phase generate --experiment
   T1_headline` (or `all`), then `kaya.kaya pull`. Local judge+build:
   `cli.experiments --phase judge --experiment all`. One-machine (GPU + internet):
   `cli.experiments --phase all`. Add `--full` for the full corpus/8B. Judge
@@ -276,7 +276,7 @@ tokens/page) plus a size-aware override `config.max_pixels_for_spec` /
 max_pixels=)` -> `LocalVLMBackend`, applied via the per-image `max_pixels` key
 that `qwen_vl_utils.process_vision_info` honors. Same wiring also fixed
 `_reasoner_for` ignoring `config.max_tokens` (full runs were capped at 64 new
-tokens). `cli/generate.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
+tokens). `cli/experiments.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
 True` as a fragmentation mitigation. InternVL is untouched (fixed 448px tiling
 already bounds its vision tokens). Not a frozen-interface change: `get_reasoner`
 gained optional kwargs; `Reasoner.answer` and the cache key are unchanged.
@@ -288,7 +288,7 @@ and per-cell start/result lines; the orchestrator logs each stage (conditioner -
 render -> representation -> reasoner -> judge) at DEBUG, so an OOM/crash points at
 the exact cell and stage. On failure the full traceback is logged to stdout (the
 SLURM log), not just the per-experiment `generate_status.json`. One
-`kaya.kaya submit cli/generate.py -- --experiment section2 --continue-on-error`
+`kaya.kaya submit cli/experiments.py -- --phase generate --experiment section2 --continue-on-error`
 job runs all seven Section-2 tables (T1-T7) with per-experiment isolation: a
 failing table records its status and the run continues to the next.
 
@@ -410,12 +410,57 @@ structurally) and `size` still resolves to `8b` for the per-size pixel cap.
 bitsandbytes `BitsAndBytesConfig` (4-bit NF4 double-quant, or 8-bit) in
 `_load_components`; `model_id_for_spec` strips the suffix to find the base
 checkpoint. `config.quantization` (None/"4bit"/"8bit") appends the suffix to
-`reasoner_spec`; `--quantization` on `cli.experiments` and `cli.generate` sets
+`reasoner_spec`; `--quantization` on `cli.experiments` sets
 it (must match between generate and judge phases). Not a frozen-interface change:
 `get_reasoner`/`LocalVLMBackend` gained an optional kwarg, cache key + ResultRow
 unchanged. `bitsandbytes==0.49.2` is in the remote env only, so the config-build
 test skips locally. Mains stay bf16; 4-bit is single-GPU iteration + a possible
 appendix row.
+
+## Judge-phase robustness (retry + partial cache)
+
+Two fixes so the judge phase survives real runs against a flaky free-tier API
+and a partial generate cache:
+
+- **Transient-error retry.** `pipeline/judge.py` wraps both API judge calls
+  (`GeminiJudge`, `GPT4oMiniJudge`) in `_with_retry`: exponential backoff on
+  429/5xx (`ServerError`, connection/timeout), non-transient errors (400/401)
+  still raise on the first try. Free-tier gemini flash returns sporadic 503s; one
+  used to kill a whole ~800-cell judge run mid-corpus even though the scored rows
+  are cached in `results.jsonl`.
+- **Partial-cache tolerance.** The judge only re-scores cached predictions; a
+  cell that generate never produced (e.g. after the vision-token OOM) hit the
+  guard reasoner/retriever and hard-errored. The guards now raise `CacheMiss`
+  (subclass of `RuntimeError`), and `--continue-on-error` makes the judge skip
+  those cells and log the count, so a partial cache still builds a partial table
+  (T1 built from 826/1236 cells, 538 skipped). Not a frozen-interface change:
+  `run_cell`, the cache key, and `ResultRow` are untouched; `judge()`/`run_judge()`
+  gained an optional `skip_uncached`/`continue_on_error` kwarg.
+
+## Full-run knobs: visual resolution, run-tag, combined tables
+
+Added for the two full 8B runs (4-bit current-res vs bf16 aggressive-downscale):
+
+- **`--visual-resolution {full,high,med,low,min}`** (`config.visual_resolution`).
+  Fixes the per-page vision-token budget for every reasoner via
+  `config.max_pixels_for_resolution`, overriding the size-aware
+  `max_pixels_for_spec` default. `high`≈768 tok/page is the current 8B default;
+  `low`≈320, `min`≈224 downscale harder so a many-gold-page cell's O(seq^2)
+  attention fits bf16 on 2xV100 (the "third OOM"). Not in the cache key, so clear
+  or `--run-tag` the cache when changing it for one spec.
+- **`--run-tag TAG`** (`config.run_tag`). Namespaces the whole cache tree under
+  `results/cache/<TAG>/` (predictions, renders, marker, side records) and tables
+  under `results/tables/<mode>-<TAG>/`. Needed because two concurrent
+  `--experiment all` jobs otherwise write the same paths, and both the render
+  cache (check-then-write in `data/render.py`) and the prediction cache (plain
+  append) corrupt under cross-node concurrent writes. Judge/build must pass the
+  same tag. Implemented by rebuilding `config.paths.cache_dir` in
+  `__post_init__`; the frozen prediction/cache *key* is untouched.
+- **Combined markdown tables.** `cli.build_tables --markdown PATH` (and
+  `experiments.tables.render_tables_markdown`) writes one `.md` with all eight
+  tables; tables with no cached rows render a blank skeleton row so the report
+  always shows all shapes. `--cache` now takes multiple files (concatenated), so
+  a full run's per-experiment `results.jsonl` files build one report.
 
 ## Kaya operations (elsewhere)
 

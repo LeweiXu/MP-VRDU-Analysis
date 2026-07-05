@@ -198,8 +198,8 @@ python -m cli.experiments --phase generate --experiment T1_headline --full   # G
 python -m cli.experiments --phase judge    --experiment T1_headline --full   # judge + build only
 ```
 
-`cli.generate` is a generate-only entry point (the one a cluster submits); it
-takes the same corpus/model flags as the generate phase of `cli.experiments`.
+A cluster submits this same module with `--phase generate` (the GPU-only half);
+see `kaya/KAYA_USER_GUIDE.md` for the submit flow.
 
 ## `cli.experiments` arguments
 
@@ -213,7 +213,8 @@ takes the same corpus/model flags as the generate phase of `cli.experiments`.
 | `--per-bin-questions N` | 100 | Full mmlongbench only: ~N questions per Option-A bin, drawn as whole documents. `0` = whole corpus (1091 Q). |
 | `--sample-seed N` | 0 | Which documents fill the per-bin subset. A different seed draws a disjoint-ish subset. |
 | `--quantization {4bit,8bit}` | off (bf16) | Load the local reasoner quantized (bitsandbytes) so the 8B fits one 16GB GPU. Appends `-4bit`/`-8bit` to the reasoner spec, so quantized rows get their own cache. |
-| `--continue-on-error` | off | In a grouped run, record a failing experiment's status and continue to the next. |
+| `--visual-resolution {full,high,med,low,min}` | off (size-aware) | Fix the per-page vision-token budget for every reasoner, overriding the size-aware default. `full`≈1280, `high`≈768 (current 8B default), `med`≈512, `low`≈320, `min`≈224 tokens/page. Lower = more downscaling = fewer vision tokens (fits a tighter GPU budget, e.g. bf16 8B on 2×V100). Not part of the cache key, so clear the cache when changing it for the same spec. |
+| `--continue-on-error` | off | Generate: record a failing experiment's status and continue to the next. Judge: skip cells with no cached prediction (a partial cache, e.g. after an OOM) so a partial table still builds. |
 | `--verbose` / `--quiet` | smoke=verbose | DEBUG per-cell/per-stage logging / force INFO. |
 
 **Phase-matching rule:** the judge phase re-resolves the same cells as generate,

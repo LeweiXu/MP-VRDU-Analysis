@@ -44,6 +44,7 @@
     "envs/",
     "results/",
     "logs/",
+    "temp/",
     "__pycache__/",
     "*.pyc"
   ],

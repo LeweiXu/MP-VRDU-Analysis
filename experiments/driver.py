@@ -17,8 +17,8 @@ Purpose:
     (`results/cache/<smoke|full>/<name>/`) so one table re-runs in isolation.
 
 Pipeline role:
-    Sits between `registry.py` and the CLIs (`cli/experiments.py`,
-    `cli/generate.py`). It owns the per-experiment cache layout, the phase-2
+    Sits between `registry.py` and the CLI (`cli/experiments.py`). It owns the
+    per-experiment cache layout, the phase-2
     retriever/reasoner guards, and nothing about individual table shapes.
 
 Arguments:
@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import ExperimentConfig, max_input_tokens_for_spec, max_pixels_for_spec
+from config import ExperimentConfig, max_input_tokens_for_spec, max_pixels_for_resolution
 from covariates.retriever import (
     BM25BGERetriever,
     ColQwenRetriever,
@@ -136,6 +136,10 @@ class ExperimentRunStatus:
 def experiment_paths(config: ExperimentConfig, name: str) -> ExperimentPaths:
     """Resolve the cache/table paths for one experiment."""
 
+    # `config.paths.cache_dir` already carries any `run_tag` (see
+    # ExperimentConfig.__post_init__), so predictions/renders/side records isolate
+    # automatically. The table dir lives under results_dir, so tag it here too.
+    table_partition = mode(config) if config.run_tag is None else f"{mode(config)}-{config.run_tag}"
     root = config.paths.cache_dir / mode(config) / name
     return ExperimentPaths(
         root=root,
@@ -143,7 +147,7 @@ def experiment_paths(config: ExperimentConfig, name: str) -> ExperimentPaths:
         generate_results=root / "generate_results.jsonl",
         results=root / "results.jsonl",
         side_dir=root,
-        table_dir=config.paths.results_dir / "tables" / mode(config),
+        table_dir=config.paths.results_dir / "tables" / table_partition,
     )
 
 
@@ -186,6 +190,17 @@ def _write_phase_status(
     return ExperimentRunStatus(exp.name, phase, status, path, error_type, error_text)
 
 
+class CacheMiss(RuntimeError):
+    """A judge-phase cell whose prediction/retrieval was never generated.
+
+    The judge phase only re-scores cached predictions; it must never run a
+    reasoner or retriever. When it reaches a cell that generate did not produce
+    (e.g. a partial cache after an OOM), the guards below raise this. With
+    `--continue-on-error` the judge skips such cells so a partial table still
+    builds; without it, it surfaces as the usual hard error.
+    """
+
+
 class _GuardRetriever(Retriever):
     """Judge-phase retriever that must never run (cells must be cache hits)."""
 
@@ -193,7 +208,7 @@ class _GuardRetriever(Retriever):
         self.name = name
 
     def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
-        raise RuntimeError(
+        raise CacheMiss(
             f"retriever {self.name!r} was called in the judge phase for "
             f"question {question.id!r}: run the generate phase first so this "
             "cell is a prediction-cache hit"
@@ -207,7 +222,7 @@ class _SpecOnlyReasoner(Reasoner):
         self.spec = spec
 
     def answer(self, question: Question, model_input) -> Prediction:  # noqa: ANN001
-        raise RuntimeError(
+        raise CacheMiss(
             f"reasoner {self.spec!r} was called in the judge phase for "
             f"question {question.id!r}: the prediction must be cached from generate"
         )
@@ -235,22 +250,24 @@ def guard_retrievers() -> Retrievers:
 def _reasoner_for(spec: str, config: ExperimentConfig | None = None):
     """Return a real reasoner backend for the generate phase.
 
-    Passes the config's generation cap and a size-aware vision-token cap (a
-    smaller `max_pixels` for the bigger reasoners) so local VLM cells stay within
-    GPU memory (see `config.max_pixels_for_spec`).
+    Passes the config's generation cap and a vision-token cap so local VLM cells
+    stay within GPU memory: an explicit `--visual-resolution` if set, else the
+    size-aware default (a smaller `max_pixels` for the bigger reasoners). See
+    `config.max_pixels_for_resolution`.
     """
 
     from models import get_reasoner
 
     if config is None:
         return get_reasoner(spec)
-    max_pixels = max_pixels_for_spec(spec, config.max_pixels)
+    max_pixels = max_pixels_for_resolution(spec, config)
     max_input_tokens = max_input_tokens_for_spec(spec, config.max_input_tokens)
     log.info(
-        "building reasoner spec=%s max_new_tokens=%d max_pixels=%d max_input_tokens=%d",
+        "building reasoner spec=%s max_new_tokens=%d max_pixels=%d (resolution=%s) max_input_tokens=%d",
         spec,
         config.max_tokens,
         max_pixels,
+        config.visual_resolution or "size-aware",
         max_input_tokens,
     )
     return get_reasoner(
@@ -356,8 +373,14 @@ def judge(
     questions: Sequence[Question],
     *,
     judge_impl: Judge,
+    skip_uncached: bool = False,
 ) -> None:
-    """Phase 2 (no GPU): re-judge the cached predictions for one experiment."""
+    """Phase 2 (no GPU): re-judge the cached predictions for one experiment.
+
+    `skip_uncached` (wired to `--continue-on-error`) skips cells that generate
+    never produced instead of erroring, so a partial cache (e.g. after an OOM)
+    still builds a partial table.
+    """
 
     paths = experiment_paths(config, exp.name)
     prediction_cache = PredictionCache(paths.predictions)
@@ -369,9 +392,10 @@ def judge(
     if specs and len(prediction_cache) == 0:
         raise SystemExit(
             f"{exp.name}: no cached predictions at {paths.predictions}; run the "
-            "generate phase first (cli/generate.py or cli.experiments --phase generate)"
+            "generate phase first (cli.experiments --phase generate)"
         )
 
+    skipped = 0
     for spec in specs:
         orchestrator = Orchestrator(
             config,
@@ -381,7 +405,18 @@ def judge(
             prediction_cache=prediction_cache,
         )
         for cell in exp.generation_cells(config, exp_questions, retrievers=guards):
-            orchestrator.run_cell(cell.question, cell.conditioner, cell.representation)
+            try:
+                orchestrator.run_cell(cell.question, cell.conditioner, cell.representation)
+            except CacheMiss:
+                if not skip_uncached:
+                    raise
+                skipped += 1
+    if skipped:
+        log.warning(
+            "[judge] %s: skipped %d uncached cell(s) (generate them for a complete table)",
+            exp.name,
+            skipped,
+        )
 
 
 def build(config: ExperimentConfig, exp: Experiment) -> dict[str, Path]:
@@ -442,13 +477,18 @@ def run_judge(
     questions: Sequence[Question],
     *,
     judge_impl: Judge | None = None,
+    continue_on_error: bool = False,
 ) -> dict[str, Path]:
-    """Judge + build one experiment or a group; returns all written table paths."""
+    """Judge + build one experiment or a group; returns all written table paths.
+
+    `continue_on_error` skips cells that generate never produced (a partial
+    cache) so a partial table still builds.
+    """
 
     judge_impl = judge_impl or get_judge("gemini")
     written: dict[str, Path] = {}
     for exp in resolve(selector):
-        judge(config, exp, questions, judge_impl=judge_impl)
+        judge(config, exp, questions, judge_impl=judge_impl, skip_uncached=continue_on_error)
         written.update(build(config, exp))
     return written
 

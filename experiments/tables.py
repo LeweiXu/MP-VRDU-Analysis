@@ -43,6 +43,18 @@ TABLE_FILENAMES: Mapping[str, str] = {
     "table8": "table8_scale_sanity.csv",
 }
 
+# Human titles for the combined markdown report; keys line up with TABLE_FILENAMES.
+TABLE_TITLES: Mapping[str, str] = {
+    "table1": "Headline frontier (doc-type bins x representation ladder)",
+    "table2": "Analytical breakdown by question type",
+    "table3": "Family replication (reasoner families)",
+    "table4": "Dataset replication (held-out subset)",
+    "table5": "Composition and mediation by evidence modality",
+    "table6": "Matched vs cross retrieval",
+    "table7": "Routing policies",
+    "table8": "Scale sanity (2B/4B/8B/32B)",
+}
+
 QUESTION_TYPES = ("single-hop text", "table", "chart-figure", "multi-hop")
 ROUTING_POLICIES = (
     "oracle_routing",
@@ -700,6 +712,70 @@ def build_all_tables(
     }
 
 
+def _table_to_markdown(df: pd.DataFrame) -> str:
+    """Render one table DataFrame as a GitHub markdown table.
+
+    A non-empty table is rendered with rows (floats rounded for readability). An
+    empty table still emits its column header plus one blank row, so the combined
+    report shows the table's skeleton with blank fields instead of dropping it.
+    """
+
+    columns = [str(col) for col in df.columns]
+    if not columns:
+        return "_(no columns)_"
+    header = "| " + " | ".join(columns) + " |"
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    if df.empty:
+        blank = "| " + " | ".join("" for _ in columns) + " |"
+        return "\n".join([header, separator, blank])
+    formatted = df.copy()
+    for col in formatted.columns:
+        if pd.api.types.is_float_dtype(formatted[col]):
+            formatted[col] = formatted[col].round(4)
+    body = [
+        "| " + " | ".join("" if pd.isna(value) else str(value) for value in row) + " |"
+        for row in formatted.itertuples(index=False, name=None)
+    ]
+    return "\n".join([header, separator, *body])
+
+
+def render_tables_markdown(
+    tables: Mapping[str, pd.DataFrame],
+    *,
+    source: str | None = None,
+    n_rows: int | None = None,
+) -> str:
+    """Render all eight tables into a single markdown document.
+
+    Tables with data are filled; tables with no matching rows keep their skeleton
+    (column header + a blank row) so the report always shows all eight shapes.
+    """
+
+    from datetime import datetime, timezone
+
+    lines: list[str] = ["# MP-VRDU results tables", ""]
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    meta = [f"Generated {stamp}."]
+    if source:
+        meta.append(f"Source: `{source}`.")
+    if n_rows is not None:
+        meta.append(f"{n_rows} result rows.")
+    lines.append(" ".join(meta))
+    lines.append("")
+    lines.append("Empty tables show a blank skeleton row: their experiment has no cached rows yet.")
+    lines.append("")
+    for key in TABLE_FILENAMES:
+        number = key.removeprefix("table")
+        df = tables.get(key, pd.DataFrame())
+        lines.append(f"## Table {number} — {TABLE_TITLES.get(key, key)}")
+        note = "no data yet" if df.empty else f"{len(df)} rows"
+        lines.append(f"_CSV: `{TABLE_FILENAMES[key]}` ({note})_")
+        lines.append("")
+        lines.append(_table_to_markdown(df))
+        lines.append("")
+    return "\n".join(lines)
+
+
 def write_all_tables(
     rows: Sequence[ResultRow],
     output_dir: Path,
@@ -709,8 +785,14 @@ def write_all_tables(
     margin_points: float = 3.0,
     n_bootstrap: int = 1000,
     seed: int = 0,
+    markdown_path: Path | None = None,
+    markdown_source: str | None = None,
 ) -> dict[str, Path]:
-    """Write all eight table CSV files and return their paths."""
+    """Write all eight table CSV files and return their paths.
+
+    When `markdown_path` is set, also write a single markdown file with all eight
+    tables filled in (blank skeletons for tables that have no cached rows).
+    """
 
     output_dir.mkdir(parents=True, exist_ok=True)
     tables = build_all_tables(
@@ -726,4 +808,10 @@ def write_all_tables(
         path = output_dir / TABLE_FILENAMES[key]
         table.to_csv(path, index=False)
         paths[key] = path
+    if markdown_path is not None:
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_text(
+            render_tables_markdown(tables, source=markdown_source, n_rows=len(rows)) + "\n"
+        )
+        paths["markdown"] = markdown_path
     return paths

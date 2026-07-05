@@ -90,12 +90,20 @@ the PaddleX 3.1 pin from `requirements.txt`.
 
 ## kaya.py Commands
 
-Runner options come before the program path. Everything after the program path,
-usually separated with `--`, is forwarded to the script or `.sbatch` file.
+Invocation is `python -m kaya.kaya [--config PATH] <command> [options] [program] [-- forwarded args]`.
+Runner options come before the program path; everything after `--` is forwarded
+verbatim to the Python script or `.sbatch` file. The one global option is:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--config PATH` | `kaya/config.json` | Path to the Kaya JSON config the runner resolves site/SLURM/path values from. |
+
+The commands are `show-config`, `push`, `pull`, `run`, `submit`, `watch`,
+`cancel`, and `clear-cache`.
 
 ### `show-config`
 
-Prints `kaya/config.json` as resolved by the runner.
+Prints `kaya/config.json` as resolved by the runner. No options.
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya show-config
@@ -103,13 +111,8 @@ envs/mpvrdu/bin/python -m kaya.kaya show-config
 
 ### `push`
 
-Mirrors local source to the configured remote root with:
-
-```text
-rsync -az --delete
-```
-
-Excluded paths include `.git/`, `.env`, `.cache/`, `.data/`, `envs/`,
+Mirrors local source to the configured remote root with `rsync -az --delete`. No
+options. Excluded paths include `.git/`, `.env`, `.cache/`, `.data/`, `envs/`,
 `results/`, `logs/`, and `__pycache__/`. Local source is authoritative; remote
 source-only edits can be deleted by the next push.
 
@@ -119,74 +122,151 @@ envs/mpvrdu/bin/python -m kaya.kaya push
 
 ### `pull`
 
-Pulls remote `logs/` and `results/` back to the local repo. It does not pull
-datasets, model caches, or environments.
+Pulls remote `logs/` and `results/` back to the local repo. No options. It does
+not pull datasets, model caches, or environments.
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya pull
 ```
 
+### Shared job options (`run` and `submit`)
+
+`run` and `submit` both take the same three groups of options: HF/env, SLURM
+resources, and job lifecycle. They're listed once here and referenced by both
+commands.
+
+**HF / env** (from `add_common_run_args`):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--env` / `--no-env` | env on | Activate or skip the configured conda env (`envs/mpvrdu` per config). |
+| `--offline` / `--online` | header/config | Force Hugging Face offline, or allow online access and forward configured secrets (`HF_TOKEN`) on login jobs. When unset, the script header (`# kaya: offline=...`) or the default target decides. |
+
+**SLURM resources** (only used for generated `.py` wrappers; for a `.sbatch`
+file these are passed only when set, as overrides). When a flag is omitted the
+value falls back to `slurm.*` in `kaya/config.json` (defaults: `partition=gpu`,
+`gres=gpu:1`, `cpus_per_task=4`, `mem=24G`, `time=00:30:00`, blank
+`account`/`qos`).
+
+| Flag | Config default | Meaning |
+|---|---|---|
+| `--job-name NAME` | script header or `generate` | SLURM job name; sets the `logs/<name>_<id>.out` prefix. |
+| `--partition P` | `gpu` | SLURM partition. |
+| `--gres G` | `gpu:1` | Generic resource request, e.g. `gpu:v100:1` or `gpu:v100:2`. |
+| `--account A` | blank | SLURM account/allocation (leave blank to use your default association). |
+| `--qos Q` | blank | SLURM QOS. |
+| `--cpus-per-task N` | `4` | CPUs per task. |
+| `--mem M` | `24G` | Memory request, e.g. `64G`. |
+| `--time T` | `00:30:00` | Wall time, e.g. `06:00:00`. |
+
+**Lifecycle** (from `add_job_lifecycle_args`):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--no-push` | off | Skip the pre-run rsync (use the code already on the remote). |
+| `--no-wait` | off | Submit and return immediately instead of blocking until the job ends. |
+| `--no-pull` | off | Do not pull `logs/`+`results/` back after the job exits. |
+| `--tail-lines N` | `120` | Number of log lines to print after a waited job. |
+
 ### `run`
 
-Runs a Python file or command on the login node by default. If the Python file
-declares `# kaya: target=gpu`, or you pass `--target gpu`, `run` generates and
-submits a GPU sbatch wrapper.
+Runs a Python file or command on the **login node** by default. If the Python
+file declares `# kaya: target=gpu`, or you pass `--target gpu`, `run` generates
+and submits a GPU sbatch wrapper (same path as `submit`).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--target auto\|login\|gpu` | `auto` | Where to run. `auto` reads the Python header and otherwise uses login. |
+| `program` | required | Repo-local `.py` file, or a bare command name for login-node execution. |
+
+Plus all [shared job options](#shared-job-options-run-and-submit).
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya run cli/run_probe.py -- loader --json
 envs/mpvrdu/bin/python -m kaya.kaya run --target gpu --time 00:05:00 scripts/gpu_test.py
 ```
 
-Options:
-
-- `--target auto|login|gpu`: default `auto`; reads Python headers, otherwise
-  uses login.
-- `--env` / `--no-env`: activate or skip the configured conda env.
-- `--offline` / `--online`: force Hugging Face offline or online mode.
-- `--no-push`: skip the pre-run rsync.
-- `--no-wait`: for GPU jobs, submit and return.
-- `--no-pull`: for waited GPU jobs, skip pulling logs/results.
-- `--tail-lines N`: log lines to print after a waited GPU job.
-- SLURM options for generated GPU wrappers: `--job-name`, `--partition`,
-  `--gres`, `--account`, `--qos`, `--cpus-per-task`, `--mem`, `--time`.
-
-Everything after `--` is passed to the script or command.
-
 ### `submit`
 
 Submits a repo-local `.py` or `.sbatch` file to SLURM.
 
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
-envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --arg-for-job value
-```
+| Flag | Default | Meaning |
+|---|---|---|
+| `program` | required | Repo-local `.py` (wrapped in a generated sbatch) or an existing `.sbatch` file. |
 
-For `.py`, `kaya.py` generates the sbatch wrapper and applies SLURM CLI/config
-options. For `.sbatch`, the file's own `#SBATCH` directives and shell commands
-are authoritative unless you deliberately pass explicit SLURM options such as
-`--time` or `--partition`, which are forwarded to `sbatch` as overrides.
-Custom `.sbatch` files are submitted from the remote repo root; use
+Plus all [shared job options](#shared-job-options-run-and-submit).
+
+For `.py`, `kaya.py` generates the sbatch wrapper and applies the SLURM
+CLI/config options above. For `.sbatch`, the file's own `#SBATCH` directives and
+shell commands are authoritative unless you deliberately pass explicit SLURM
+options (e.g. `--time`, `--partition`), which are forwarded to `sbatch` as
+overrides. Custom `.sbatch` files run from the remote repo root; use
 `cd "$SLURM_SUBMIT_DIR"` and set `PYTHONPATH="$SLURM_SUBMIT_DIR"` if the script
 runs repo files by path.
 
-Options are the same lifecycle options as `run`: `--no-push`, `--no-wait`,
-`--no-pull`, `--tail-lines`, plus SLURM options for generated Python wrappers.
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
+envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 \
+  cli/experiments.py -- --phase generate --experiment T1_headline --full
+envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --arg-for-job value
+```
 
 ### `watch`
 
 Waits for a job and pulls/prints logs. If no job id is supplied, it uses
 `.kaya_last_job`.
 
+| Flag | Default | Meaning |
+|---|---|---|
+| `job_id` | `.kaya_last_job` | SLURM job id to wait on (positional, optional). |
+| `--job-name NAME` | none | Job name used to match `logs/<name>_<id>.out` exactly. |
+| `--no-pull` | off | Do not pull `logs/`+`results/` before printing tails. |
+| `--tail-lines N` | `120` | Number of log lines to print. |
+
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya watch
 envs/mpvrdu/bin/python -m kaya.kaya watch <jobid> --tail-lines 200
 ```
 
-Options:
+### `cancel`
 
-- `--job-name`: improves exact log filename matching.
-- `--no-pull`: skip pulling logs/results.
-- `--tail-lines N`: number of log lines to print.
+Cancels your SLURM jobs. Give explicit ids, or use `--all`/`--job-name` (both
+optionally narrowed by `--state`).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `job_id ...` | none | Specific job id(s) to cancel (positional, zero or more). |
+| `--all` | off | Cancel all of your jobs. |
+| `--job-name NAME` | none | Cancel your jobs with this SLURM job name. |
+| `--state S` | none | Restrict `--all`/`--job-name` to a SLURM state, e.g. `PENDING` or `RUNNING`. |
+
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya cancel 1009584
+envs/mpvrdu/bin/python -m kaya.kaya cancel --job-name t1-4bit
+envs/mpvrdu/bin/python -m kaya.kaya cancel --all --state PENDING
+```
+
+### `clear-cache`
+
+Removes cached generation results (and optionally logs) on Kaya so a run starts
+fresh. Remote by default; add `--local` to mirror the same removals in the local
+repo. Prompts for confirmation unless `--yes`.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--mode full\|smoke` | both | Restrict to one cache mode under `results/cache/<mode>/`. |
+| `--experiment NAME` | all | Restrict to one experiment dir under the selected mode(s). |
+| `--renders` | off | Also drop the render/marker parse caches (kept by default so re-runs skip re-rendering). |
+| `--logs` | off | Also empty the `logs/` directory (keeps the dir itself). |
+| `--all` | off | Drop the whole `results/cache` + `results/tables` + `logs`. |
+| `--local` | off | Mirror the same removals in the local repo, not just the remote. |
+| `--dry-run` | off | Print the targets without removing anything. |
+| `--yes` | off | Skip the confirmation prompt. |
+
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya clear-cache --mode full --experiment T1_headline --dry-run
+envs/mpvrdu/bin/python -m kaya.kaya clear-cache --mode full --experiment T1_headline --local --yes
+```
 
 ## Python Script Headers
 
@@ -206,7 +286,10 @@ Supported keys:
 - `offline=true|false`
 - `job-name=name`
 
-CLI flags override these headers.
+CLI flags override these headers. The parser only scans the first 40 lines, so
+put the `# kaya:` lines at the very top of the file (comments before the module
+docstring are fine); a long docstring can push them past the cutoff and they get
+silently ignored.
 
 ## Smoke Commands
 
@@ -232,7 +315,7 @@ envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/run_probe.py -- r
 Single-experiment reasoner smoke (generate the headline table's predictions):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T1_headline
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T1_headline
 ```
 
 Experiments (all 8 tables, real models). Generation runs on Kaya (GPU); the
@@ -242,9 +325,9 @@ own experiment, so you can run one or all. Put `GEMINI_API_KEY` (or
 
 ```bash
 # phase 1 on Kaya: generate + cache predictions on the GPU (one job per experiment)
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment T1_headline
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T1_headline
 # ...or all experiments in one job:
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --experiment all
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment all
 
 # bring the prediction cache back
 envs/mpvrdu/bin/python -m kaya.kaya pull

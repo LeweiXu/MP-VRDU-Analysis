@@ -68,7 +68,6 @@ MODULES = [
     "cli.run_probe",
     "cli.experiments",
     "cli.build_tables",
-    "cli.generate",
     "kaya",
     "kaya.kaya",
     "scripts",
