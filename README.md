@@ -62,9 +62,10 @@ The important execution split is:
 - `models/`: backend registry plus Qwen3-VL and InternVL local backends.
 - `covariates/`: retrieval and document-type classifier paths.
 - `metrics/`: accuracy, cost, frontier, retrieval, abstention metrics.
-- `experiments/`: one reusable experiment per table (`T1_headline` through
-  `T8_scale`) plus the two-phase driver and table builders.
-- `cli/`: local experiment, table, gate, and probe entry points.
+- `experiments/`: split by role — `generation` (GPU tasks G1..G6), `judge`
+  (score predictions), `build` (route rows into the eight table CSVs + `.md`),
+  plus shared `paths`/`corpus`/`tables`.
+- `cli/`: local gate and probe entry points.
 - `kaya/`: remote setup, prestage, sync/submit runner, and GPU generation entry.
 - `docs/`: fixed decisions, runbook, implementation plan, data/model/evaluation
   details.
@@ -150,39 +151,35 @@ also require PDFs staged manually as
 `.data/longdocurl/documents/<doc_no>.pdf`; the public annotation cache records
 source paths but does not provide usable local PDFs.
 
-## Experiment Selectors
+## Generation Task Selectors
 
-Use `--experiment` with either a single experiment or a group:
+Work is organized by **generation task** (the only GPU work), not by table.
+Use `--generation` with a single task or a group:
 
 ```text
-T1_headline        Table 1, RQ1 headline oracle ladder
-T2_analytical      Table 2, analytical slices from T1
-T3_family          Table 3, InternVL family replication
-T4_dataset         Table 4, LongDocURL dataset replication
-T5_composition     Table 5, evidence-composition mediation
-T6_matched_cross   Table 6, matched/cross retrieval
-T7_routing         Table 7, routing policies with classifier cost
+G1_sufficiency     oracle ladder, primary 8B      -> tables 1, 2, 5, 7
+G2_family          InternVL3-8B ladder            -> table 3
+G3_dataset         held-out MMLongBench ladder    -> table 4
+G5_retrieval       matched/cross retrieval cells  -> table 6
+G6_classifier      doc-type classifier (side)     -> table 7 routing price
 
-rq1                T1-T4
-rq2                T5-T6
-rq3                T7
-section2           T1-T7, excluding deferred F7/T8 appendix work
-all                all registered experiments
+reasoners          G1, G2, G3, G5 (the reasoner-cell tasks)
+all                every task
 ```
 
-Stage F7 / appendix sensitivity and scale-sanity work is not part of the
-current runbook.
+Tables are then built locally from these tasks' judged rows (see below). A
+scale-sanity task (2B/32B, table 8) is out of scope for now.
 
 ## Smoke Runs
 
 Smoke mode is the default: frozen small corpus, Qwen3-VL-2B, lower output token
 cap. It uses the same caches and table builders as full mode.
 
-Generate one smoke experiment on Kaya:
+Generate one smoke task on Kaya:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:10:00 --mem 16G --cpus-per-task 2 \
-  cli/experiments.py -- --phase generate --experiment T1_headline
+  experiments/generation.py -- --generation G1_sufficiency
 ```
 
 Pull remote artifacts:
@@ -191,24 +188,20 @@ Pull remote artifacts:
 envs/mpvrdu/bin/python -m kaya.kaya pull
 ```
 
-Judge/build locally:
+Judge (score predictions) then build the tables locally:
 
 ```bash
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T1_headline --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m experiments.judge --generation G1_sufficiency --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m experiments.build
 ```
 
-Run all smoke experiments:
+Run all smoke tasks:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/experiments.py -- --phase generate --experiment all
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 experiments/generation.py -- --generation all
 envs/mpvrdu/bin/python -m kaya.kaya pull
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment all --judge gpt-4o-mini
-```
-
-On a machine with both GPU and internet, generate and judge in one process:
-
-```bash
-envs/mpvrdu/bin/python -m cli.experiments --phase all --experiment T1_headline --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m experiments.judge --generation all --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m experiments.build
 ```
 
 ## Full Runs
@@ -216,28 +209,29 @@ envs/mpvrdu/bin/python -m cli.experiments --phase all --experiment T1_headline -
 Add `--full` to use the full MMLongBench corpus and Qwen3-VL-8B primary model.
 Use `--questions N` for capped pilots that still use full-mode model/config.
 
-Generate a 10-question full-mode Table-1 pilot on Kaya:
+Generate a 10-question full-mode sufficiency pilot on Kaya:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:20:00 --mem 32G --cpus-per-task 2 --gres gpu:v100:2 \
-  cli/experiments.py -- --phase generate --experiment T1_headline --full --questions 10
+  experiments/generation.py -- --generation G1_sufficiency --full --questions 10
 ```
 
 Kaya's `gpu` partition is V100-based. Full-mode Qwen3-VL-8B can OOM on a
 single 16 GB V100 even for capped pilots, so use two V100s for full 8B
 generation. Smoke mode uses Qwen3-VL-2B and can use one GPU.
 
-Generate full Table 1:
+Generate the full sufficiency task (source of Table 1):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T1_headline --full
+envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G1_sufficiency --full
 ```
 
-Judge/build full Table 1 locally:
+Judge then build locally:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya pull
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T1_headline --full --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m experiments.judge --generation G1_sufficiency --full --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m experiments.build --full
 ```
 
 Section-2 gate commands:
@@ -248,7 +242,7 @@ envs/mpvrdu/bin/python -m cli.gates frontier \
   --json-output results/gates/F1_frontier_divergence.json
 
 envs/mpvrdu/bin/python -m cli.gates agreement-sample --full \
-  --results results/cache/full/T1_headline/results.jsonl \
+  --results results/cache/full/G1_sufficiency/results.jsonl \
   --output results/gates/agreement_sample.csv
 
 envs/mpvrdu/bin/python -m cli.gates agreement-score \
@@ -260,42 +254,35 @@ envs/mpvrdu/bin/python -m cli.gates classifier-pilot --full \
   --json-output results/gates/F3_classifier_feasibility.json
 ```
 
-F4-F6 generation jobs:
+The other generation jobs (feed tables 3/4/6/7):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T3_family --full
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T4_dataset --full
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T6_matched_cross --full
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T7_routing --full
+envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G2_family --full
+envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G3_dataset --full
+envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G5_retrieval --full
+envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G6_classifier --full
 ```
 
-Run the Section-2 generation set (T1-T7) as one SLURM job, continuing past
-per-experiment failures:
+Run every task as one SLURM job, continuing past per-task failures:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit \
-  --job-name section2_generate \
+  --job-name all_generate \
   --gres gpu:v100:2 \
   --cpus-per-task 2 \
   --mem 32G \
   --time 1-00:00:00 \
-  cli/experiments.py -- --phase generate --experiment section2 --full --continue-on-error
+  experiments/generation.py -- --generation all --full --continue-on-error
 ```
 
-Each experiment writes its own cache directory under
-`results/cache/full/<experiment>/`. The grouped generation command also writes
-`generate_status.json` in each experiment directory with `success` or failure
-details.
+Each task writes its own cache directory under `results/cache/full/<task>/`,
+including a `generate_status.json` with `success` or failure details.
 
-F4-F6 aggregation-only or local judge/build commands:
+Judge every task, then build all eight tables in one local step:
 
 ```bash
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T2_analytical --full --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T3_family --full --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T4_dataset --full --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T5_composition --full --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T6_matched_cross --full --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m cli.experiments --phase judge --experiment T7_routing --full --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m experiments.judge --generation all --full --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m experiments.build --full
 ```
 
 ## Kaya Job Controls
@@ -317,14 +304,14 @@ envs/mpvrdu/bin/python -m kaya.kaya submit \
   --cpus-per-task 2 \
   --mem 32G \
   --time 00:20:00 \
-  cli/experiments.py -- --phase generate --experiment T1_headline --full --questions 10
+  experiments/generation.py -- --generation G1_sufficiency --full --questions 10
 ```
 
 Short walltimes usually matter most for queue backfill. Use `--no-wait` to
 submit and return immediately, then watch later:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --no-wait cli/experiments.py -- --phase generate --experiment T1_headline --full
+envs/mpvrdu/bin/python -m kaya.kaya submit --no-wait experiments/generation.py -- --generation G1_sufficiency --full
 envs/mpvrdu/bin/python -m kaya.kaya watch
 ```
 

@@ -7,7 +7,7 @@ Purpose:
     experiment runner or classifier path; this CLI records the gate artifacts.
 
 Pipeline role:
-    Complements `cli.experiments`: after T1 has generated/judged full rows, this
+    Complements the experiment roles: after G1 has generated/judged full rows, this
     module evaluates the frontier gate and creates the agreement sample. It also
     runs or scores the classifier feasibility pilot before predicted routing is
     trusted.

@@ -179,70 +179,88 @@ Commands assume the project environment is active (or prefix each with
 `envs/<your-env>/bin/`). Everything is root-relative and self-contained under the
 repo root.
 
-## The two phases
+## The three roles
 
-Every paper table is produced in two phases, split because the reasoner needs a
-GPU while the judge needs the internet:
+The study is organized by **generation task**, not by paper table (many tables
+are pure aggregations of the same generated predictions). Work splits into three
+role modules, so the GPU half runs on a cluster and everything else stays local:
 
-1. **generate** (GPU): runs each experiment's cells (conditioner -> render ->
-   representation -> reasoner) plus any GPU side work (retrievers, the doc-type
-   classifier), and caches the raw predictions per experiment. No internet needed.
-2. **judge** (internet, no GPU): reads the cached predictions, scores each with
-   an LLM judge, and builds the table CSVs. Loads no models.
-
-`cli.experiments` runs either or both:
+1. **generate** (`experiments.generation`, GPU): runs a task's cells (conditioner
+   -> render -> representation -> reasoner) plus any GPU side work (retrieval
+   diagnostics, the doc-type classifier), caching predictions per task. No
+   internet.
+2. **judge** (`experiments.judge`, internet, no GPU): reads a task's cached
+   predictions, scores each with an LLM judge, writes `results.jsonl`. Builds no
+   tables. Loads no models.
+3. **build** (`experiments.build`, local): routes each table's source-task judged
+   rows into the eight table CSVs plus a combined `all_tables.md`. Pure pandas.
 
 ```bash
-python -m cli.experiments --phase all      --experiment T1_headline --full   # both, one machine
-python -m cli.experiments --phase generate --experiment T1_headline --full   # GPU only
-python -m cli.experiments --phase judge    --experiment T1_headline --full   # judge + build only
+python -m experiments.generation --generation G1_sufficiency --full   # GPU: cache predictions
+python -m experiments.judge      --generation all --full              # score cached predictions
+python -m experiments.build      --full                               # build the 8 CSVs + .md
 ```
 
-A cluster submits this same module with `--phase generate` (the GPU-only half);
-see `kaya/KAYA_USER_GUIDE.md` for the submit flow.
+A cluster submits `experiments/generation.py`; see `kaya/KAYA_USER_GUIDE.md`.
 
-## `cli.experiments` arguments
+### Generation tasks (what runs on the GPU)
+
+| Task | Generates | Feeds tables |
+|---|---|---|
+| `G1_sufficiency` | oracle pages x the T/TL/TLV/V ladder, primary 8B | 1, 2, 5, 7 |
+| `G2_family` | the same ladder on InternVL3-8B | 3 (with G1) |
+| `G3_dataset` | the ladder on a held-out MMLongBench subset (text_heavy + in_between) | 4 |
+| `G5_retrieval` | matched/cross retrieval cells + retrieval R/P/F1 | 6 |
+| `G6_classifier` | the doc-type classifier per document (side only) | 7 (routing price) |
+
+(A scale-sanity task for 2B/32B, feeding Table 8, is out of scope for now, so
+Table 8 shows the single primary size.)
+
+## `experiments.generation` / `experiments.judge` arguments
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--experiment SEL` | `all` | An experiment name (`T1_headline`), a group (`all`, `section2`, `rq1`, `rq2`, `rq3`, `appendix`), or a comma list of either. |
-| `--phase {generate,judge,all}` | `all` | Which phase(s) to run. |
+| `--generation SEL` | `all` | A task (`G1_sufficiency`), a group (`all`, `reasoners`), or a comma list. |
 | `--full` | off (smoke) | Full corpus + 8B reasoner. Without it: the frozen ~7-doc smoke corpus + 2B. |
-| `--judge SPEC` | `gemini` | Judge for the judge phase: `gemini` (free tier), `gpt-4o-mini` (paid), or `stub` (offline, deterministic). |
+| `--judge SPEC` | `gemini` | (judge only) `gemini` (free tier), `gpt-4o-mini` (paid), or `stub` (offline). |
 | `--questions N` | none | Global cap: first N questions. Overrides `--per-bin-questions`. |
-| `--per-bin-questions N` | 100 | Full mmlongbench only: ~N questions per Option-A bin, drawn as whole documents. `0` = whole corpus (1091 Q). |
-| `--sample-seed N` | 0 | Which documents fill the per-bin subset. A different seed draws a disjoint-ish subset. |
-| `--quantization {4bit,8bit}` | off (bf16) | Load the local reasoner quantized (bitsandbytes) so the 8B fits one 16GB GPU. Appends `-4bit`/`-8bit` to the reasoner spec, so quantized rows get their own cache. |
-| `--visual-resolution {full,high,med,low,min}` | off (size-aware) | Fix the per-page vision-token budget for every reasoner, overriding the size-aware default. `full`≈1280, `high`≈768 (current 8B default), `med`≈512, `low`≈320, `min`≈224 tokens/page. Lower = more downscaling = fewer vision tokens (fits a tighter GPU budget, e.g. bf16 8B on 2×V100). Not part of the cache key, so clear the cache when changing it for the same spec. |
-| `--continue-on-error` | off | Generate: record a failing experiment's status and continue to the next. Judge: skip cells with no cached prediction (a partial cache, e.g. after an OOM) so a partial table still builds. |
+| `--per-bin-questions N` | 100 | Full mmlongbench only: ~N questions per Option-A bin, whole documents. `0` = whole corpus. |
+| `--sample-seed N` | 0 | Which documents fill the per-bin subset. |
+| `--quantization {4bit,8bit}` | off (bf16) | Quantized reasoner (bitsandbytes); appends `-4bit`/`-8bit` to the spec, so quantized rows get their own cache. |
+| `--visual-resolution {full,high,med,low,min}` | off (size-aware) | Fix the per-page vision-token budget for every reasoner. `full`≈1280, `high`≈768 (current 8B default), `med`≈512, `low`≈320, `min`≈224 tokens/page. Lower = more downscaling. Not in the cache key, so clear/`--run-tag` when changing it for one spec. |
+| `--run-tag TAG` | off | Namespace this run's cache tree (`results/cache/<TAG>/`) so parallel full runs don't share files. |
+| `--continue-on-error` | off | Generate: record a failing task's status and continue. Judge: skip cells with no cached prediction (partial cache) so a partial table still builds. |
 | `--verbose` / `--quiet` | smoke=verbose | DEBUG per-cell/per-stage logging / force INFO. |
 
-**Phase-matching rule:** the judge phase re-resolves the same cells as generate,
-so the corpus/model flags (`--experiment`, `--full`, `--per-bin-questions`,
-`--sample-seed`, `--quantization`) MUST match between the two phases, or the
-judge looks for predictions that were never generated and errors.
+`experiments.build` takes `--full` / `--run-tag` (to locate the cache),
+`--output-dir`, `--markdown`, `--bootstrap`, `--seed`.
 
-## Running individual vs all experiments
+**Flag-matching rule:** judge re-resolves the same cells as generate, so the
+corpus/model flags (`--generation`, `--full`, `--per-bin-questions`,
+`--sample-seed`, `--quantization`, `--run-tag`) MUST match, or judge looks for
+predictions that were never generated and errors.
+
+## Running individual vs all tasks
 
 ```bash
-python -m cli.experiments --phase all --experiment T1_headline --full                       # one table
-python -m cli.experiments --phase all --experiment T1_headline,T6_matched_cross,T7_routing --full  # a subset
-python -m cli.experiments --phase all --experiment section2 --full                          # all seven main tables (T1-T7)
-python -m cli.experiments --phase all --experiment all --full                               # + the T8 scale appendix
+python -m experiments.generation --generation G1_sufficiency --full             # one task
+python -m experiments.generation --generation G1_sufficiency,G5_retrieval --full # a subset
+python -m experiments.generation --generation reasoners --full                  # the reasoner-cell tasks
+python -m experiments.generation --generation all --full                        # every task
 ```
 
-Registry groups: `all` = T1-T8; `section2` = T1-T7; `rq1` = T1,T2,T3,T4;
-`rq2` = T5,T6; `rq3` = T7; `appendix` = T8. Experiments run in dependency order
-(T1 first); the aggregation-only tables (T2, T5) build from T1's cached rows with
-no new generation, so a judge-phase run of them just needs T1 already generated.
+Groups: `all` = G1,G2,G3,G5,G6; `reasoners` = the four tasks with reasoner cells
+(skips the classifier side task). Tables 2 and 5 are pure aggregations of
+`G1_sufficiency`, so building them just needs G1 generated + judged.
 
 ## Generation cache: what the GPU phase writes
 
-Everything lands under `results/cache/<mode>/<experiment>/`, where `<mode>` is
-`smoke` or `full`. For `T1_headline` in full mode:
+Everything lands under `results/cache/<mode>/<task>/`, where `<mode>` is
+`smoke` or `full` (and `<mode>` gains a `/<run-tag>` prefix under
+`results/cache/` when `--run-tag` is set). For `G1_sufficiency` in full mode:
 
 ```text
-results/cache/full/T1_headline/
+results/cache/full/G1_sufficiency/
   predictions.jsonl       # durable reasoner outputs (the real GPU artifact)
   generate_results.jsonl  # predictions scored by a throwaway STUB judge (ignore its scores)
   generate_status.json    # {status: success|failed, error, traceback, ...} for this run
@@ -260,12 +278,12 @@ results/cache/full/T1_headline/
 - **`generate_results.jsonl`** mirrors predictions but scored by a throwaway stub
   judge (`judge_spec: generate-throwaway`) just so the generate phase can print
   rough counts. Do not read accuracy from it.
-- **`generate_status.json`** records whether the experiment finished
+- **`generate_status.json`** records whether the task finished
   (`status: success`) or its error + traceback. `--continue-on-error` writes one
-  per experiment in a grouped run.
+  per task in a grouped run.
 - The cache is **append-only and resumable**: re-running skips cells already in
   `predictions.jsonl` (keyed as above) and only generates missing/failed ones.
-  Delete an experiment's dir (`rm -rf results/cache/full/<name>`) to force a clean
+  Delete a task's dir (`rm -rf results/cache/full/<task>`) to force a clean
   regenerate.
 
 Two shared, reproducible caches sit alongside (not per-experiment) and are worth
@@ -274,16 +292,18 @@ keeping between runs: `results/cache/renders/` (rasterized PDF pages) and
 
 ## Judge phase: how it reads the cache and what it writes
 
-`--phase judge` re-resolves the same cells but, instead of calling the reasoner,
-**reads the cached prediction** for each cell (a prediction-cache hit keyed
-without the judge), sends (question, gold answer, model answer) to the judge, and
-writes the scored row. It loads no models; a missing prediction raises (that cell
-was never generated). It produces:
+`experiments.judge` re-resolves the same cells but, instead of calling the
+reasoner, **reads the cached prediction** for each cell (a prediction-cache hit
+keyed without the judge), sends (question, gold answer, model answer) to the
+judge, and writes the scored row. It loads no models and builds no tables; a
+missing prediction raises (that cell was never generated) unless
+`--continue-on-error`. It produces:
 
 ```text
-results/cache/full/T1_headline/results.jsonl   # predictions + REAL judge scores
-results/tables/full/table1_headline.csv         # the built table
+results/cache/full/G1_sufficiency/results.jsonl   # predictions + REAL judge scores
 ```
+
+`experiments.build` then reads those `results.jsonl` files and writes the tables.
 
 - **`results.jsonl`** is one row per cell with the real verdict. Fields:
   `cache_key`, `question_id`, `doc_id`, `doc_type`, `condition`, `representation`,
@@ -294,8 +314,8 @@ results/tables/full/table1_headline.csv         # the built table
 - **`results/tables/<mode>/tableN_*.csv`** are the final tables (e.g.
   `table1_headline.csv`, `table7_routing.csv`): one row per bin/policy with
   accuracy, document-level bootstrap CIs, latency, token splits, and the marked
-  frontier. `python -m cli.build_tables` can rebuild these from cached rows
-  without re-judging.
+  frontier. `python -m experiments.build` (re)builds these — plus a combined
+  `all_tables.md` — from cached judged rows without re-judging.
 
 Judge API keys live only in the local `.env` (`GEMINI_API_KEY` /
 `OPENAI_API_KEY`), read from the environment, so export them (e.g.
@@ -306,7 +326,7 @@ Judge API keys live only in the local `.env` (`GEMINI_API_KEY` /
 ```bash
 python -m cli.gates frontier --table results/tables/full/table1_headline.csv \
     --json-output results/gates/F1_frontier_divergence.json      # F1: Go if >=2 bins differ
-python -m cli.gates agreement-sample --full --results results/cache/full/T1_headline/results.jsonl \
+python -m cli.gates agreement-sample --full --results results/cache/full/G1_sufficiency/results.jsonl \
     --output results/gates/agreement_sample.csv                  # F2: 200-row sheet to hand-label
 python -m cli.gates agreement-score --sheet results/gates/agreement_sample.csv \
     --json-output results/gates/F2_judge_human_agreement.json    # F2: Cohen's kappa, gate 0.75
@@ -316,7 +336,9 @@ python -m cli.gates classifier-pilot --full \
 ```
 
 Table notes: **Table 4** replicates on a held-out subset of MMLongBench documents
-(disjoint docs for text_heavy/in_between, reused visual_heavy). **Table 6** is
-only populated for bins whose Table-1 frontier is `TLV`/`V`. **Table 7** predicted
-routing reports the classifier's amortized latency as its own column.
+(disjoint docs for text_heavy/in_between; visual_heavy is out of scope for now, so
+that bin is blank). **Table 6** is only populated for bins whose Table-1 frontier
+is `TLV`/`V`. **Table 7** predicted routing reports the classifier's amortized
+latency as its own column. **Table 8** (scale) shows the single primary size until
+a scale generation task exists.
 

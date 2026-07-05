@@ -6,9 +6,9 @@ Purpose:
     filled with whatever smoke/full rows are currently cached.
 
 Pipeline role:
-    `cli.build_tables` calls this module after experiment runs have filled
-    `results/cache/`. Keeping aggregation here lets tables be rebuilt without
-    rerunning models, judges, parsers, or retrieval.
+    `experiments.build` calls these builders (routing each table's source-task
+    rows to it) after `results/cache/` is filled. Keeping aggregation here lets
+    tables be rebuilt without rerunning models, judges, parsers, or retrieval.
 
 Arguments:
     None. This module is import-only; callers pass result rows to

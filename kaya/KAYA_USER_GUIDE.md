@@ -207,7 +207,7 @@ runs repo files by path.
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 \
-  cli/experiments.py -- --phase generate --experiment T1_headline --full
+  experiments/generation.py -- --generation G1_sufficiency --full
 envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --arg-for-job value
 ```
 
@@ -255,7 +255,7 @@ repo. Prompts for confirmation unless `--yes`.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--mode full\|smoke` | both | Restrict to one cache mode under `results/cache/<mode>/`. |
-| `--experiment NAME` | all | Restrict to one experiment dir under the selected mode(s). |
+| `--experiment NAME` | all | Restrict to one cache dir under the selected mode(s), e.g. a generation task `G1_sufficiency`. |
 | `--renders` | off | Also drop the render/marker parse caches (kept by default so re-runs skip re-rendering). |
 | `--logs` | off | Also empty the `logs/` directory (keeps the dir itself). |
 | `--all` | off | Drop the whole `results/cache` + `results/tables` + `logs`. |
@@ -264,8 +264,8 @@ repo. Prompts for confirmation unless `--yes`.
 | `--yes` | off | Skip the confirmation prompt. |
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya clear-cache --mode full --experiment T1_headline --dry-run
-envs/mpvrdu/bin/python -m kaya.kaya clear-cache --mode full --experiment T1_headline --local --yes
+envs/mpvrdu/bin/python -m kaya.kaya clear-cache --mode full --experiment G1_sufficiency --dry-run
+envs/mpvrdu/bin/python -m kaya.kaya clear-cache --mode full --experiment G1_sufficiency --local --yes
 ```
 
 ## Python Script Headers
@@ -312,32 +312,36 @@ envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/run_probe.py -- m
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/run_probe.py -- retrieval --run-heavy --json
 ```
 
-Single-experiment reasoner smoke (generate the headline table's predictions):
+Single generation-task smoke (cache the sufficiency-ladder predictions):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T1_headline
+envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G1_sufficiency
 ```
 
-Experiments (all 8 tables, real models). Generation runs on Kaya (GPU); the
-judge + table build run **locally** (no GPU, only an API key). Each table is its
-own experiment, so you can run one or all. Put `GEMINI_API_KEY` (or
-`OPENAI_API_KEY`) in your **local** `.env` — judge keys are not forwarded to Kaya.
+Experiments now split by **role** (see `docs/USER_GUIDE.md`): the study is
+organized by *generation task* (`G1_sufficiency`, `G2_family`, `G3_dataset`,
+`G5_retrieval`, `G6_classifier`), not by table. Only generation needs a GPU;
+judging and table building run **locally** (no GPU, only an API key). Put
+`GEMINI_API_KEY` (or `OPENAI_API_KEY`) in your **local** `.env` — judge keys are
+not forwarded to Kaya.
 
 ```bash
-# phase 1 on Kaya: generate + cache predictions on the GPU (one job per experiment)
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment T1_headline
-# ...or all experiments in one job:
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/experiments.py -- --phase generate --experiment all
+# 1. GENERATE on Kaya (GPU): cache predictions per task (one job per task, or all)
+envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G1_sufficiency
+# ...or every task in one job:
+envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation all
 
-# bring the prediction cache back
+# 2. bring the prediction cache back
 envs/mpvrdu/bin/python -m kaya.kaya pull
 
-# phase 2 locally: judge + build the table CSVs (results/tables/smoke/*.csv)
-envs/mpvrdu-local-gpu/bin/python -m cli.experiments --phase judge --experiment all
+# 3. JUDGE locally (scores predictions; no tables): match the generate flags
+python -m experiments.judge --generation all
+
+# 4. BUILD tables locally: routes each task's judged rows into the 8 CSVs + a .md
+python -m experiments.build
 ```
 
-Add `--full` for the full corpus/8B run. Locally (a GPU + internet in one env)
-you can also run both phases at once: `python -m cli.experiments --phase all`.
+Add `--full` for the full corpus/8B run (pass it to generate, judge, and build).
 
 ## GPU Allocation
 

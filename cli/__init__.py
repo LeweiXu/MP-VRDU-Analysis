@@ -6,9 +6,10 @@ Purpose:
     wrappers.
 
 Pipeline role:
-    `cli.run_probe` checks feasibility, `cli.experiments` runs the paper-table
-    experiments (generate/judge/build), `cli.build_tables` aggregates cached rows
-    into CSVs directly, and `cli.gates` evaluates Section-2 gate artifacts.
+    `cli.run_probe` checks feasibility and `cli.gates` evaluates Section-2 gate
+    artifacts. The paper-table experiments moved to the `experiments` package,
+    split by role: `experiments.generation` (GPU), `experiments.judge`, and
+    `experiments.build`.
 
 Arguments:
     None. This package initializer is import-only; arguments live in the

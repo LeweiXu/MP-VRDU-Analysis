@@ -1,20 +1,20 @@
-"""Test the per-experiment pipeline: two-phase driver, registry, and 8 tables.
+"""Test the role-split experiment pipeline: generation tasks, judge, build.
 
 Purpose:
-    Covers the refactor that makes each paper table its own reusable experiment
-    run in two phases (generate on GPU, judge/build anywhere):
+    Covers the refactor that organizes `experiments/` by generation task (G1..G6)
+    rather than by paper table, with three separate roles:
 
-    - the `PredictionCache` lets the judge phase reuse a prediction without
-      re-running the reasoner (and `make_prediction_key` is judge-independent);
-    - `experiments.driver` generate → judge → build produces each table CSV from
-      per-experiment caches, with `depends_on` rows pulled in;
-    - the phase-2 guards (`_GuardRetriever`, `_SpecOnlyReasoner`) refuse to run;
-    - the registry resolves names/groups; every experiment builds its table.
+    - `experiments.generation` runs a task's cells once per reasoner spec and
+      caches predictions (the `PredictionCache` lets judging reuse them);
+    - `experiments.judge` re-scores those predictions with guards that refuse to
+      run a reasoner/retriever (`_GuardRetriever`, `_SpecOnlyReasoner`);
+    - `experiments.build` routes each task's judged rows into the eight table
+      CSVs; a table with no source rows still emits a skeleton.
 
 Test role:
     Fixture PDFs + injected fake reasoner/judge, so the wiring is exercised
     without Marker, Qwen, ColQwen, or a judge API. The heavy generate path is
-    validated on hardware via `cli.experiments --phase generate`.
+    validated on hardware via `python -m experiments.generation`.
 
 Arguments:
     None. Run with `python -m pytest tests/test_experiments.py`.
@@ -31,9 +31,11 @@ import pytest
 
 from config import ExperimentConfig, ProjectPaths
 from data.loader import load_mmlongbench
-from experiments import driver, registry
-from experiments.base import Retrievers, oracle_ladder_cells
-from experiments.driver import _GuardRetriever, _SpecOnlyReasoner, experiment_paths
+from experiments import build, generation, judge
+from experiments.generation import GENERATION_TASKS, Retrievers, resolve
+from experiments.judge import _GuardRetriever, _SpecOnlyReasoner
+from experiments.paths import experiment_paths
+from experiments.tables import build_table1_headline
 from models.payload import ModelInput
 from pipeline.judge import Judge, StubJudge
 from pipeline.orchestrator import (
@@ -134,20 +136,20 @@ def test_prediction_key_is_judge_independent() -> None:
     assert make_cache_key(q, "oracle", "T", "s", "stub", 72) != make_cache_key(q, "oracle", "T", "s", "gpt", 72)
 
 
-def test_headline_generate_then_judge_reuses_predictions(tmp_path: Path, fake_channels) -> None:
+def test_sufficiency_generate_then_judge_reuses_predictions(tmp_path: Path, fake_channels) -> None:
     config = _make_config(tmp_path)
     questions = load_mmlongbench(config.paths.data_dir)
-    headline = registry.EXPERIMENTS["T1_headline"]
-    paths = experiment_paths(config, "T1_headline")
+    task = GENERATION_TASKS["G1_sufficiency"]
+    paths = experiment_paths(config, task.name)
 
-    # Phase 1: generate with a real (fake) reasoner into T1's prediction cache.
+    # Phase 1: generate with a real (fake) reasoner into G1's prediction cache.
     gen_reasoner = CountingReasoner()
     gen = Orchestrator(
         config, reasoner=gen_reasoner, judge=StubJudge("gen"),
         cache=ResultCache(paths.generate_results), prediction_cache=PredictionCache(paths.predictions),
     )
     guards = Retrievers(_GuardRetriever("t"), _GuardRetriever("v"))
-    cells = headline.generation_cells(config, questions, retrievers=guards)
+    cells = task.generation_cells(config, questions, retrievers=guards)
     for cell in cells:
         gen.run_cell(cell.question, cell.conditioner, cell.representation)
     assert gen_reasoner.calls == len(questions) * len(config.representations)
@@ -164,8 +166,8 @@ def test_headline_generate_then_judge_reuses_predictions(tmp_path: Path, fake_ch
     assert all(r.judge_spec == "keyword-judge" for r in rows)
     assert all(r.correct for r in rows)  # gold appears in the fake prediction
 
-    tables = headline.build(config, rows, paths.side_dir)
-    assert list(tables["table1"]["bin"]) == list(config.bins)
+    table1 = build_table1_headline(rows, bins=config.bins, n_bootstrap=0)
+    assert list(table1["bin"]) == list(config.bins)
 
 
 def test_guards_refuse_to_run() -> None:
@@ -179,35 +181,34 @@ def test_guards_refuse_to_run() -> None:
         _SpecOnlyReasoner("spec").answer(q, ModelInput(parts=()))
 
 
-def test_registry_resolve() -> None:
-    assert [e.name for e in registry.resolve("T1_headline")] == ["T1_headline"]
-    assert [e.name for e in registry.resolve("rq2")] == ["T5_composition", "T6_matched_cross"]
-    assert [e.name for e in registry.resolve("section2")] == [
-        "T1_headline",
-        "T2_analytical",
-        "T3_family",
-        "T4_dataset",
-        "T5_composition",
-        "T6_matched_cross",
-        "T7_routing",
+def test_resolve_generation_tasks() -> None:
+    assert [t.name for t in resolve("G1_sufficiency")] == ["G1_sufficiency"]
+    assert [t.name for t in resolve("reasoners")] == [
+        "G1_sufficiency", "G2_family", "G3_dataset", "G5_retrieval",
     ]
-    assert len(registry.resolve("all")) == 8
+    assert [t.name for t in resolve("all")] == [
+        "G1_sufficiency", "G2_family", "G3_dataset", "G5_retrieval", "G6_classifier",
+    ]
+    # comma list de-dupes and keeps registry order
+    assert [t.name for t in resolve("G5_retrieval,G1_sufficiency,G1_sufficiency")] == [
+        "G1_sufficiency", "G5_retrieval",
+    ]
     with pytest.raises(ValueError):
-        registry.resolve("nope")
+        resolve("nope")
 
 
-def test_run_generate_continue_on_error_records_per_experiment_status(tmp_path: Path, monkeypatch) -> None:
+def test_run_generate_continue_on_error_records_per_task_status(tmp_path: Path, monkeypatch) -> None:
     config = ExperimentConfig(smoke=True, paths=ProjectPaths(root=tmp_path, cache_dir=tmp_path / "results" / "cache"))
-    experiments = [SimpleNamespace(name="ok"), SimpleNamespace(name="bad"), SimpleNamespace(name="after")]
+    tasks = [SimpleNamespace(name="ok"), SimpleNamespace(name="bad"), SimpleNamespace(name="after")]
 
-    def fake_generate(config, exp, questions):  # noqa: ANN001
-        if exp.name == "bad":
+    def fake_generate(config, task, questions):  # noqa: ANN001
+        if task.name == "bad":
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(driver, "resolve", lambda selector: experiments)
-    monkeypatch.setattr(driver, "generate", fake_generate)
+    monkeypatch.setattr(generation, "resolve", lambda selector: tasks)
+    monkeypatch.setattr(generation, "generate", fake_generate)
 
-    statuses = driver.run_generate(config, "fake", [], continue_on_error=True)
+    statuses = generation.run_generate(config, "fake", [], continue_on_error=True)
 
     assert [status.status for status in statuses] == ["success", "failed", "success"]
     bad_status = experiment_paths(config, "bad").root / "generate_status.json"
@@ -216,46 +217,44 @@ def test_run_generate_continue_on_error_records_per_experiment_status(tmp_path: 
     assert json.loads(after_status.read_text())["status"] == "success"
 
 
-def test_every_experiment_builds_its_table(tmp_path: Path, fake_channels) -> None:
-    """Generate T1+T6, judge+build every experiment, expect all 8 table CSVs."""
+def test_build_routes_tasks_into_all_eight_tables(tmp_path: Path, fake_channels, monkeypatch) -> None:
+    """Generate G1 + G5 (reasoner cells), judge all, build all eight table CSVs."""
 
     config = _make_config(tmp_path)
     questions = load_mmlongbench(config.paths.data_dir)
 
-    # Inject a fake reasoner into the driver by monkeypatching the backend lookup.
-    import experiments.driver as drv
+    fake = CountingReasoner()
+    monkeypatch.setattr(generation, "reasoner_for", lambda spec, config=None: fake)
 
-    drv_reasoner = CountingReasoner()
-    orig = drv._reasoner_for
-    drv._reasoner_for = lambda spec, config=None: drv_reasoner  # type: ignore[assignment]
-    try:
-        # Generate the two experiments that have reasoner cells (T1, T6). The
-        # judge/build path never calls run_side, so the classifier/retrieval side
-        # work (real models) is not exercised here.
-        driver.generate(config, registry.EXPERIMENTS["T1_headline"], questions)
-        _generate_t6_with_stub(config, questions, drv_reasoner)
-        written = driver.run_judge(config, "all", questions, judge_impl=KeywordJudge())
-    finally:
-        drv._reasoner_for = orig  # type: ignore[assignment]
+    # G1: oracle ladder via the real generate() path (no side work).
+    generation.generate(config, GENERATION_TASKS["G1_sufficiency"], questions)
+    # G5: run its matched/cross cells directly with a stub retriever, skipping the
+    # real-model run_side (retrieval R/P/F1 needs ColQwen/BM25 weights).
+    _generate_cells_with_stub(config, "G5_retrieval", questions, fake)
 
-    assert set(written) == {f"table{i}" for i in range(1, 9)}
-    for key, path in written.items():
-        assert path.exists(), key
-        if key != "table6":
-            assert len(pd.read_csv(path)) > 0, key
+    judge.run_judge(config, "all", questions, judge_impl=KeywordJudge(), continue_on_error=True)
+    written = build.build_tables(config, config.paths.results_dir / "tables" / "smoke",
+                                 n_bootstrap=0, markdown_path=tmp_path / "all_tables.md")
+
+    assert {f"table{i}" for i in range(1, 9)} <= set(written)
+    assert written["markdown"].exists()
+    for i in range(1, 9):
+        assert written[f"table{i}"].exists(), f"table{i}"
+    # Tables sourced from the generated tasks (G1 -> table1, G5 -> table6) have rows.
+    assert len(pd.read_csv(written["table1"])) > 0
 
 
-def _generate_t6_with_stub(config, questions, reasoner) -> None:
-    """Generate T6 cells with a deterministic first-page retriever."""
+def _generate_cells_with_stub(config, task_name, questions, reasoner) -> None:
+    """Run a task's cells with a deterministic first-page retriever (no run_side)."""
 
     from covariates.retriever import StubRetriever
 
-    exp = registry.EXPERIMENTS["T6_matched_cross"]
-    paths = experiment_paths(config, exp.name)
+    task = GENERATION_TASKS[task_name]
+    paths = experiment_paths(config, task.name)
     orch = Orchestrator(
         config, reasoner=reasoner, judge=StubJudge("gen"),
         cache=ResultCache(paths.generate_results), prediction_cache=PredictionCache(paths.predictions),
     )
     retrievers = Retrievers(StubRetriever(), StubRetriever())
-    for cell in exp.generation_cells(config, questions, retrievers=retrievers):
+    for cell in task.generation_cells(config, questions, retrievers=retrievers):
         orch.run_cell(cell.question, cell.conditioner, cell.representation)

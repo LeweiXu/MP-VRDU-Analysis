@@ -80,9 +80,9 @@ Data flow: `Question` → `InputConditioner.condition` → render pages →
 | `covariates/{retriever,classifier}.py` | Retrieval + doc-type classifier covariates. |
 | `tools/{text,layout,visual}.py` | Non-VLM channel functions the composers call. |
 | `metrics/*` | accuracy (doc-level CI), retrieval, cost, frontier, abstention. |
-| `experiments/T*_*.py` | One reusable `Experiment` per paper table (T1-T8); smoke and full share them. |
-| `experiments/{base,registry,driver,corpus,tables}.py` | Experiment contract, name→experiment map, two-phase runner, corpus resolver, table primitives. |
-| `cli/experiments.py` | Run experiments: generate on GPU (`--phase generate`, the half a cluster submits), judge/build anywhere. |
+| `experiments/generation.py` | GenerationTask registry (G1..G6) + the GPU generate driver + CLI (the half a cluster submits). |
+| `experiments/{judge,build}.py` | Local roles: `judge` scores a task's predictions; `build` routes each table's source-task rows into the CSVs + `.md`. |
+| `experiments/{paths,corpus,tables}.py` | Shared cache/table layout + status/logging; corpus resolver; pure per-table aggregation functions. |
 
 **Frozen interfaces (Stage-3 freeze; change only via a checkpoint recorded
 here):** `schema.py` contracts; `models/payload.py::ModelInput` + its
@@ -160,40 +160,46 @@ load path (`transformers==4.57.6` exposes `Qwen3VLForConditionalGeneration`),
 `LocalVLMBackend`, frozen prompt `m3-qwen3vl-v1`, token/latency accounting;
 (models reference below). M4: oracle ladder end to end through the resumable cache. M5:
 real judge, document-level bootstrap accuracy, cost, sufficiency frontier, and
-all eight table builders + `cli/build_tables.py` (evaluation reference below). M6:
+all eight table builders + `experiments/build.py` (evaluation reference below). M6:
 `BM25BGERetriever` + `ColQwenRetriever`, page R/P/F1 + evidence-modality slices,
 `QwenDocTypeClassifier`, and matched/cross + four routing policies.
 
-## Per-experiment runs (two-phase: generate then judge)
+## Role split: generation tasks, judge, build
 
-Each paper table is one reusable `Experiment` (`experiments/T1_headline.py` …
-`T8_scale.py`); the same object serves the tiny smoke run and the full run (only
-the config's model/corpus differ). They run the **real** pipeline (Qwen3-VL
-reasoner, BM25+BGE / ColQwen retrievers, Qwen classifier, Gemini/GPT judge). No
-stub reasoners or injected scorers on this path.
+The study is organized by **generation task**, not by paper table, because most
+tables are pure aggregations of the same generated predictions. Three role
+modules (`experiments/{generation,judge,build}.py`) run the **real** pipeline
+(Qwen3-VL reasoner, BM25+BGE / ColQwen retrievers, Qwen classifier, Gemini/GPT
+judge). No stub reasoners or injected scorers on this path.
 
-- **Why per experiment.** Running one table per Kaya job keeps jobs small (fast
-  backfill) and lets a single experiment be re-run in isolation after a change.
-  `experiments/registry.py` maps names/groups (`all`, `rq1`, `rq2`, `rq3`,
-  `appendix`); `experiments/driver.py` runs them. Each experiment caches under its
-  own dir (`results/cache/<smoke|full>/<name>/`), so runs never collide and merge
-  cleanly. Aggregation-only tables (T2/T5/analytical relabels, T3/T8 in smoke)
-  declare `depends_on` and build from T1's rows with no new generation; T6 adds
-  retrieval cells; T7 adds the classifier as GPU side work.
-- **Why two phases, split across machines.** Reasoner/retrievers/classifier need a
+- **Generation tasks (the only GPU work).** `experiments/generation.py` defines
+  `G1_sufficiency` (oracle ladder, primary 8B — the source rows for tables 1, 2,
+  5, 7), `G2_family` (InternVL ladder → table 3), `G3_dataset` (held-out
+  text_heavy+in_between ladder → table 4), `G5_retrieval` (matched/cross cells +
+  retrieval R/P/F1 → table 6), and `G6_classifier` (doc-type classifier side work
+  → table 7's routing price). A scale task (2B/32B → table 8) is out of scope for
+  now. Each task caches under `results/cache/<smoke|full>[/<run-tag>]/<task>/`, so
+  jobs never collide. Groups: `all`, `reasoners`.
+- **Table routing replaces `depends_on`.** `experiments/build.py`'s `TABLES`
+  registry declares each table's source task(s): table1←G1, table3←G1+G2,
+  table4←G3, table6←G5 (+retrieval side), table7←G1 (+classifier side), table8←G1.
+  This matters because the `experiments/tables.py` builders mostly don't filter by
+  model_spec, so a table is only correct when handed exactly its source tasks'
+  rows (unioning all specs would corrupt table1's single-spec aggregate).
+- **Why the roles split across machines.** Reasoner/retrievers/classifier need a
   GPU; the judge needs the internet — on Kaya those never coexist. So generation
-  runs on Kaya (GPU, offline) and the judge + table build run **locally** after a
-  `kaya.kaya pull` brings the prediction cache back (`pull` already rsyncs
-  `results/`). The local judge phase loads **no models** (prediction-cache hits
-  only), which keeps the workstation responsive. The phase-2 `_GuardRetriever` /
-  `_SpecOnlyReasoner` raise if a cell was missed in generation.
-- **Commands.** Kaya generate: `kaya.kaya submit cli/experiments.py -- --phase generate --experiment
-  T1_headline` (or `all`), then `kaya.kaya pull`. Local judge+build:
-  `cli.experiments --phase judge --experiment all`. One-machine (GPU + internet):
-  `cli.experiments --phase all`. Add `--full` for the full corpus/8B. Judge
-  defaults to `gemini` (`--judge gpt-4o-mini` / `stub`). Tables → `results/tables/
-  <smoke|full>/`. Judge keys are **not** forwarded to Kaya (only `HF_TOKEN` is);
-  keep `GEMINI_API_KEY`/`OPENAI_API_KEY` in the local `.env`.
+  runs on Kaya (GPU, offline); `experiments.judge` (scores predictions, no tables)
+  and `experiments.build` (aggregates into CSVs + `.md`) run **locally** after a
+  `kaya.kaya pull`. Judge loads **no models** (prediction-cache hits only); the
+  `_GuardRetriever` / `_SpecOnlyReasoner` raise (`CacheMiss`) if a cell was missed
+  in generation, which `--continue-on-error` turns into a skip.
+- **Commands.** Kaya generate: `kaya.kaya submit experiments/generation.py --
+  --generation G1_sufficiency` (or `all`), then `kaya.kaya pull`. Local:
+  `python -m experiments.judge --generation all` then `python -m experiments.build`.
+  Add `--full` for the full corpus/8B. Judge defaults to `gemini` (`--judge
+  gpt-4o-mini` / `stub`). Tables → `results/tables/<smoke|full>[-<run-tag>]/`.
+  Judge keys are **not** forwarded to Kaya (only `HF_TOKEN` is); keep
+  `GEMINI_API_KEY`/`OPENAI_API_KEY` in the local `.env`.
 
 **Default per-bin document-level subset for full runs.** A full mmlongbench run
 now defaults to ~100 questions per Option-A bin instead of all 1091, so a full T1
@@ -276,21 +282,21 @@ tokens/page) plus a size-aware override `config.max_pixels_for_spec` /
 max_pixels=)` -> `LocalVLMBackend`, applied via the per-image `max_pixels` key
 that `qwen_vl_utils.process_vision_info` honors. Same wiring also fixed
 `_reasoner_for` ignoring `config.max_tokens` (full runs were capped at 64 new
-tokens). `cli/experiments.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
+tokens). `experiments/generation.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
 True` as a fragmentation mitigation. InternVL is untouched (fixed 448px tiling
 already bounds its vision tokens). Not a frozen-interface change: `get_reasoner`
 gained optional kwargs; `Reasoner.answer` and the cache key are unchanged.
 
-**Verbose smoke tooling.** `experiments.driver.configure_logging(verbose)` sends
+**Verbose smoke tooling.** `experiments.paths.configure_logging(verbose)` sends
 `mpvrdu.*` logs to stdout; smoke runs are verbose (DEBUG) by default (`--quiet`
-opts out, `--verbose` forces it for full). The driver logs per-experiment banners
+opts out, `--verbose` forces it for full). Generation logs per-task banners
 and per-cell start/result lines; the orchestrator logs each stage (conditioner ->
 render -> representation -> reasoner -> judge) at DEBUG, so an OOM/crash points at
 the exact cell and stage. On failure the full traceback is logged to stdout (the
-SLURM log), not just the per-experiment `generate_status.json`. One
-`kaya.kaya submit cli/experiments.py -- --phase generate --experiment section2 --continue-on-error`
-job runs all seven Section-2 tables (T1-T7) with per-experiment isolation: a
-failing table records its status and the run continues to the next.
+SLURM log), not just the per-task `generate_status.json`. One
+`kaya.kaya submit experiments/generation.py -- --generation all --continue-on-error`
+job runs every task with per-task isolation: a
+failing task records its status and the run continues to the next.
 
 ## GPU memory management (parser/reasoner co-residence)
 
@@ -300,7 +306,7 @@ V100 and never being freed.** `create_model_dict()` in `tools/layout.py` reloads
 the whole Surya stack for every page/cell (the ~170s stalls), and nothing in the
 pipeline ever ran `torch.cuda.empty_cache()`. So the Marker/Surya parser, the
 ColQwen retriever, and the Qwen reasoner/classifier all sat on the GPU at once,
-and a single `section2` job accumulated them until T7 started at ~15GB in use.
+and a single grouped job accumulated them until a late task started at ~15GB in use.
 
 Fix (implemented): make the parser and the reasoner never share VRAM, and free
 GPU memory between stages/experiments.
@@ -311,7 +317,7 @@ GPU memory between stages/experiments.
   the frozen `Representation.build(pages)` signature is untouched). Real Marker
   output is cached; the pymupdf fallback is not. On a warm cache the reasoner
   phase never loads Surya. Also kills the per-cell reparse.
-- **Parse pre-pass** (`experiments/driver.py::generate` + `Orchestrator.prewarm_cell`):
+- **Parse pre-pass** (`experiments/generation.py::generate` + `Orchestrator.prewarm_cell`):
   before the reasoner weights load, run condition→render→`build` for every cell to
   warm the Marker (and retrieval) caches, then `retriever.unload()` +
   `free_gpu()`. The reason pass then has the whole GPU; `prewarm_cell` skips cells
@@ -410,7 +416,7 @@ structurally) and `size` still resolves to `8b` for the per-size pixel cap.
 bitsandbytes `BitsAndBytesConfig` (4-bit NF4 double-quant, or 8-bit) in
 `_load_components`; `model_id_for_spec` strips the suffix to find the base
 checkpoint. `config.quantization` (None/"4bit"/"8bit") appends the suffix to
-`reasoner_spec`; `--quantization` on `cli.experiments` sets
+`reasoner_spec`; `--quantization` on `experiments.generation` sets
 it (must match between generate and judge phases). Not a frozen-interface change:
 `get_reasoner`/`LocalVLMBackend` gained an optional kwarg, cache key + ResultRow
 unchanged. `bitsandbytes==0.49.2` is in the remote env only, so the config-build
@@ -451,16 +457,15 @@ Added for the two full 8B runs (4-bit current-res vs bf16 aggressive-downscale):
 - **`--run-tag TAG`** (`config.run_tag`). Namespaces the whole cache tree under
   `results/cache/<TAG>/` (predictions, renders, marker, side records) and tables
   under `results/tables/<mode>-<TAG>/`. Needed because two concurrent
-  `--experiment all` jobs otherwise write the same paths, and both the render
+  `--generation all` jobs otherwise write the same paths, and both the render
   cache (check-then-write in `data/render.py`) and the prediction cache (plain
   append) corrupt under cross-node concurrent writes. Judge/build must pass the
   same tag. Implemented by rebuilding `config.paths.cache_dir` in
   `__post_init__`; the frozen prediction/cache *key* is untouched.
-- **Combined markdown tables.** `cli.build_tables --markdown PATH` (and
-  `experiments.tables.render_tables_markdown`) writes one `.md` with all eight
-  tables; tables with no cached rows render a blank skeleton row so the report
-  always shows all shapes. `--cache` now takes multiple files (concatenated), so
-  a full run's per-experiment `results.jsonl` files build one report.
+- **Combined markdown tables.** `experiments.build` (and
+  `experiments.tables.render_tables_markdown`) writes one `all_tables.md` with all
+  eight tables alongside the CSVs; tables with no cached rows render a blank
+  skeleton row so the report always shows all shapes.
 
 ## Kaya operations (elsewhere)
 

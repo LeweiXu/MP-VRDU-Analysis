@@ -7,8 +7,9 @@ Purpose:
     MMLongBench-Doc set (optionally capped for a gate pilot).
 
 Pipeline role:
-    `experiments/driver.py` calls `load_questions(config)` once and hands the
-    same list to every experiment's `generation_cells` / `build`.
+    `experiments/generation.py` and `experiments/judge.py` call
+    `load_questions(config)` once and hand the same list to each generation
+    task's `resolve_questions` / `generation_cells`.
 
 Arguments:
     None. Import-only module; callers use `load_questions(config, limit=...)`.

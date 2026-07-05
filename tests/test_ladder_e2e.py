@@ -25,7 +25,7 @@ import pandas as pd
 
 from config import ExperimentConfig, ProjectPaths
 from data.loader import load_mmlongbench
-from experiments.base import oracle_ladder_cells
+from experiments.generation import oracle_ladder_cells
 from models.payload import ModelInput
 from pipeline.orchestrator import Orchestrator, ResultCache
 from pipeline.reasoner import Reasoner
@@ -47,7 +47,7 @@ def run_oracle_ladder(config, questions, *, orchestrator, representations=None):
     """Run the oracle ladder through the orchestrator (test helper).
 
     Replaces the removed `experiments.runner.run_oracle_ladder`; the production
-    path is now `experiments.driver` + `experiments.T1_headline`.
+    path is now `experiments.generation` (task G1_sufficiency).
     """
 
     reps = tuple(representations) if representations is not None else config.representations
