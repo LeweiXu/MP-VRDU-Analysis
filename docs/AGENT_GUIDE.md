@@ -80,9 +80,11 @@ Data flow: `Question` → `InputConditioner.condition` → render pages →
 | `covariates/{retriever,classifier}.py` | Retrieval + doc-type classifier covariates. |
 | `tools/{text,layout,visual}.py` | Non-VLM channel functions the composers call. |
 | `metrics/*` | accuracy (doc-level CI), retrieval, cost, frontier, abstention. |
-| `experiments/generation.py` | GenerationTask registry (G1..G6) + the GPU generate driver + CLI (the half a cluster submits). |
-| `experiments/{judge,build}.py` | Local roles: `judge` scores a task's predictions; `build` routes each table's source-task rows into the CSVs + `.md`. |
-| `experiments/{paths,corpus,tables}.py` | Shared cache/table layout + status/logging; corpus resolver; pure per-table aggregation functions. |
+| `experiments/G*_*.py` + `base.py`, `registry.py` | One `GenerationTask` per file (G1..G6); base is the ABC + cell factories; registry collects them for `--generation`. |
+| `experiments/driver.py` | The generate (GPU) + judge (local) engine over tasks; the phase-2 guards; `config_from_args`. |
+| `experiments/{tables,reporting}.py` | Pure per-table aggregation functions; the table -> source-task routing that writes CSVs + `.md`. |
+| `experiments/{paths,corpus}.py` | Shared cache/table layout + status/logging; corpus resolver. |
+| `cli/{generate,judge,build}.py` | Thin runnable wrappers: generate on GPU (the half a cluster submits), judge/build locally. |
 
 **Frozen interfaces (Stage-3 freeze; change only via a checkpoint recorded
 here):** `schema.py` contracts; `models/payload.py::ModelInput` + its
@@ -160,27 +162,29 @@ load path (`transformers==4.57.6` exposes `Qwen3VLForConditionalGeneration`),
 `LocalVLMBackend`, frozen prompt `m3-qwen3vl-v1`, token/latency accounting;
 (models reference below). M4: oracle ladder end to end through the resumable cache. M5:
 real judge, document-level bootstrap accuracy, cost, sufficiency frontier, and
-all eight table builders + `experiments/build.py` (evaluation reference below). M6:
+all eight table builders + `experiments/reporting.py` (evaluation reference below). M6:
 `BM25BGERetriever` + `ColQwenRetriever`, page R/P/F1 + evidence-modality slices,
 `QwenDocTypeClassifier`, and matched/cross + four routing policies.
 
 ## Role split: generation tasks, judge, build
 
 The study is organized by **generation task**, not by paper table, because most
-tables are pure aggregations of the same generated predictions. Three role
-modules (`experiments/{generation,judge,build}.py`) run the **real** pipeline
+tables are pure aggregations of the same generated predictions. The `experiments`
+package is the library (task defs + engine + builders); the runnable roles are
+thin wrappers `cli/{generate,judge,build}.py`. They run the **real** pipeline
 (Qwen3-VL reasoner, BM25+BGE / ColQwen retrievers, Qwen classifier, Gemini/GPT
 judge). No stub reasoners or injected scorers on this path.
 
-- **Generation tasks (the only GPU work).** `experiments/generation.py` defines
-  `G1_sufficiency` (oracle ladder, primary 8B — the source rows for tables 1, 2,
-  5, 7), `G2_family` (InternVL ladder → table 3), `G3_dataset` (held-out
+- **Generation tasks (the only GPU work), one file each.** `experiments/G*_*.py`
+  define `G1_sufficiency` (oracle ladder, primary 8B — the source rows for tables
+  1, 2, 5, 7), `G2_family` (InternVL ladder → table 3), `G3_dataset` (held-out
   text_heavy+in_between ladder → table 4), `G5_retrieval` (matched/cross cells +
   retrieval R/P/F1 → table 6), and `G6_classifier` (doc-type classifier side work
-  → table 7's routing price). A scale task (2B/32B → table 8) is out of scope for
-  now. Each task caches under `results/cache/<smoke|full>[/<run-tag>]/<task>/`, so
-  jobs never collide. Groups: `all`, `reasoners`.
-- **Table routing replaces `depends_on`.** `experiments/build.py`'s `TABLES`
+  → table 7's routing price). Adding an experiment is just a new `G*_*.py` +
+  a line in `experiments/registry.py`; a scale task (2B/32B → table 8) is out of
+  scope for now. Each task caches under `results/cache/<smoke|full>[/<run-tag>]/<task>/`,
+  so jobs never collide. Groups: `all`, `reasoners`.
+- **Table routing replaces `depends_on`.** `experiments/reporting.py`'s `TABLES`
   registry declares each table's source task(s): table1←G1, table3←G1+G2,
   table4←G3, table6←G5 (+retrieval side), table7←G1 (+classifier side), table8←G1.
   This matters because the `experiments/tables.py` builders mostly don't filter by
@@ -188,14 +192,14 @@ judge). No stub reasoners or injected scorers on this path.
   rows (unioning all specs would corrupt table1's single-spec aggregate).
 - **Why the roles split across machines.** Reasoner/retrievers/classifier need a
   GPU; the judge needs the internet — on Kaya those never coexist. So generation
-  runs on Kaya (GPU, offline); `experiments.judge` (scores predictions, no tables)
-  and `experiments.build` (aggregates into CSVs + `.md`) run **locally** after a
+  runs on Kaya (GPU, offline); `cli.judge` (scores predictions, no tables)
+  and `cli.build` (aggregates into CSVs + `.md`) run **locally** after a
   `kaya.kaya pull`. Judge loads **no models** (prediction-cache hits only); the
   `_GuardRetriever` / `_SpecOnlyReasoner` raise (`CacheMiss`) if a cell was missed
   in generation, which `--continue-on-error` turns into a skip.
-- **Commands.** Kaya generate: `kaya.kaya submit experiments/generation.py --
+- **Commands.** Kaya generate: `kaya.kaya submit cli/generate.py --
   --generation G1_sufficiency` (or `all`), then `kaya.kaya pull`. Local:
-  `python -m experiments.judge --generation all` then `python -m experiments.build`.
+  `python -m cli.judge --generation all` then `python -m cli.build`.
   Add `--full` for the full corpus/8B. Judge defaults to `gemini` (`--judge
   gpt-4o-mini` / `stub`). Tables → `results/tables/<smoke|full>[-<run-tag>]/`.
   Judge keys are **not** forwarded to Kaya (only `HF_TOKEN` is); keep
@@ -282,7 +286,7 @@ tokens/page) plus a size-aware override `config.max_pixels_for_spec` /
 max_pixels=)` -> `LocalVLMBackend`, applied via the per-image `max_pixels` key
 that `qwen_vl_utils.process_vision_info` honors. Same wiring also fixed
 `_reasoner_for` ignoring `config.max_tokens` (full runs were capped at 64 new
-tokens). `experiments/generation.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
+tokens). `cli/generate.py` now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:
 True` as a fragmentation mitigation. InternVL is untouched (fixed 448px tiling
 already bounds its vision tokens). Not a frozen-interface change: `get_reasoner`
 gained optional kwargs; `Reasoner.answer` and the cache key are unchanged.
@@ -294,7 +298,7 @@ and per-cell start/result lines; the orchestrator logs each stage (conditioner -
 render -> representation -> reasoner -> judge) at DEBUG, so an OOM/crash points at
 the exact cell and stage. On failure the full traceback is logged to stdout (the
 SLURM log), not just the per-task `generate_status.json`. One
-`kaya.kaya submit experiments/generation.py -- --generation all --continue-on-error`
+`kaya.kaya submit cli/generate.py -- --generation all --continue-on-error`
 job runs every task with per-task isolation: a
 failing task records its status and the run continues to the next.
 
@@ -317,7 +321,7 @@ GPU memory between stages/experiments.
   the frozen `Representation.build(pages)` signature is untouched). Real Marker
   output is cached; the pymupdf fallback is not. On a warm cache the reasoner
   phase never loads Surya. Also kills the per-cell reparse.
-- **Parse pre-pass** (`experiments/generation.py::generate` + `Orchestrator.prewarm_cell`):
+- **Parse pre-pass** (`experiments/driver.py::generate` + `Orchestrator.prewarm_cell`):
   before the reasoner weights load, run condition→render→`build` for every cell to
   warm the Marker (and retrieval) caches, then `retriever.unload()` +
   `free_gpu()`. The reason pass then has the whole GPU; `prewarm_cell` skips cells
@@ -390,19 +394,28 @@ are untouched. (2) Tightened the 8B input cap 5120 -> 4096 (attention score
 ~3.4GiB -> ~2.1GiB). Both keep the peak comfortably inside 16GB per GPU. Verified
 by a small `t1-memtest` on 2xV100 before resubmitting the full run.
 
-**Third OOM: vision tokens are not capped (open).** The full bf16 t1-full (job
-1006495) still OOM'd at ~56% (698/1236 cells): `Tried to allocate 4.30GiB` in
-SDPA. Cause: `max_input_tokens` truncates the *text* context but not the *vision*
-tokens. A full-corpus question with many gold pages (7-8) contributes ~768 vision
-tokens/page = ~6000 vision tokens, which blows past the 4096 cap (the memtest's
-per-bin-1 docs topped out at 4 evidence pages, so it never hit this). The bf16
-weights leave only ~3GB headroom on a V100, so a ~5GB attention score OOMs. The
-fix is to also cap total vision tokens per cell (limit the page count, or shrink
-`max_pixels` further when a cell has many pages) — not yet implemented.
-**Important:** 4-bit weights are ~7GB vs bf16's ~13GB resident, so the same cell
-fits in 4-bit (7 + 5 < 16). The 4-bit-on-1-GPU path is therefore the more robust
-full run on V100s, and it also schedules far more easily (1 GPU vs a scarce 2-GPU
-node). See `docs/HANDOFF.md`.
+**Third OOM: vision tokens are not total-capped (handled by per-cell skip).**
+`max_input_tokens` truncates the *text* context but not the *vision* tokens, so a
+question with many gold pages contributes vision tokens on top of the 4096 text
+cap and the O(seq^2) SDPA math-attention on a V100 OOMs. This is a long-tail
+problem: on the full corpus the oracle-page distribution is mostly 1-2 pages, but
+a handful of cells have 9, 10, even **24 gold pages**. At those, `4.27GiB` gets
+requested in SDPA and OOMs — **even at `--visual-resolution low`** (the two full
+runs, jobs 1009634/1009635, both died at the same 911th G1 cell). Per-page
+downscaling helps but can't save a 24-page cell; a true total-vision cap
+(count vision tokens, shrink `max_pixels`/drop pages to a budget) is still the
+"correct" fix and remains unimplemented.
+
+**Mitigation (implemented): per-cell skip.** `experiments/driver.py::generate`
+now takes `skip_failed_cells` (wired to `--continue-on-error`): a cell that raises
+is logged, the GPU freed (`free_gpu`, recovers activation memory after a CUDA
+OOM), and the loop continues instead of aborting the whole task. So a run
+completes over the ~99.7% of cells that fit and simply omits the handful of
+pathological many-page cells; the judge (`--continue-on-error`) then scores
+what was generated. This turns a fatal task failure into a small, documented gap.
+**Also:** 4-bit weights are ~7GB vs bf16's ~13GB resident, but 4-bit is *slower*
+per cell (dequant) and, at full resolution, timed out a 12h run; bf16 at
+`--visual-resolution low` completed in 10h. See `docs/HANDOFF.md`.
 
 ## Quantized reasoner as a model-spec variant
 
@@ -416,7 +429,7 @@ structurally) and `size` still resolves to `8b` for the per-size pixel cap.
 bitsandbytes `BitsAndBytesConfig` (4-bit NF4 double-quant, or 8-bit) in
 `_load_components`; `model_id_for_spec` strips the suffix to find the base
 checkpoint. `config.quantization` (None/"4bit"/"8bit") appends the suffix to
-`reasoner_spec`; `--quantization` on `experiments.generation` sets
+`reasoner_spec`; `--quantization` on `cli.generate` sets
 it (must match between generate and judge phases). Not a frozen-interface change:
 `get_reasoner`/`LocalVLMBackend` gained an optional kwarg, cache key + ResultRow
 unchanged. `bitsandbytes==0.49.2` is in the remote env only, so the config-build
@@ -462,7 +475,7 @@ Added for the two full 8B runs (4-bit current-res vs bf16 aggressive-downscale):
   append) corrupt under cross-node concurrent writes. Judge/build must pass the
   same tag. Implemented by rebuilding `config.paths.cache_dir` in
   `__post_init__`; the frozen prediction/cache *key* is untouched.
-- **Combined markdown tables.** `experiments.build` (and
+- **Combined markdown tables.** `cli.build` (and
   `experiments.tables.render_tables_markdown`) writes one `all_tables.md` with all
   eight tables alongside the CSVs; tables with no cached rows render a blank
   skeleton row so the report always shows all shapes.

@@ -6,12 +6,14 @@ Purpose:
     on Kaya while judging and aggregation stay local.
 
 Pipeline role:
-    `experiments.generation` defines the generation tasks (G1..G6) and runs them
-    on a GPU; `experiments.judge` scores their cached predictions locally;
-    `experiments.build` routes each task's judged rows into the eight table CSVs
-    (+ a combined markdown). `experiments.paths` holds the shared cache layout;
-    `experiments.tables` holds the pure per-table aggregation functions;
-    `experiments.corpus`/`experiments.smoke` resolve the question set.
+    Task definitions live one-per-file in `experiments/G*_*.py` (subclassing
+    `experiments.base.GenerationTask`); `experiments.registry` collects them.
+    `experiments.driver` is the generate (GPU) + judge (local) engine;
+    `experiments.reporting` routes each task's judged rows into the eight table
+    CSVs (+ a combined markdown) via the `experiments.tables` builders.
+    `experiments.paths` holds the shared cache layout;
+    `experiments.corpus`/`experiments.smoke` resolve the question set. The
+    runnable entry points are the thin wrappers `cli/{generate,judge,build}.py`.
 
 Arguments:
     None. This package initializer is import-only.

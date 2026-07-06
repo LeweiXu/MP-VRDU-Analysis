@@ -1,108 +1,103 @@
-# Session handoff — 2026-07-05
+# Session handoff — 2026-07-06
 
 End of a long session. Read top to bottom. Durable details are in
 `docs/AGENT_GUIDE.md`; how to run is in `docs/USER_GUIDE.md` (local) and
-`kaya/KAYA_USER_GUIDE.md` (cluster). Nothing is committed — everything is
-uncommitted on `main`.
+`kaya/KAYA_USER_GUIDE.md` (cluster). **Everything is uncommitted on `main`** — a
+large diff (two structural refactors + an OOM fix); review before committing.
 
-## The full T1 run: OOM'd at ~56% (needs a decision)
+## What changed this session
 
-The bf16 Qwen3-VL-8B T1 headline on 2×V100 (job **1006495**) ran 2h34m and the
-SLURM job exited 0, but with `--continue-on-error` the **T1_headline experiment
-itself failed with a CUDA OOM at ~56% (698 of 1236 bf16 cells cached)**. The
-predictions already generated are safe in
-`results/cache/full/T1_headline/predictions.jsonl` (append-only, resumable).
+1. **Role-split refactor (the big one).** `experiments/` is now organized by
+   *generation task*, not by paper table, and split into a library + thin CLI
+   wrappers:
+   - `experiments/G1_sufficiency.py` … `G6_classifier.py` — one `GenerationTask`
+     per file. **Adding an experiment = drop in a new `G*_*.py` + one line in
+     `experiments/registry.py`.** (A `G4` scale task is intentionally not built.)
+   - `experiments/base.py` (ABC + cell factories), `registry.py`, `driver.py`
+     (the generate+judge engine), `tables.py` (pure builders), `reporting.py`
+     (table→source-task routing), `paths.py` (cache layout).
+   - Runnable entry points moved to `cli/`: **`cli/generate.py`** (GPU, carries
+     the `# kaya:` directives — this is what a cluster submits), **`cli/judge.py`**,
+     **`cli/build.py`**. The old `cli/experiments.py` / `cli/build_tables.py` and
+     the per-table `T*.py` are gone.
+   - 83 tests pass; README, USER_GUIDE, implementation_plan, AGENT_GUIDE, and the
+     KAYA guide were all swept to the new commands/layout.
 
-**Why it OOM'd (diagnosed):** the `max_input_tokens` cap truncates *text* but not
-*vision* tokens. A full-corpus question with 7-8 gold pages contributes ~6000
-vision tokens, past the 4096 cap, and the attention score (~4.3 GiB, V100 has
-only the O(seq²) math kernel) tips a bf16 GPU over. The earlier memtest passed
-because its documents topped out at 4 evidence pages. Full write-up:
-`docs/AGENT_GUIDE.md` → "Third OOM: vision tokens are not capped (open)".
+2. **OOM fix: per-cell skip.** A long tail of oracle cells have many gold pages
+   (9/10/**24**), and their O(seq²) attention OOMs a V100 *even at
+   `--visual-resolution low`*. `experiments/driver.py::generate` now takes
+   `skip_failed_cells` (wired to `--continue-on-error`): a failing cell is logged,
+   the GPU freed, and the run continues instead of aborting the task. Validated on
+   the cluster — bf16 G1 skipped exactly 2/1236 cells (question `mmlongbench:000855`)
+   and finished `success`. Details: `docs/AGENT_GUIDE.md` → "Third OOM".
 
-### Your options (pick one)
+3. **InternVL prestaged.** G2 (family/Table 3) had failed offline because
+   `OpenGVLab/InternVL3-8B` wasn't on Kaya. It's now staged (15G under `.cache/`).
 
-1. **Judge what's cached now (partial Table 1).** Fastest way to see numbers:
+## The two full runs (why the OOM/timeout happened, and current state)
+
+Both runs were submitted `--generation all --full`, one 4-bit, one bf16 at
+`--visual-resolution low`, 2×V100, 12h, distinct `--run-tag`. The first attempt:
+`bf16-lowres` (#1009635) COMPLETED in 10h but G1 OOM'd (partial) and G2 failed
+offline; `4bit-current` (#1009634) TIMED OUT at 12h (4-bit is *slower* per cell,
+and it ran at full resolution). After the fix + prestage I resubmitted.
+
+**Current cache state (pulled locally, under `results/cache/<tag>/full/<task>/`):**
+
+| task | bf16-lowres | 4bit-current |
+|---|---|---|
+| G1_sufficiency | **done** (1234/1236, 2 skipped) | resuming now (job 1010304) |
+| G2_family (InternVL) | queued (job 1010307) | queued (job 1010308) |
+| G3_dataset | done (836) | resuming now (job 1010304) |
+| G5_retrieval | done (618 + retrieval side) | pending in 1010304 |
+| G6_classifier | done (39 docs) | pending in 1010304 |
+
+**Jobs on Kaya right now (the "3 jobs" you saw):**
+- `1010304 4bit-resume` — RUNNING, finishing 4-bit G1/G3/G5/G6 (~10h left).
+- `1010307 bf16-g2` — queued, bf16 InternVL (Table 3).
+- `1010308 4bit-g2` — queued, 4-bit InternVL (Table 3).
+(`1010303 bf16-g1-resume` already COMPLETED — that's why bf16 G1 is done.)
+
+## THE BLOCKER: judging is out of quota (do this first)
+
+**The Gemini free tier is exhausted** (10k requests/day; earlier judging used it
+up). It resets ~19h from ~11:05 on 2026-07-06. `.env` has **no `OPENAI_API_KEY`**,
+so there is no paid fallback. So no real Table CSVs could be produced this
+session. Saved to memory (`mpvrdu-judge-quota`).
+
+To unblock **now**: add `OPENAI_API_KEY=...` to `.env` and judge with
+`--judge gpt-4o-mini`. Otherwise wait for the quota reset. Judging is resumable
+(`results.jsonl` keyed by cache_key), so re-running only scores new cells.
+
+## Next steps (in order)
+
+1. **Wait for the 3 jobs to finish** (monitor: `python scripts/kaya_status.py` or
+   `ssh kaya 'sacct -j 1010304,1010307,1010308 -o JobID,State,Elapsed,ExitCode'`),
+   then `kaya.kaya pull`.
+2. **Judge + build each run** (needs a working judge key — see blocker):
    ```bash
-   set -a; . ./.env; set +a                 # export GEMINI_API_KEY
-   python -m cli.experiments --phase judge --experiment T1_headline --full --continue-on-error
+   set -a; . ./.env; set +a
+   # bf16-lowres:
+   python -m cli.judge --generation all --full --run-tag bf16-lowres --continue-on-error
+   python -m cli.build --full --run-tag bf16-lowres
+   # 4bit-current (spec has the -4bit suffix, so judge MUST pass --quantization):
+   python -m cli.judge --generation all --full --quantization 4bit --run-tag 4bit-current --continue-on-error
+   python -m cli.build --full --run-tag 4bit-current
    ```
-   You'll get a Table 1 built from the 698 cached cells (not all bins fully
-   covered). Good enough to eyeball the frontier; not the final gate number.
-
-2. **Switch the full run to 4-bit on ONE V100 (recommended).** 4-bit weights are
-   ~7GB vs bf16's ~13GB, so the many-page cell that OOM'd bf16 *fits* in 4-bit
-   (7 + 5 < 16), and 1-GPU jobs backfill in minutes instead of waiting for a
-   scarce 2-GPU node. The 4-bit path is already verified end-to-end. This is a
-   *different reasoner* (quantized ≠ pre-registered bf16), so treat it as the
-   working/preview run or an appendix, per your call:
+   Tables land in `results/tables/full-<tag>/` (8 CSVs + `all_tables.md`).
+3. **Compare** the two Table-1 frontiers (4-bit vs bf16-lowres) and the F1 gate:
    ```bash
-   # on the cluster (see kaya/KAYA_USER_GUIDE.md for push/submit/pull):
-   kaya.kaya clear-cache --mode full --experiment T1_headline --local --yes   # optional clean start
-   kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 --job-name t1-4bit \
-     cli/experiments.py -- --phase generate --experiment T1_headline --full --quantization 4bit --continue-on-error
+   python -m cli.gates frontier --table results/tables/full-bf16-lowres/table1_headline.csv \
+       --json-output results/gates/F1_bf16.json
    ```
 
-3. **Keep bf16 on 2×V100 but cap vision tokens first.** Implement the missing fix
-   (cap total vision tokens per cell: limit page count or shrink `max_pixels`
-   when a cell has many pages), smoke-test it, then resubmit — it resumes from the
-   698 cached cells. This is the "correct pre-registered" path but needs the code
-   fix + another smoke cycle.
+## Deferred / notes
 
-## How to monitor a (re)submitted job
-
-```bash
-python scripts/kaya_status.py                                   # queue + node view
-ssh kaya 'squeue -u lxu -o "%.10i %.10j %.8T %.10M"'            # your jobs
-ssh kaya 'sacct -j <jobid> -o JobID,State,Elapsed,ExitCode'    # REAL end state (not squeue)
-```
-Gotcha learned this session: a transient `squeue` blip returns empty and looks
-like "job gone". Always confirm a finished job's state with `sacct` (COMPLETED /
-FAILED / TIMEOUT) before trusting it. After it ends: `kaya.kaya pull`, then check
-`results/cache/full/<name>/generate_status.json`.
-
-## How to run the judge phase + gates
-
-Full detail (every arg, the cache format, judge output format) is in
-`docs/USER_GUIDE.md` → Runbook. Short version:
-```bash
-set -a; . ./.env; set +a
-python -m cli.experiments --phase judge --experiment T1_headline --full   # + T2_analytical, T5_composition (aggregation-only from T1)
-python -m cli.gates frontier --table results/tables/full/table1_headline.csv \
-    --json-output results/gates/F1_frontier_divergence.json               # F1: Go if >=2 bins differ
-```
-The judge phase MUST use the same corpus/model flags as the generate phase
-(`--full`, `--per-bin-questions`, `--quantization`) or it looks for predictions
-that were never generated. If you ran generate in 4-bit, add `--quantization 4bit`
-to the judge command too.
-
-## What this session changed (all uncommitted)
-
-- **Repo restructure:** `kaya/` now holds only the SLURM dispatcher (`kaya.py`,
-  `config.json`, the two KAYA guides). Moved to `scripts/`: `download_hf`,
-  `prestage`, `setup_env`, and the probes (`gpu_test`, `single_gpu_probe`,
-  `attn_probe`); `scripts/` is now an importable package. Moved to `cli/`:
-  `generate.py` (was `kaya/generate.py`); `kaya/run_probe.py` deleted (use
-  `cli/run_probe.py`). All imports/refs updated; 82 tests pass.
-- **Docs consolidated + split by audience.** `docs/` = `implementation_plan.md`,
-  `dataset_stats.md`, `dataset_label_distributions.csv`, plus `USER_GUIDE.md`
-  (what/why + a comprehensive local Runbook: args, cache format, judge format) and
-  `AGENT_GUIDE.md` (decisions + findings + models/data/tools/eval reference).
-  Kaya operational how-to lives only in `kaya/KAYA_*_GUIDE.md`.
-- **Table 4 reworked** to a held-out MMLongBench subset (disjoint docs for
-  text_heavy/in_between, reused visual_heavy), not LongDocURL. Its cached rows are
-  stale; rerun T4 when convenient.
-- **Quantization** (`--quantization {4bit,8bit}`) wired end-to-end;
-  `bitsandbytes==0.49.2` in both requirements files. Feasibility:
-  `docs/SINGLE_GPU_8B_FEASIBILITY.md`.
-- Earlier fixes still in place: input-token cap, `max_memory` shard headroom,
-  per-bin subset default, `clear-cache` command.
-
-## Deferred / next
-
-- Decide the T1 path above (4-bit recommended). Then judge + F1 gate.
-- Rerun **T4** (held-out subset) once a reasoner run is chosen.
-- **T3** (InternVL) and **T8-32B** don't fit one V100; T3 needs InternVL quant
-  support added for a 1-GPU 4-bit `section2` run; 32B is supervisor's-A100 scope.
-- Gates **F2** (judge-human κ) and **F3** (classifier pilot) still pending.
-- Nothing committed; `git status` shows the full set of changes.
+- The 2 skipped many-page cells per run are a documented gap, not a bug. A true
+  total-vision-token cap (shrink `max_pixels`/drop pages to a budget) is still
+  unimplemented; per-cell skip is the mitigation.
+- `4bit-current` may time out again (4-bit is slow); with per-cell skip +
+  `--continue-on-error` it caches progress and can be resubmitted to resume.
+- Gates F2 (judge–human κ) and F3 (classifier pilot) still pending.
+- The partial results from the *previous* session are archived under `temp/`
+  (old `T1_headline` cache names, not the new G-task layout).

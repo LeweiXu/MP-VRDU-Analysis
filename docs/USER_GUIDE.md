@@ -185,23 +185,23 @@ The study is organized by **generation task**, not by paper table (many tables
 are pure aggregations of the same generated predictions). Work splits into three
 role modules, so the GPU half runs on a cluster and everything else stays local:
 
-1. **generate** (`experiments.generation`, GPU): runs a task's cells (conditioner
+1. **generate** (`cli.generate`, GPU): runs a task's cells (conditioner
    -> render -> representation -> reasoner) plus any GPU side work (retrieval
    diagnostics, the doc-type classifier), caching predictions per task. No
    internet.
-2. **judge** (`experiments.judge`, internet, no GPU): reads a task's cached
+2. **judge** (`cli.judge`, internet, no GPU): reads a task's cached
    predictions, scores each with an LLM judge, writes `results.jsonl`. Builds no
    tables. Loads no models.
-3. **build** (`experiments.build`, local): routes each table's source-task judged
+3. **build** (`cli.build`, local): routes each table's source-task judged
    rows into the eight table CSVs plus a combined `all_tables.md`. Pure pandas.
 
 ```bash
-python -m experiments.generation --generation G1_sufficiency --full   # GPU: cache predictions
-python -m experiments.judge      --generation all --full              # score cached predictions
-python -m experiments.build      --full                               # build the 8 CSVs + .md
+python -m cli.generate --generation G1_sufficiency --full   # GPU: cache predictions
+python -m cli.judge      --generation all --full              # score cached predictions
+python -m cli.build      --full                               # build the 8 CSVs + .md
 ```
 
-A cluster submits `experiments/generation.py`; see `kaya/KAYA_USER_GUIDE.md`.
+A cluster submits `cli/generate.py`; see `kaya/KAYA_USER_GUIDE.md`.
 
 ### Generation tasks (what runs on the GPU)
 
@@ -216,7 +216,7 @@ A cluster submits `experiments/generation.py`; see `kaya/KAYA_USER_GUIDE.md`.
 (A scale-sanity task for 2B/32B, feeding Table 8, is out of scope for now, so
 Table 8 shows the single primary size.)
 
-## `experiments.generation` / `experiments.judge` arguments
+## `cli.generate` / `cli.judge` arguments
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -232,7 +232,7 @@ Table 8 shows the single primary size.)
 | `--continue-on-error` | off | Generate: record a failing task's status and continue. Judge: skip cells with no cached prediction (partial cache) so a partial table still builds. |
 | `--verbose` / `--quiet` | smoke=verbose | DEBUG per-cell/per-stage logging / force INFO. |
 
-`experiments.build` takes `--full` / `--run-tag` (to locate the cache),
+`cli.build` takes `--full` / `--run-tag` (to locate the cache),
 `--output-dir`, `--markdown`, `--bootstrap`, `--seed`.
 
 **Flag-matching rule:** judge re-resolves the same cells as generate, so the
@@ -243,10 +243,10 @@ predictions that were never generated and errors.
 ## Running individual vs all tasks
 
 ```bash
-python -m experiments.generation --generation G1_sufficiency --full             # one task
-python -m experiments.generation --generation G1_sufficiency,G5_retrieval --full # a subset
-python -m experiments.generation --generation reasoners --full                  # the reasoner-cell tasks
-python -m experiments.generation --generation all --full                        # every task
+python -m cli.generate --generation G1_sufficiency --full             # one task
+python -m cli.generate --generation G1_sufficiency,G5_retrieval --full # a subset
+python -m cli.generate --generation reasoners --full                  # the reasoner-cell tasks
+python -m cli.generate --generation all --full                        # every task
 ```
 
 Groups: `all` = G1,G2,G3,G5,G6; `reasoners` = the four tasks with reasoner cells
@@ -292,7 +292,7 @@ keeping between runs: `results/cache/renders/` (rasterized PDF pages) and
 
 ## Judge phase: how it reads the cache and what it writes
 
-`experiments.judge` re-resolves the same cells but, instead of calling the
+`cli.judge` re-resolves the same cells but, instead of calling the
 reasoner, **reads the cached prediction** for each cell (a prediction-cache hit
 keyed without the judge), sends (question, gold answer, model answer) to the
 judge, and writes the scored row. It loads no models and builds no tables; a
@@ -303,7 +303,7 @@ missing prediction raises (that cell was never generated) unless
 results/cache/full/G1_sufficiency/results.jsonl   # predictions + REAL judge scores
 ```
 
-`experiments.build` then reads those `results.jsonl` files and writes the tables.
+`cli.build` then reads those `results.jsonl` files and writes the tables.
 
 - **`results.jsonl`** is one row per cell with the real verdict. Fields:
   `cache_key`, `question_id`, `doc_id`, `doc_type`, `condition`, `representation`,
@@ -314,7 +314,7 @@ results/cache/full/G1_sufficiency/results.jsonl   # predictions + REAL judge sco
 - **`results/tables/<mode>/tableN_*.csv`** are the final tables (e.g.
   `table1_headline.csv`, `table7_routing.csv`): one row per bin/policy with
   accuracy, document-level bootstrap CIs, latency, token splits, and the marked
-  frontier. `python -m experiments.build` (re)builds these — plus a combined
+  frontier. `python -m cli.build` (re)builds these — plus a combined
   `all_tables.md` — from cached judged rows without re-judging.
 
 Judge API keys live only in the local `.env` (`GEMINI_API_KEY` /

@@ -4,17 +4,19 @@ Purpose:
     Covers the refactor that organizes `experiments/` by generation task (G1..G6)
     rather than by paper table, with three separate roles:
 
-    - `experiments.generation` runs a task's cells once per reasoner spec and
-      caches predictions (the `PredictionCache` lets judging reuse them);
-    - `experiments.judge` re-scores those predictions with guards that refuse to
-      run a reasoner/retriever (`_GuardRetriever`, `_SpecOnlyReasoner`);
-    - `experiments.build` routes each task's judged rows into the eight table
+    - `experiments.driver` runs a task's cells once per reasoner spec and caches
+      predictions (the `PredictionCache` lets judging reuse them), then re-scores
+      them with guards that refuse to run a reasoner/retriever (`_GuardRetriever`,
+      `_SpecOnlyReasoner`);
+    - task definitions live one-per-file in `experiments/G*_*.py`
+      (`experiments.registry` collects them);
+    - `experiments.reporting` routes each task's judged rows into the eight table
       CSVs; a table with no source rows still emits a skeleton.
 
 Test role:
     Fixture PDFs + injected fake reasoner/judge, so the wiring is exercised
     without Marker, Qwen, ColQwen, or a judge API. The heavy generate path is
-    validated on hardware via `python -m experiments.generation`.
+    validated on hardware via `python -m cli.generate`.
 
 Arguments:
     None. Run with `python -m pytest tests/test_experiments.py`.
@@ -31,10 +33,11 @@ import pytest
 
 from config import ExperimentConfig, ProjectPaths
 from data.loader import load_mmlongbench
-from experiments import build, generation, judge
-from experiments.generation import GENERATION_TASKS, Retrievers, resolve
-from experiments.judge import _GuardRetriever, _SpecOnlyReasoner
+from experiments import driver, reporting
+from experiments.base import Retrievers
+from experiments.driver import _GuardRetriever, _SpecOnlyReasoner
 from experiments.paths import experiment_paths
+from experiments.registry import GENERATION_TASKS, resolve
 from experiments.tables import build_table1_headline
 from models.payload import ModelInput
 from pipeline.judge import Judge, StubJudge
@@ -201,14 +204,14 @@ def test_run_generate_continue_on_error_records_per_task_status(tmp_path: Path, 
     config = ExperimentConfig(smoke=True, paths=ProjectPaths(root=tmp_path, cache_dir=tmp_path / "results" / "cache"))
     tasks = [SimpleNamespace(name="ok"), SimpleNamespace(name="bad"), SimpleNamespace(name="after")]
 
-    def fake_generate(config, task, questions):  # noqa: ANN001
+    def fake_generate(config, task, questions, *, skip_failed_cells=False):  # noqa: ANN001
         if task.name == "bad":
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(generation, "resolve", lambda selector: tasks)
-    monkeypatch.setattr(generation, "generate", fake_generate)
+    monkeypatch.setattr(driver, "resolve", lambda selector: tasks)
+    monkeypatch.setattr(driver, "generate", fake_generate)
 
-    statuses = generation.run_generate(config, "fake", [], continue_on_error=True)
+    statuses = driver.run_generate(config, "fake", [], continue_on_error=True)
 
     assert [status.status for status in statuses] == ["success", "failed", "success"]
     bad_status = experiment_paths(config, "bad").root / "generate_status.json"
@@ -224,16 +227,16 @@ def test_build_routes_tasks_into_all_eight_tables(tmp_path: Path, fake_channels,
     questions = load_mmlongbench(config.paths.data_dir)
 
     fake = CountingReasoner()
-    monkeypatch.setattr(generation, "reasoner_for", lambda spec, config=None: fake)
+    monkeypatch.setattr(driver, "reasoner_for", lambda spec, config=None: fake)
 
     # G1: oracle ladder via the real generate() path (no side work).
-    generation.generate(config, GENERATION_TASKS["G1_sufficiency"], questions)
+    driver.generate(config, GENERATION_TASKS["G1_sufficiency"], questions)
     # G5: run its matched/cross cells directly with a stub retriever, skipping the
     # real-model run_side (retrieval R/P/F1 needs ColQwen/BM25 weights).
     _generate_cells_with_stub(config, "G5_retrieval", questions, fake)
 
-    judge.run_judge(config, "all", questions, judge_impl=KeywordJudge(), continue_on_error=True)
-    written = build.build_tables(config, config.paths.results_dir / "tables" / "smoke",
+    driver.run_judge(config, "all", questions, judge_impl=KeywordJudge(), continue_on_error=True)
+    written = reporting.build_tables(config, config.paths.results_dir / "tables" / "smoke",
                                  n_bootstrap=0, markdown_path=tmp_path / "all_tables.md")
 
     assert {f"table{i}" for i in range(1, 9)} <= set(written)
@@ -242,6 +245,32 @@ def test_build_routes_tasks_into_all_eight_tables(tmp_path: Path, fake_channels,
         assert written[f"table{i}"].exists(), f"table{i}"
     # Tables sourced from the generated tasks (G1 -> table1, G5 -> table6) have rows.
     assert len(pd.read_csv(written["table1"])) > 0
+
+
+def test_generate_skips_failed_cells_when_continue_on_error(tmp_path: Path, fake_channels, monkeypatch) -> None:
+    """A cell that raises (e.g. a many-page OOM) is skipped, not fatal, when asked."""
+
+    class BoomOnVision(CountingReasoner):
+        def answer(self, question: Question, model_input: ModelInput) -> Prediction:
+            if model_input.image_parts:  # stand-in for the many-page attention OOM
+                raise RuntimeError("CUDA out of memory (simulated)")
+            return super().answer(question, model_input)
+
+    task = GENERATION_TASKS["G1_sufficiency"]
+
+    # Without the flag, the failing vision cell aborts the task.
+    strict = _make_config(tmp_path / "strict")
+    monkeypatch.setattr(driver, "reasoner_for", lambda spec, config=None: BoomOnVision())
+    with pytest.raises(RuntimeError, match="out of memory"):
+        driver.generate(strict, task, load_mmlongbench(strict.paths.data_dir), skip_failed_cells=False)
+
+    # With the flag, vision cells are skipped and the text cells still cache.
+    lenient = _make_config(tmp_path / "lenient")
+    monkeypatch.setattr(driver, "reasoner_for", lambda spec, config=None: BoomOnVision())
+    driver.generate(lenient, task, load_mmlongbench(lenient.paths.data_dir), skip_failed_cells=True)
+    cached = PredictionCache(experiment_paths(lenient, task.name).predictions)
+    reps = {row.representation for row in cached}
+    assert reps and reps <= {"T", "TL"}  # the image-bearing TLV/V cells were skipped
 
 
 def _generate_cells_with_stub(config, task_name, questions, reasoner) -> None:

@@ -8,8 +8,8 @@ Purpose:
 Pipeline role:
     `cli.run_probe` checks feasibility and `cli.gates` evaluates Section-2 gate
     artifacts. The paper-table experiments moved to the `experiments` package,
-    split by role: `experiments.generation` (GPU), `experiments.judge`, and
-    `experiments.build`.
+    split by role: `cli.generate` (GPU), `cli.judge`, and `cli.build` — thin
+    wrappers over the `experiments` package.
 
 Arguments:
     None. This package initializer is import-only; arguments live in the

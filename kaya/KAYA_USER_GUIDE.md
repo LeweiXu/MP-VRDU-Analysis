@@ -207,7 +207,7 @@ runs repo files by path.
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 \
-  experiments/generation.py -- --generation G1_sufficiency --full
+  cli/generate.py -- --generation G1_sufficiency --full
 envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --arg-for-job value
 ```
 
@@ -315,7 +315,7 @@ envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/run_probe.py -- r
 Single generation-task smoke (cache the sufficiency-ladder predictions):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G1_sufficiency
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G1_sufficiency
 ```
 
 Experiments now split by **role** (see `docs/USER_GUIDE.md`): the study is
@@ -327,18 +327,18 @@ not forwarded to Kaya.
 
 ```bash
 # 1. GENERATE on Kaya (GPU): cache predictions per task (one job per task, or all)
-envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G1_sufficiency
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G1_sufficiency
 # ...or every task in one job:
-envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation all
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation all
 
 # 2. bring the prediction cache back
 envs/mpvrdu/bin/python -m kaya.kaya pull
 
 # 3. JUDGE locally (scores predictions; no tables): match the generate flags
-python -m experiments.judge --generation all
+python -m cli.judge --generation all
 
 # 4. BUILD tables locally: routes each task's judged rows into the 8 CSVs + a .md
-python -m experiments.build
+python -m cli.build
 ```
 
 Add `--full` for the full corpus/8B run (pass it to generate, judge, and build).

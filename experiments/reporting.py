@@ -1,43 +1,34 @@
-"""Build phase: aggregate judged rows into the paper tables, locally.
+"""Table routing: which generation task(s) feed which paper table.
 
 Purpose:
-    The last role. Each of the eight tables is a pure aggregation over one or
-    more generation tasks' judged rows (plus, for tables 6 and 7, a side
-    artifact). This module owns that routing: which task(s) feed which table.
-    Because the builders in `experiments/tables.py` mostly don't filter by
-    model_spec, handing each table exactly its source tasks' rows is what keeps
+    The build role's engine (behind the `cli/build.py` wrapper). Each of the
+    eight tables is a pure aggregation over one or more generation tasks' judged
+    rows (plus, for tables 6 and 7, a side artifact). This module owns that
+    routing. Because the builders in `experiments/tables.py` mostly don't filter
+    by model_spec, handing each table exactly its source tasks' rows is what keeps
     them correct (this replaces the old per-experiment `depends_on`).
 
 Pipeline role:
-    Reads `results/cache/<mode>[/<run_tag>]/<task>/results.jsonl` (written by
-    `experiments/judge.py`) and each side artifact, writes the eight CSVs under
-    `results/tables/...` and one combined markdown for readability. No GPU, no
-    judge — just pandas.
-
-CLI:
-    `python -m experiments.build [--full] [--run-tag TAG] [options]`
+    Reads `results/cache/<mode>[/<run_tag>]/<task>/results.jsonl` and each side
+    artifact, calls the `experiments/tables.py` builders, and writes the eight
+    CSVs plus one combined markdown. No GPU, no judge — just pandas.
 
 Arguments:
-    --full / --run-tag locate the cache (mode + namespace) to read. --output-dir
-        overrides where CSVs land; --markdown sets the combined report path (or
-        `none` to skip it). --bootstrap / --seed control the document-level
-        bootstrap. No task selector: every table builds from its fixed source
-        tasks, with a blank skeleton for any table whose source has no rows.
+    None. Import-only; `cli/build.py` calls `build_tables(config, output_dir)`.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
 from config import ExperimentConfig
-from experiments.generation import GENERATION_TASKS, config_from_args
-from experiments.paths import configure_logging, experiment_paths, log, mode
+from experiments.paths import experiment_paths, log
+from experiments.registry import GENERATION_TASKS
 from experiments.tables import (
     TABLE_FILENAMES,
     build_table1_headline,
@@ -70,7 +61,7 @@ class TableSpec:
     """One table: which task rows and side artifacts feed it, and how to build."""
 
     key: str
-    sources: tuple[str, ...]          # generation tasks whose judged rows feed it
+    sources: tuple[str, ...]            # generation tasks whose judged rows feed it
     build: Builder
     side_sources: tuple[str, ...] = ()  # generation tasks whose side artifact feeds it
 
@@ -154,8 +145,7 @@ def build_tables(
     for spec in TABLES:
         rows: list[ResultRow] = []
         for task_name in spec.sources:
-            results_path = experiment_paths(config, task_name).results
-            task_rows = list(load_result_rows(results_path))
+            task_rows = list(load_result_rows(experiment_paths(config, task_name).results))
             if task_rows:
                 sources_used.add(task_name)
             rows.extend(task_rows)
@@ -174,52 +164,6 @@ def build_tables(
     if markdown_path is not None:
         markdown_path.parent.mkdir(parents=True, exist_ok=True)
         source_label = ", ".join(sorted(sources_used)) or "(no cached rows)"
-        markdown_path.write_text(
-            render_tables_markdown(tables, source=source_label, n_rows=None) + "\n"
-        )
+        markdown_path.write_text(render_tables_markdown(tables, source=source_label, n_rows=None) + "\n")
         written["markdown"] = markdown_path
     return written
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--full", action="store_true", help="build from the full cache (default: smoke)")
-    parser.add_argument("--run-tag", help="cache namespace to read; must match the generate/judge phases")
-    parser.add_argument("--output-dir", type=Path, help="directory for table CSVs (default: results/tables/<mode>[-<run-tag>])")
-    parser.add_argument("--markdown", help="combined markdown path (default: <output-dir>/all_tables.md; 'none' to skip)")
-    parser.add_argument("--bootstrap", type=int, help="document-level bootstrap resamples (default: 200 smoke / 1000 full)")
-    parser.add_argument("--seed", type=int, default=0, help="bootstrap RNG seed")
-    parser.add_argument("--verbose", action="store_true", help="DEBUG-level logging")
-    parser.add_argument("--quiet", action="store_true", help="force INFO-level logging even for smoke")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    # Only the cache-locating knobs matter for building (mode + run-tag).
-    args_ns = argparse.Namespace(
-        full=args.full, questions=None, per_bin_questions=None, sample_seed=None,
-        quantization=None, visual_resolution=None, run_tag=args.run_tag,
-    )
-    config = config_from_args(args_ns)
-    configure_logging(verbose=args.verbose or (config.smoke and not args.quiet))
-
-    partition = mode(config) if config.run_tag is None else f"{mode(config)}-{config.run_tag}"
-    output_dir = args.output_dir or (config.paths.results_dir / "tables" / partition)
-    if args.markdown is None:
-        markdown_path: Path | None = output_dir / "all_tables.md"
-    elif str(args.markdown).lower() == "none":
-        markdown_path = None
-    else:
-        markdown_path = Path(args.markdown)
-
-    written = build_tables(
-        config, output_dir, n_bootstrap=args.bootstrap, seed=args.seed, markdown_path=markdown_path
-    )
-    for key, path in written.items():
-        print(f"{key}: {path}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

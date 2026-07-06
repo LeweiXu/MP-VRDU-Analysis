@@ -11,7 +11,7 @@ Purpose:
       1. 4-bit NF4 (bitsandbytes)   - weights ~5-6GB, no CPU offload
       2. 8-bit    (bitsandbytes)    - weights ~8-9GB, no CPU offload
       3. bf16, single GPU, no offload - the ~16GB baseline, expected to OOM
-    The separate `experiments.generation --gres gpu:v100:1` job covers the 4th regime
+    The separate `cli.generate --gres gpu:v100:1` job covers the 4th regime
     (bf16 with device_map="auto" CPU offload), so this probe skips it.
 
 Pipeline role:

@@ -3,8 +3,8 @@
 Purpose:
     Holds what the role modules all need but none of them owns: logging setup,
     the per-task cache/table path layout, and the phase-status artifact. Keeping
-    it here is what lets `experiments/generation.py`, `experiments/judge.py`, and
-    `experiments/build.py` stay strictly about their one role.
+    it here is what lets the driver, the task files, and the reporting module
+    stay strictly about their one role.
 
 Pipeline role:
     A leaf module (imports only config). `experiment_paths(config, name)` maps a

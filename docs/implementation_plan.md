@@ -155,16 +155,25 @@ mpvrdu/                 # == the working directory / repo root
     abstention.py      # abstention rate, hallucination rate
     cost.py            # tokens (text/visual) + latency accounting
     frontier.py        # sufficiency-frontier rule (pre-registered margin)
-  experiments/               # organized by ROLE, not by table
+  experiments/               # the library: one generation task per file
     __init__.py
     smoke.py           # frozen smoke corpus (doc ids)
     corpus.py          # config -> question set (smoke frozen corpus | full loader)
     paths.py           # shared cache/table path layout + phase status + logging
-    generation.py      # GPU role: GenerationTask registry (G1..G6) + generate + CLI
-    judge.py           # local role: score a task's cached predictions (no tables) + CLI
-    build.py           # local role: route each table's source-task rows -> CSVs + .md + CLI
+    base.py            # GenerationTask ABC + Cell/Retrievers + cell factories
+    registry.py        # collects the G*_*.py tasks -> name/group resolve()
+    G1_sufficiency.py  # one GenerationTask per file (add a file to add an experiment)
+    G2_family.py       #   G2..G6; a scale task (G4) is out of scope for now
+    G3_dataset.py
+    G5_retrieval.py
+    G6_classifier.py
+    driver.py          # the generate (GPU) + judge (local) engine over tasks
     tables.py          # pure per-table aggregation functions (frontier, metric columns)
-  cli/
+    reporting.py       # table -> source-task routing; builds CSVs + combined .md
+  cli/                       # the runnable entry points (thin wrappers)
+    generate.py        # GPU: cache predictions for task(s)  (a cluster submits this)
+    judge.py           # local: score a task's cached predictions (no tables)
+    build.py           # local: route source-task rows -> the 8 CSVs + .md
     run_probe.py       # Stage 1 feasibility probes
     gates.py           # Section-2 go/no-go gate evaluation
 kaya/
@@ -265,13 +274,13 @@ root-relative: `HF_HOME=<root>/.cache`, `data_dir=<root>/.data`, conda env at
 Every paper table is one reusable `Experiment` (`experiments/T*_*.py`), run in two
 phases split across machines because the reasoner/retrievers/classifier need a GPU
 while the judge needs the internet:
-- **Generate** on Kaya (GPU, offline): `kaya.kaya submit experiments/generation.py -- --generation
+- **Generate** on Kaya (GPU, offline): `kaya.kaya submit cli/generate.py -- --generation
   <task|group>`. One generation task per job keeps jobs small and fast-queueing.
   Predictions cache per task under `results/cache/<smoke|full>/<task>/`.
 - **Pull** them back: `kaya.kaya pull` (rsyncs `results/`).
-- **Judge** locally (no GPU, only an API key): `python -m experiments.judge --generation <sel>`
+- **Judge** locally (no GPU, only an API key): `python -m cli.judge --generation <sel>`
   scores the cached predictions (no tables). **Build** locally: `python -m
-  experiments.build` routes each table's source-task rows into the eight CSVs +
+  cli.build` routes each table's source-task rows into the eight CSVs +
   a combined `.md`. `--full` selects the full corpus/8B. Judge keys live only in
   the local `.env`; they are not forwarded to Kaya. This role split (generation
   tasks G1..G6, judge, build) supersedes the earlier per-table experiment model
@@ -421,7 +430,7 @@ filled with throwaway smoke numbers, proving the whole reporting path works befo
 - `metrics/cost.py`: latency@batch=1 (primary) and text/vision token aggregation (secondary).
 - `metrics/frontier.py`: the sufficiency-frontier rule (cheapest rung whose CI upper bound reaches
   within 3 points of the strongest rung's point estimate).
-- `experiments/tables.py` + `experiments/build.py`: builders emitting CSVs matching Tables 1–8
+- `experiments/tables.py` + `experiments/reporting.py`: builders emitting CSVs matching Tables 1–8
   exactly — T1 headline (bin × 4 rungs + frontier + latency@frontier); T2 analytical
   (bin × question-type × 4 rungs); T3 family replication; T4 dataset replication; T5
   composition-mediation; T6 matched-vs-cross; T7 routing (4 policies); T8 scale sanity. On smoke
@@ -480,7 +489,7 @@ tables locally.
 **Goal.** The paper's pivotal result and its first go/no-go decision.
 
 **Build/run.**
-- Full Exp 1 headline via the `G1_sufficiency` task (`experiments.generation --generation
+- Full Exp 1 headline via the `G1_sufficiency` task (`cli.generate --generation
   G1_sufficiency --full`, then judge + build): Qwen3-VL-8B, `OracleConditioner`, full
   MMLongBench-Doc, all four rungs, all three Option-A bins → **Table 1** with frontier marks,
   per-cell document-level bootstrap CIs, and latency@frontier.

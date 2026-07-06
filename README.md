@@ -47,7 +47,7 @@ rendering, payload construction, model calls, judging, and caches.
 The important execution split is:
 
 - **Generate phase:** runs on Kaya GPU compute nodes, offline, and fills
-  prediction caches under `results/cache/<smoke|full>/<experiment>/`.
+  prediction caches under `results/cache/<smoke|full>/<task>/`.
 - **Judge/build phase:** runs locally with internet/API keys, reuses cached
   predictions, and writes CSVs under `results/tables/<smoke|full>/`.
 
@@ -62,10 +62,13 @@ The important execution split is:
 - `models/`: backend registry plus Qwen3-VL and InternVL local backends.
 - `covariates/`: retrieval and document-type classifier paths.
 - `metrics/`: accuracy, cost, frontier, retrieval, abstention metrics.
-- `experiments/`: split by role — `generation` (GPU tasks G1..G6), `judge`
-  (score predictions), `build` (route rows into the eight table CSVs + `.md`),
-  plus shared `paths`/`corpus`/`tables`.
-- `cli/`: local gate and probe entry points.
+- `experiments/`: the experiment library — one generation task per file
+  (`G1_sufficiency` … `G6_classifier`) over `base.py` + `registry.py`, the
+  generate+judge engine `driver.py`, the table builders `tables.py`, and the
+  table routing `reporting.py`. Add a generation experiment by dropping in a new
+  `G*_*.py` and registering it.
+- `cli/`: the runnable entry points — `generate` (GPU), `judge`, `build`, plus
+  `gates` and `run_probe`.
 - `kaya/`: remote setup, prestage, sync/submit runner, and GPU generation entry.
 - `docs/`: fixed decisions, runbook, implementation plan, data/model/evaluation
   details.
@@ -179,7 +182,7 @@ Generate one smoke task on Kaya:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:10:00 --mem 16G --cpus-per-task 2 \
-  experiments/generation.py -- --generation G1_sufficiency
+  cli/generate.py -- --generation G1_sufficiency
 ```
 
 Pull remote artifacts:
@@ -191,17 +194,17 @@ envs/mpvrdu/bin/python -m kaya.kaya pull
 Judge (score predictions) then build the tables locally:
 
 ```bash
-envs/mpvrdu/bin/python -m experiments.judge --generation G1_sufficiency --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m experiments.build
+envs/mpvrdu/bin/python -m cli.judge --generation G1_sufficiency --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m cli.build
 ```
 
 Run all smoke tasks:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 experiments/generation.py -- --generation all
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/generate.py -- --generation all
 envs/mpvrdu/bin/python -m kaya.kaya pull
-envs/mpvrdu/bin/python -m experiments.judge --generation all --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m experiments.build
+envs/mpvrdu/bin/python -m cli.judge --generation all --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m cli.build
 ```
 
 ## Full Runs
@@ -213,7 +216,7 @@ Generate a 10-question full-mode sufficiency pilot on Kaya:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:20:00 --mem 32G --cpus-per-task 2 --gres gpu:v100:2 \
-  experiments/generation.py -- --generation G1_sufficiency --full --questions 10
+  cli/generate.py -- --generation G1_sufficiency --full --questions 10
 ```
 
 Kaya's `gpu` partition is V100-based. Full-mode Qwen3-VL-8B can OOM on a
@@ -223,15 +226,15 @@ generation. Smoke mode uses Qwen3-VL-2B and can use one GPU.
 Generate the full sufficiency task (source of Table 1):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G1_sufficiency --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G1_sufficiency --full
 ```
 
 Judge then build locally:
 
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya pull
-envs/mpvrdu/bin/python -m experiments.judge --generation G1_sufficiency --full --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m experiments.build --full
+envs/mpvrdu/bin/python -m cli.judge --generation G1_sufficiency --full --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m cli.build --full
 ```
 
 Section-2 gate commands:
@@ -257,10 +260,10 @@ envs/mpvrdu/bin/python -m cli.gates classifier-pilot --full \
 The other generation jobs (feed tables 3/4/6/7):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G2_family --full
-envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G3_dataset --full
-envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G5_retrieval --full
-envs/mpvrdu/bin/python -m kaya.kaya submit experiments/generation.py -- --generation G6_classifier --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G2_family --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G3_dataset --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G5_retrieval --full
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G6_classifier --full
 ```
 
 Run every task as one SLURM job, continuing past per-task failures:
@@ -272,7 +275,7 @@ envs/mpvrdu/bin/python -m kaya.kaya submit \
   --cpus-per-task 2 \
   --mem 32G \
   --time 1-00:00:00 \
-  experiments/generation.py -- --generation all --full --continue-on-error
+  cli/generate.py -- --generation all --full --continue-on-error
 ```
 
 Each task writes its own cache directory under `results/cache/full/<task>/`,
@@ -281,8 +284,8 @@ including a `generate_status.json` with `success` or failure details.
 Judge every task, then build all eight tables in one local step:
 
 ```bash
-envs/mpvrdu/bin/python -m experiments.judge --generation all --full --judge gpt-4o-mini
-envs/mpvrdu/bin/python -m experiments.build --full
+envs/mpvrdu/bin/python -m cli.judge --generation all --full --judge gpt-4o-mini
+envs/mpvrdu/bin/python -m cli.build --full
 ```
 
 ## Kaya Job Controls
@@ -304,14 +307,14 @@ envs/mpvrdu/bin/python -m kaya.kaya submit \
   --cpus-per-task 2 \
   --mem 32G \
   --time 00:20:00 \
-  experiments/generation.py -- --generation G1_sufficiency --full --questions 10
+  cli/generate.py -- --generation G1_sufficiency --full --questions 10
 ```
 
 Short walltimes usually matter most for queue backfill. Use `--no-wait` to
 submit and return immediately, then watch later:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --no-wait experiments/generation.py -- --generation G1_sufficiency --full
+envs/mpvrdu/bin/python -m kaya.kaya submit --no-wait cli/generate.py -- --generation G1_sufficiency --full
 envs/mpvrdu/bin/python -m kaya.kaya watch
 ```
 

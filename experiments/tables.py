@@ -6,7 +6,7 @@ Purpose:
     filled with whatever smoke/full rows are currently cached.
 
 Pipeline role:
-    `experiments.build` calls these builders (routing each table's source-task
+    `experiments.reporting` calls these builders (routing each table's source-task
     rows to it) after `results/cache/` is filled. Keeping aggregation here lets
     tables be rebuilt without rerunning models, judges, parsers, or retrieval.
 
