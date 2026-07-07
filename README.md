@@ -20,16 +20,15 @@ envs/mpvrdu/bin/python -m pip install -r requirements.txt
 envs/mpvrdu/bin/python -m pytest
 
 # 3. generate (GPU) -> judge (needs a Gemini/OpenAI key in .env) -> build tables
-envs/mpvrdu/bin/python -m cli.generate --generation G1_sufficiency        # smoke, ~7 docs, Qwen3-VL-2B
-envs/mpvrdu/bin/python -m cli.judge    --generation G1_sufficiency
+envs/mpvrdu/bin/python -m cli.generate --spec specs/smoke_generation.yaml
+envs/mpvrdu/bin/python -m cli.judge    --run-tag yaml-smoke
 envs/mpvrdu/bin/python -m cli.build
 ```
 
-Add `--full` for the full corpus + Qwen3-VL-8B. The three phases are split on
-purpose: **generate** is GPU-only and offline (runs on the cluster), **judge**
-and **build** are local and need API keys. Everything is cached and resumable.
-Full run commands, cluster submission, flags, and outputs live in
-`docs/USER_GUIDE.md` and `kaya/KAYA_USER_GUIDE.md`.
+The three phases are split on purpose: **generate** is GPU-only and offline
+(runs on the cluster), **judge** and **build** are local and need API keys.
+Everything is cached and resumable. Full run commands, cluster submission, flags,
+and outputs live in `docs/USER_GUIDE.md` and `kaya/KAYA_USER_GUIDE.md`.
 
 ---
 
@@ -470,9 +469,10 @@ Side artifacts are one record per unit, not per cell:
 - `models/` - backend registry, Qwen3-VL / InternVL / API reasoners, `ModelInput`.
 - `covariates/` - retrievers and the doc-type classifier.
 - `metrics/` - accuracy, cost, frontier, retrieval, abstention.
-- `experiments/` - one generation task per file (`G1`..`G6`), the generate+judge
-  engine (`driver.py`), table builders (`tables.py`), and table routing (`reporting.py`).
-- `cli/` - the three experiment roles only: `generate` (GPU), `judge`, `build`.
+- `experiments/` - YAML spec loading, the generate+judge engine (`driver.py`),
+  table builders (`tables.py`), and table routing (`reporting.py`).
+- `cli/` - the three experiment roles only: `generate` (GPU, YAML-first), `judge`, `build`.
+- `specs/` - YAML generation templates, including `full_generation.yaml`.
 - `scripts/` - standalone utilities: `run_probe` (feasibility probes), `gates`
   (Section-2 go/no-go gates), `inspect_results` (view a cached inference cell),
   `annotate_docs` (per-document manual labels), `split_docs_by_type`, staging.

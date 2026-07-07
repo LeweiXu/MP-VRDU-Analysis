@@ -291,6 +291,42 @@ def run_generate(
     return statuses
 
 
+def run_generate_tasks(
+    config: ExperimentConfig,
+    tasks: Sequence[GenerationTask],
+    questions: Sequence[Question],
+    *,
+    continue_on_error: bool = False,
+    before_task=None,
+) -> list:
+    """Generate an explicit task sequence; used by YAML specs."""
+
+    statuses = []
+    for task in tasks:
+        task_questions = task.resolve_questions(config, questions)
+        if before_task is not None:
+            before_task(task, task_questions)
+        try:
+            generate(config, task, questions, skip_failed_cells=continue_on_error)
+        except Exception as exc:
+            status = write_phase_status(config, task.name, phase="generate", status="failed", error=exc)
+            statuses.append(status)
+            log.error(
+                "[generate] %s: FAILED (%s: %s)\n%s",
+                task.name,
+                status.error_type,
+                status.error,
+                "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            )
+            if not continue_on_error:
+                raise
+            continue
+        status = write_phase_status(config, task.name, phase="generate", status="success")
+        statuses.append(status)
+        log.info("[generate] %s: success -> %s", task.name, status.path)
+    return statuses
+
+
 # ---------------------------------------------------------------------------
 # Judge (local)
 # ---------------------------------------------------------------------------

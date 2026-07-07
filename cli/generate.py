@@ -2,30 +2,27 @@
 # kaya: env=true
 # kaya: offline=true
 # kaya: job-name=generate
-"""Generate phase (GPU): cache predictions for one or more generation tasks.
+"""Generate phase (GPU): cache predictions from a YAML generation spec.
 
 Purpose:
-    The thin GPU entry point a cluster submits. It parses args, builds the shared
-    config, and hands off to `experiments.driver.run_generate`, which runs each
-    selected `GenerationTask` (defined in `experiments/G*_*.py`). Nothing here
-    needs the internet.
+    The thin GPU entry point a cluster submits. In the YAML-first path it loads a
+    spec file, builds dynamic generation tasks, writes manifests beside their
+    caches, and hands them to the shared driver. Nothing here needs the internet.
 
 CLI:
-    `python -m cli.generate [--generation SEL] [--full] [options]`
-    Kaya: `kaya.kaya submit cli/generate.py -- --generation SEL ...`
+    `python -m cli.generate --spec specs/full_generation.yaml`
+    Kaya: `kaya.kaya submit cli/generate.py -- --spec specs/full_generation.yaml`
 
 Arguments:
-    --generation SEL: a task (`G1_sufficiency`), a group (`all`, `reasoners`), or
-        a comma list. --full uses the 8B/full corpus (smoke otherwise).
-        --quantization / --visual-resolution / --run-tag tune the reasoner and
-        cache namespace; --continue-on-error keeps a grouped run going after a
-        task fails. See `build_parser`.
+    --spec PATH: YAML generation spec. --generation remains as a deprecated
+        compatibility selector for legacy Python task runs.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import warnings
 
 # Reduce CUDA fragmentation on the compute nodes; the allocator reads this on the
 # first CUDA alloc, so setting it before generation runs is enough. setdefault
@@ -34,14 +31,16 @@ import os
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from experiments.corpus import load_questions
-from experiments.driver import config_from_args, run_generate
+from experiments.driver import config_from_args, run_generate, run_generate_tasks
 from experiments.paths import configure_logging
+from experiments.yaml_spec import load_yaml_experiment
 from scripts.prestage import prepare_tool_cache_env
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--generation", default="all", help="generation task or group (default: all)")
+    parser.add_argument("--spec", help="YAML generation spec (primary interface)")
+    parser.add_argument("--generation", help="deprecated task/group selector; use --spec")
     parser.add_argument("--full", action="store_true", help="use the full config/corpus (default: smoke)")
     parser.add_argument("--questions", type=int, help="global cap: first N questions (overrides --per-bin-questions)")
     parser.add_argument("--per-bin-questions", type=int, help="full mmlongbench: ~N questions per Option-A bin by whole documents (default 100; 0 = whole corpus)")
@@ -57,6 +56,31 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.spec:
+        spec = load_yaml_experiment(args.spec)
+        config = spec.config
+        configure_logging(verbose=args.verbose or (config.smoke and not args.quiet))
+        prepare_tool_cache_env(config.paths.hf_home)
+        questions = load_questions(config)
+        statuses = run_generate_tasks(
+            config,
+            spec.tasks,
+            questions,
+            continue_on_error=args.continue_on_error,
+            before_task=spec.write_manifest,
+        )
+        failed = [status for status in statuses if status.status != "success"]
+        print(
+            f"generated {args.spec}: {len(spec.tasks)} run(s), "
+            f"{len(statuses) - len(failed)} succeeded, {len(failed)} failed"
+        )
+        for status in failed:
+            print(f"failed {status.experiment}: {status.error_type}: {status.error} ({status.path})")
+        return 0
+
+    if args.generation is None:
+        raise SystemExit("YAML generation requires --spec. Legacy mode requires --generation.")
+    warnings.warn("--generation is deprecated; use --spec YAML generation files", DeprecationWarning)
     config = config_from_args(args)
     # Smoke runs are verbose by default (they exist to surface failures); --quiet
     # opts out, --verbose forces DEBUG for a full run too.

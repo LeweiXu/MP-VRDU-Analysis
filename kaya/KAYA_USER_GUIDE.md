@@ -312,10 +312,10 @@ envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 scripts/run_probe.py 
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 scripts/run_probe.py -- retrieval --run-heavy --json
 ```
 
-Single generation-task smoke (cache the sufficiency-ladder predictions):
+Single YAML smoke (cache a small G1/G5 2B run):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G1_sufficiency
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --spec specs/smoke_generation.yaml
 ```
 
 Experiments now split by **role** (see `docs/USER_GUIDE.md`): the study is
@@ -326,22 +326,20 @@ judging and table building run **locally** (no GPU, only an API key). Put
 not forwarded to Kaya.
 
 ```bash
-# 1. GENERATE on Kaya (GPU): cache predictions per task (one job per task, or all)
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation G1_sufficiency
-# ...or every task in one job:
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --generation all
+# 1. GENERATE on Kaya (GPU): cache predictions from a YAML spec
+envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --spec specs/full_generation.yaml
 
 # 2. bring the prediction cache back
 envs/mpvrdu/bin/python -m kaya.kaya pull
 
-# 3. JUDGE locally (scores predictions; no tables): match the generate flags
-python -m cli.judge --generation all
+# 3. JUDGE locally (scores predictions; no tables): reads manifests under the run-tag
+python -m cli.judge --run-tag yaml-full
 
 # 4. BUILD tables locally: routes each task's judged rows into the 8 CSVs + a .md
-python -m cli.build
+python -m cli.build --run-tag yaml-full
 ```
 
-Add `--full` for the full corpus/8B run (pass it to generate, judge, and build).
+Use `specs/smoke_generation.yaml` / `--run-tag yaml-smoke` for the smoke template.
 
 ## GPU Allocation
 

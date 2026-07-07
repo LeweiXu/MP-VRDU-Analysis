@@ -170,26 +170,25 @@ all eight table builders + `experiments/reporting.py` (evaluation reference belo
 `BM25BGERetriever` + `ColQwenRetriever`, page R/P/F1 + evidence-modality slices,
 `QwenDocTypeClassifier`, and matched/cross + four routing policies.
 
-## Role split: generation tasks, judge, build
+## Role split: YAML generate, artifact judge, build
 
-The study is organized by **generation task**, not by paper table, because most
-tables are pure aggregations of the same generated predictions. The `experiments`
-package is the library (task defs + engine + builders); the runnable roles are
-thin wrappers `cli/{generate,judge,build}.py`. They run the **real** pipeline
-(Qwen3-VL reasoner, BM25+BGE / ColQwen retrievers, Qwen classifier, Gemini/GPT
-judge). No stub reasoners or injected scorers on this path.
+The study is now **YAML-first for generation**. A YAML spec defines one or more
+data-collection runs as explicit cell grids over questions, conditions,
+representations, and model specs. `cli/generate.py --spec <file.yaml>` is the
+primary GPU entry point; legacy `--generation` still exists as a compatibility
+wrapper. Judge/build are artifact-driven: they read manifests, predictions,
+results, and side artifacts under a run tag, so they do not need the original
+generate flags to be repeated.
 
-- **Generation tasks (the only GPU work), one file each.** `experiments/G*_*.py`
-  define `G1_sufficiency` (oracle ladder, primary 8B — the source rows for tables
-  1, 2, 5, 7), `G2_family` (InternVL ladder → table 3), `G3_dataset` (held-out
-  text_heavy+in_between ladder → table 4), `G5_retrieval` (matched/cross cells
-  swept over `config.k_values` (1,3,5,7,9) +
-  retrieval R/P/F1 → table 6), and `G6_classifier` (doc-type classifier side work
-  → table 7's routing price). Adding an experiment is just a new `G*_*.py` +
-  a line in `experiments/registry.py`; a scale task (2B/32B → table 8) is out of
-  scope for now. Each task caches under `results/cache/[<run-tag>/]<smoke|full>/<task>/`
-  (run-tag namespaces the whole tree, so it sits *before* `<smoke|full>`), so jobs
-  never collide. Groups: `all`, `reasoners`.
+- **YAML specs.** `specs/full_generation.yaml` is the complete G1/G2/G3/G5/G6
+  template; `specs/smoke_generation.yaml` is the small 2B smoke template. The
+  generation spec supports arbitrary ordered channel combinations over `T`, `L`,
+  and `V` (`T`, `L`, `V`, `TL`, `TV`, `LV`, `TLV`). Cache directories are
+  `results/cache/<run-tag>/<smoke|full>/<run-name>/`.
+- **Implementation bridge.** `experiments/yaml_spec.py` loads YAML and creates
+  dynamic `GenerationTask` objects. `experiments/driver.py` still owns the
+  actual generate loop, reasoner/retriever construction, pre-pass, and cache
+  writes.
 - **Table routing replaces `depends_on`.** `experiments/reporting.py`'s `TABLES`
   registry declares each table's source task(s): table1←G1, table3←G1+G2,
   table4←G3, table6←G5 (+retrieval side), table7←G1 (+classifier side), table8←G1.
@@ -198,16 +197,15 @@ judge). No stub reasoners or injected scorers on this path.
   rows (unioning all specs would corrupt table1's single-spec aggregate).
 - **Why the roles split across machines.** Reasoner/retrievers/classifier need a
   GPU; the judge needs the internet — on Kaya those never coexist. So generation
-  runs on Kaya (GPU, offline); `cli.judge` (scores predictions, no tables)
-  and `cli.build` (aggregates into CSVs + `.md`) run **locally** after a
-  `kaya.kaya pull`. Judge loads **no models** (prediction-cache hits only); the
-  `_GuardRetriever` / `_SpecOnlyReasoner` raise (`CacheMiss`) if a cell was missed
-  in generation, which `--continue-on-error` turns into a skip.
-- **Commands.** Kaya generate: `kaya.kaya submit cli/generate.py --
-  --generation G1_sufficiency` (or `all`), then `kaya.kaya pull`. Local:
-  `python -m cli.judge --generation all` then `python -m cli.build`.
-  Add `--full` for the full corpus/8B. Judge defaults to `gemini` (`--judge
-  gpt-4o-mini` / `stub`). Tables → `results/tables/<smoke|full>[-<run-tag>]/`.
+  runs on Kaya (GPU, offline); `cli.judge` and `cli.build` run **locally** after
+  a `kaya.kaya pull`. Judge loads no models; it scores `predictions.jsonl`
+  records directly from manifests.
+- **Commands.** Kaya generate:
+  `kaya.kaya submit cli/generate.py -- --spec specs/full_generation.yaml`, then
+  `kaya.kaya pull`. Local: `python -m cli.judge --run-tag yaml-full` then
+  `python -m cli.build --run-tag yaml-full`. Judge defaults to `gemini`
+  (`--judge gpt-4o-mini` / `stub`). Run-tagged artifact builds write tables to
+  `results/tables/<run-tag>/`.
   Judge keys are **not** forwarded to Kaya (only `HF_TOKEN` is); keep
   `GEMINI_API_KEY`/`OPENAI_API_KEY` in the local `.env`.
 

@@ -27,7 +27,7 @@ from pathlib import Path
 
 from experiments.driver import config_from_args
 from experiments.paths import configure_logging, mode
-from experiments.reporting import build_tables
+from experiments.reporting import build_tables_from_artifacts
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     config = config_from_args(args)
     configure_logging(verbose=args.verbose or (config.smoke and not args.quiet))
 
-    partition = mode(config) if config.run_tag is None else f"{mode(config)}-{config.run_tag}"
+    partition = mode(config) if config.run_tag is None else config.run_tag
     output_dir = args.output_dir or (config.paths.results_dir / "tables" / partition)
     if args.markdown is None:
         markdown_path: Path | None = output_dir / "all_tables.md"
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         markdown_path = Path(args.markdown)
 
-    written = build_tables(
+    written = build_tables_from_artifacts(
         config, output_dir, n_bootstrap=args.bootstrap, seed=args.seed, markdown_path=markdown_path
     )
     for key, path in written.items():

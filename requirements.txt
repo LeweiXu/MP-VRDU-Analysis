@@ -33,6 +33,7 @@ pillow==10.4.0
 numpy==2.2.6
 scipy==1.15.3
 pandas==2.3.1
+PyYAML==6.0.2
 requests==2.32.4
 chardet==5.2.0
 pytest==8.4.1

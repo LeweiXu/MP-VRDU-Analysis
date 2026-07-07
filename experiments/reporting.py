@@ -29,6 +29,7 @@ import pandas as pd
 from config import ExperimentConfig
 from experiments.paths import experiment_paths, log
 from experiments.registry import GENERATION_TASKS
+from experiments.artifacts import iter_result_files, iter_side_files
 from experiments.tables import (
     TABLE_FILENAMES,
     build_table1_headline,
@@ -224,6 +225,69 @@ def build_tables(
         markdown_path.write_text(render_tables_markdown(tables, source=source_label, n_rows=None) + "\n")
         written["markdown"] = markdown_path
         # Paper-style companion: same tables, only the interpretable columns.
+        summary_path = markdown_path.parent / "all_tables_summarised.md"
+        summary_path.write_text(render_paper_tables_markdown(tables, source=source_label) + "\n")
+        written["markdown_summary"] = summary_path
+    return written
+
+
+def build_tables_from_artifacts(
+    config: ExperimentConfig,
+    output_dir: Path,
+    *,
+    n_bootstrap: int | None = None,
+    seed: int = 0,
+    markdown_path: Path | None = None,
+) -> dict[str, Path]:
+    """Build tables from all judged artifacts under a cache root.
+
+    This is the YAML-first build path: it does not assume fixed task names, only
+    that result rows and side artifacts are present under the selected cache
+    namespace.
+    """
+
+    n_bootstrap = bootstrap_resamples(config) if n_bootstrap is None else n_bootstrap
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[ResultRow] = []
+    for path in iter_result_files(config):
+        rows.extend(load_result_rows(path))
+    retrieval_records: list[dict] = []
+    for path in iter_side_files(config, "retrieval.jsonl"):
+        retrieval_records.extend(_load_side_records(path))
+    classifier_records: list[dict] = []
+    for path in iter_side_files(config, "classifier.jsonl"):
+        classifier_records.extend(_load_side_records(path))
+
+    tables: dict[str, pd.DataFrame] = {}
+    written: dict[str, Path] = {}
+    side = {"G5_retrieval": retrieval_records, "G6_classifier": classifier_records}
+    for spec in TABLES:
+        out = output_dir / TABLE_FILENAMES[spec.key]
+        if spec.blocked_reason:
+            if out.exists():
+                out.unlink()
+            continue
+        try:
+            frame = spec.build(rows, side, config, n_bootstrap, seed)
+        except Exception as exc:
+            if out.exists():
+                out.unlink()
+            log.info("skipped %s from artifacts (%s)", spec.key, exc)
+            continue
+        if frame.empty:
+            if out.exists():
+                out.unlink()
+            continue
+        tables[spec.key] = frame
+        frame.to_csv(out, index=False)
+        written[spec.key] = out
+        log.info("built %s (%d rows) from artifact scan -> %s", spec.key, len(frame), out)
+
+    if markdown_path is not None:
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        source_label = f"artifact scan under {config.paths.cache_dir}"
+        markdown_path.write_text(render_tables_markdown(tables, source=source_label, n_rows=None) + "\n")
+        written["markdown"] = markdown_path
         summary_path = markdown_path.parent / "all_tables_summarised.md"
         summary_path.write_text(render_paper_tables_markdown(tables, source=source_label) + "\n")
         written["markdown_summary"] = summary_path

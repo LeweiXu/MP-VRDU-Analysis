@@ -197,12 +197,12 @@ role modules, so the GPU half runs on a cluster and everything else stays local:
    rows into the eight table CSVs plus a combined `all_tables.md`. Pure pandas.
 
 ```bash
-python -m cli.generate --generation G1_sufficiency --full   # GPU: cache predictions
-python -m cli.judge      --generation all --full              # score cached predictions
-python -m cli.build      --full                               # build the 8 CSVs + .md
+python -m cli.generate --spec specs/full_generation.yaml   # GPU: cache predictions
+python -m cli.judge --run-tag yaml-full                    # score cached predictions
+python -m cli.build --run-tag yaml-full                    # build CSVs + .md from artifacts
 ```
 
-A cluster submits `cli/generate.py`; see `kaya/KAYA_USER_GUIDE.md`.
+A cluster submits `cli/generate.py --spec <file.yaml>`; see `kaya/KAYA_USER_GUIDE.md`.
 
 ### Generation tasks (what runs on the GPU)
 
@@ -217,11 +217,19 @@ A cluster submits `cli/generate.py`; see `kaya/KAYA_USER_GUIDE.md`.
 (A scale-sanity task for 2B/32B, feeding Table 8, is out of scope for now, so
 Table 8 shows the single primary size.)
 
+## YAML generation specs
+
+Generation is YAML-first. A spec declares the cache namespace, smoke/full mode,
+config overrides, and one or more explicit cell grids. `specs/full_generation.yaml`
+is the complete template for G1/G2/G3/G5/G6; `specs/smoke_generation.yaml` is a
+small 2B smoke template. Representations may be any ordered combination of text
+(`T`), layout (`L`), and vision (`V`): `T`, `L`, `V`, `TL`, `TV`, `LV`, `TLV`.
+
 ## `cli.generate` / `cli.judge` arguments
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--generation SEL` | `all` | A task (`G1_sufficiency`), a group (`all`, `reasoners`), or a comma list. |
+| `--spec PATH` | required for generate | YAML generation spec. Legacy `--generation` is deprecated. |
 | `--full` | off (smoke) | Full corpus + 8B reasoner. Without it: the frozen ~7-doc smoke corpus + 2B. |
 | `--judge SPEC` | `gemini` | (judge only) `gemini` (free tier), `gpt-4o-mini` (paid), or `stub` (offline). |
 | `--questions N` | none | Global cap: first N questions. Overrides `--per-bin-questions`. |
@@ -236,32 +244,28 @@ Table 8 shows the single primary size.)
 `cli.build` takes `--full` / `--run-tag` (to locate the cache),
 `--output-dir`, `--markdown`, `--bootstrap`, `--seed`.
 
-**Flag-matching rule:** judge re-resolves the same cells as generate, so the
-corpus/model flags (`--generation`, `--full`, `--per-bin-questions`,
-`--sample-seed`, `--quantization`, `--run-tag`) MUST match, or judge looks for
-predictions that were never generated and errors.
+**Judge/build rule:** judge and build are artifact-driven. They read manifests,
+`predictions.jsonl`, `results.jsonl`, and side artifacts under the selected
+`--run-tag`; they do not require the original generate flags to be repeated.
+Run-tagged builds write to `results/tables/<run-tag>/`.
 
 ## Running individual vs all tasks
 
 ```bash
-python -m cli.generate --generation G1_sufficiency --full             # one task
-python -m cli.generate --generation G1_sufficiency,G5_retrieval --full # a subset
-python -m cli.generate --generation reasoners --full                  # the reasoner-cell tasks
-python -m cli.generate --generation all --full                        # every task
+python -m cli.generate --spec specs/smoke_generation.yaml
+python -m cli.generate --spec specs/full_generation.yaml
 ```
 
-Groups: `all` = G1,G2,G3,G5,G6; `reasoners` = the four tasks with reasoner cells
-(skips the classifier side task). Tables 2 and 5 are pure aggregations of
-`G1_sufficiency`, so building them just needs G1 generated + judged.
+To run a subset, copy a template and remove or edit entries under `runs:`.
 
 ## Generation cache: what the GPU phase writes
 
-Everything lands under `results/cache/<mode>/<task>/`, where `<mode>` is
-`smoke` or `full` (and `<mode>` gains a `/<run-tag>` prefix under
-`results/cache/` when `--run-tag` is set). For `G1_sufficiency` in full mode:
+Everything lands under `results/cache/<run-tag>/<mode>/<run-name>/`, where
+`run-name` is the YAML `runs[].name`. For `G1_sufficiency` in full mode:
 
 ```text
-results/cache/full/G1_sufficiency/
+results/cache/yaml-full/full/G1_sufficiency/
+  experiment_manifest.json
   predictions.jsonl       # durable reasoner outputs (the real GPU artifact)
   generate_results.jsonl  # predictions scored by a throwaway STUB judge (ignore its scores)
   generate_status.json    # {status: success|failed, error, traceback, ...} for this run

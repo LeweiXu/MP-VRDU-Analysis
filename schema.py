@@ -44,7 +44,7 @@ from typing import Any, Literal, Mapping, Union
 
 Hop = Literal["none", "single", "multi"]
 PageSetProvenance = Literal["oracle", "retrieved", "full", "buried"]
-Modality = Literal["T", "TL", "TLV", "V"]
+Modality = str
 
 
 def derive_hop(page_indices: tuple[int, ...]) -> Hop:
@@ -203,10 +203,10 @@ class Payload:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "parts", tuple(self.parts))
-        if self.modality in ("T", "TL") and self.image_parts:
+        if "V" not in self.modality and self.image_parts:
             raise ValueError(
                 f"modality {self.modality!r} may not attach images "
-                "(only TLV and V may carry a visual channel)"
+                "(only representations containing V may carry a visual channel)"
             )
 
     @property

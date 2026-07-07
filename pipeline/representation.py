@@ -55,62 +55,42 @@ def _text_block(label: str, chunks: Sequence[str]) -> list[Part]:
     return [TextPart(f"[{label}]\n{body}")] if body else []
 
 
-class TextRepresentation(Representation):
-    """`T`: raw text only."""
-
-    modality: Modality = "T"
-
-    def build(self, pages: Sequence[Page]) -> Payload:
-        parts = _text_block("text", text_channel(pages))
-        return Payload("T", tuple(parts))
+VALID_CHANNELS = ("T", "L", "V")
+VALID_REPRESENTATIONS = {
+    "".join(channel for i, channel in enumerate(VALID_CHANNELS) if mask & (1 << i))
+    for mask in range(1, 1 << len(VALID_CHANNELS))
+}
 
 
-class TextLayoutRepresentation(Representation):
-    """`TL`: text + layout/structure, strings only."""
+class ChannelRepresentation(Representation):
+    """Any explicit combination of text/layout/vision channels.
 
-    modality: Modality = "TL"
+    Valid names are ordered channel strings over `T`, `L`, and `V`: `T`, `L`,
+    `V`, `TL`, `TV`, `LV`, and `TLV`. This preserves the original ladder while
+    allowing YAML experiments to probe non-additive combinations.
+    """
 
-    def build(self, pages: Sequence[Page]) -> Payload:
-        parts = _text_block("text", text_channel(pages))
-        parts += _text_block("layout", layout_channel(pages))
-        return Payload("TL", tuple(parts))
-
-
-class TextLayoutVisualRepresentation(Representation):
-    """`TLV`: text + layout strings plus page images."""
-
-    modality: Modality = "TLV"
+    def __init__(self, modality: str) -> None:
+        self.modality = modality
 
     def build(self, pages: Sequence[Page]) -> Payload:
         parts: list[Part] = []
-        parts += _text_block("text", text_channel(pages))
-        parts += _text_block("layout", layout_channel(pages))
-        parts += list(visual_channel(pages))
-        return Payload("TLV", tuple(parts))
-
-
-class VisualRepresentation(Representation):
-    """`V`: page images only."""
-
-    modality: Modality = "V"
-
-    def build(self, pages: Sequence[Page]) -> Payload:
-        return Payload("V", tuple(visual_channel(pages)))
-
-
-#: Registry of the four ladder rungs, keyed by their modality name.
-REPRESENTATIONS: dict[Modality, type[Representation]] = {
-    "T": TextRepresentation,
-    "TL": TextLayoutRepresentation,
-    "TLV": TextLayoutVisualRepresentation,
-    "V": VisualRepresentation,
-}
+        if "T" in self.modality:
+            parts += _text_block("text", text_channel(pages))
+        if "L" in self.modality:
+            parts += _text_block("layout", layout_channel(pages))
+        if "V" in self.modality:
+            parts += list(visual_channel(pages))
+        return Payload(self.modality, tuple(parts))
 
 
 def get_representation(modality: Modality) -> Representation:
     """Return a representation composer instance for a ladder rung."""
 
-    try:
-        return REPRESENTATIONS[modality]()
-    except KeyError as exc:
-        raise KeyError(f"unknown representation {modality!r}") from exc
+    name = str(modality)
+    if name not in VALID_REPRESENTATIONS:
+        raise KeyError(
+            f"unknown representation {name!r}; use an ordered non-empty "
+            "combination of T, L, V (T, L, V, TL, TV, LV, TLV)"
+        )
+    return ChannelRepresentation(name)
