@@ -177,7 +177,7 @@ def test_row_is_annotated_and_invalid_values() -> None:
 def test_score_sheet_reports_bin_and_scan_agreement() -> None:
     rows = [
         {"doc_id": "a", "doc_type": "Academic paper", "auto_bin": "text_heavy", "bin_label": "text_heavy",
-         "auto_scan": "digital", "scan_label": "digital", "dominant_visual": "tables", "multi_column": "single"},
+         "auto_scan": "digital", "scan_label": "digital", "dominant_visual": "tables;charts", "multi_column": "single"},
         {"doc_id": "b", "doc_type": "Brochure", "auto_bin": "visual_heavy", "bin_label": "in_between",
          "auto_scan": "scanned", "scan_label": "scanned", "dominant_visual": "photos", "multi_column": "multi"},
         {"doc_id": "c", "doc_type": "Brochure", "auto_bin": "visual_heavy", "bin_label": "",
@@ -191,5 +191,16 @@ def test_score_sheet_reports_bin_and_scan_agreement() -> None:
     assert summary["mismatches"][0]["doc_id"] == "b"
     assert summary["auto_scanned"] == 1
     assert summary["scan_agree"] == 2
-    assert summary["dominant_visual"] == {"tables": 1, "photos": 1}
+    # multi-value dominant_visual: each token counted separately
+    assert summary["dominant_visual"] == {"tables": 1, "charts": 1, "photos": 1}
     assert summary["multi_column"] == {"single": 1, "multi": 1}
+
+
+def test_dominant_visual_accepts_multiple_values() -> None:
+    from scripts.annotate_docs import invalid_values, split_multi
+
+    assert split_multi("tables;charts") == ["tables", "charts"]
+    # both tokens valid -> no complaints
+    assert invalid_values([{"doc_id": "d.pdf", "dominant_visual": "tables;charts"}]) == []
+    # one bad token is flagged
+    assert any("dominant_visual" in p for p in invalid_values([{"doc_id": "d.pdf", "dominant_visual": "tables;bogus"}]))

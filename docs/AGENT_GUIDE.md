@@ -178,7 +178,8 @@ judge). No stub reasoners or injected scorers on this path.
 - **Generation tasks (the only GPU work), one file each.** `experiments/G*_*.py`
   define `G1_sufficiency` (oracle ladder, primary 8B — the source rows for tables
   1, 2, 5, 7), `G2_family` (InternVL ladder → table 3), `G3_dataset` (held-out
-  text_heavy+in_between ladder → table 4), `G5_retrieval` (matched/cross cells +
+  text_heavy+in_between ladder → table 4), `G5_retrieval` (matched/cross cells
+  swept over `config.k_values` (1,3,5,7,9) +
   retrieval R/P/F1 → table 6), and `G6_classifier` (doc-type classifier side work
   → table 7's routing price). Adding an experiment is just a new `G*_*.py` +
   a line in `experiments/registry.py`; a scale task (2B/32B → table 8) is out of
@@ -535,6 +536,31 @@ to run-tag-aware resolution via `experiment_paths` (`scripts/gates.py`
   every doc. `score` reports human-bin-vs-`auto_bin` agreement per doc_type (this
   tests the three-domain assumption) plus the scanned fraction. `classify_scanned`
   is the shared version of the Stage-1 scanned-vs-born-digital heuristic.
+
+## G5 top-k sweep; OCR-rung plan (deferred)
+
+**G5 k-sweep (implemented).** `config.k_values` is now `(1, 3, 5, 7, 9)` and G5
+runs the **full sweep**, not just `k_values[0]`. `experiments/base.py`
+`matched_cross_sweep_cells` builds question-major, k-minor cells
+(`retrieved_{modality}_k{k}` for every k), and `G5.run_side` logs `retrieval.jsonl`
+per (question, modality, k). `experiments/tables.py::build_table6_matched_vs_cross`
+parses k from the conditioner name (`_condition_k`) and emits **one matched-vs-cross
+pair per k** with a new `k` column; `_retrieval_summary_for` filters by k (records
+without a `k` field still match, so old fixtures/data are tolerated). Not a
+frozen-interface change: additive cells + an extra table column; the cache
+key/`ResultRow` shape are untouched. Retrievers memoize by `(question, page_count,
+k)`, so the sweep computes each ranking once.
+
+**OCR as its own rung (planned, NOT implemented).** The next planned change adds
+OCR as a fourth channel and its own cumulative rung, making the ladder
+`T / TO / TOL / TOLV / V` (payload order `[text]→[ocr]→[layout]→images`; `T` stays
+pure Marker, `V` stays vision-only). The full plan, the OOM/truncation analysis,
+and the known issues live in the README ("Planned: OCR as its own rung"). It is a
+**frozen-interface checkpoint** (renames `schema.Modality` `TL`→`TOL`, `TLV`→`TOLV`;
+touches the frontier order, table builders, G5/gates default rung) and needs a
+fresh `--run-tag` because the existing `bf16-lowres` cache/tables use the old rung
+names. Do not implement it silently; it is recorded here as an agreed, pending
+change.
 
 ## Kaya operations (elsewhere)
 

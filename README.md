@@ -66,7 +66,9 @@ decides which pages to feed. The conditioners:
   - **Text**: BM25 over page text plus dense BGE similarity (`BAAI/bge-small-en-v1.5`).
   - **Vision**: ColQwen late-interaction over rendered page images (`vidore/colqwen2.5-v0.2`).
   This is what the matched-vs-cross study (G5) uses: *matched* = vision-retrieval
-  feeding vision reasoning, *cross* = text-retrieval feeding vision reasoning.
+  feeding vision reasoning, *cross* = text-retrieval feeding vision reasoning. G5
+  sweeps k over `config.k_values` (default `(1, 3, 5, 7, 9)`), so both retrievers
+  are run at every k.
 - **Full doc** (`FullDoc`) and **buried oracle** (`BuriedOracle`, gold pages plus
   deterministic distractor pages) are the feed-everything and distractor
   baselines.
@@ -91,7 +93,11 @@ channels (`tools/`). Each channel produces one string or image *per page*.
 - **Text layer** (`tools/text.py` -> `tools/layout.py::marker_text`): the primary
   extractor is **Marker**, which converts each page to markdown. If Marker isn't
   available it falls back to PyMuPDF embedded text. PaddleOCR PP-OCRv5 is wired in
-  for scanned pages and parser-swap comparisons but isn't the default path.
+  (`tools/text.py::ocr`) but **currently unused by the pipeline** — the text
+  channel only ever calls Marker. OCR is reserved for the planned OCR rung (see
+  "Planned: OCR as its own rung" below) and appendix parser-swap comparisons.
+  Scanned pages are still read: Marker's own Surya models do the recognition, so
+  the text does not depend on PaddleOCR.
 - **Layout layer** (`tools/layout.py::marker_bbox_json`): Marker's JSON output,
   flattened to a list of blocks (block type + bounding box + short text) and
   **serialized as a JSON string**. This is important: layout is fed to the model
@@ -118,6 +124,46 @@ parser and the reasoner fighting over a 16 GB V100, the generate loop warms the
 Marker text/layout cache for every cell *first* (reasoner not yet loaded), writes
 the results to disk (`results/cache/.../marker/`), then frees the GPU before
 loading the reasoner. On a warm cache the reasoner phase never loads Surya.
+
+### Planned: OCR as its own rung (not yet implemented)
+
+The next planned change adds **OCR as a fourth channel and its own cumulative
+ladder rung**, so the ladder becomes five rungs instead of four. Each rung adds
+one more (more expensive, more informative) layer than the last:
+
+| Rung | Marker text | OCR text | Layout | Vision |
+|------|:---:|:---:|:---:|:---:|
+| `T`    | yes | | | |
+| `TO`   | yes | yes | | |
+| `TOL`  | yes | yes | yes | |
+| `TOLV` | yes | yes | yes | yes |
+| `V`    | | | | yes |
+
+`T` stays pure Marker text (the clean text-only baseline); `TO` adds an OCR block
+right after it. Payload/prompt order within a rung is `[text]` (Marker) → `[ocr]`
+→ `[layout]` → images. OCR would run on **every** page unconditionally (digital or
+scanned), be cached to disk per (page, dpi) like Marker, and be warmed in the
+parse pre-pass so PaddleOCR frees the GPU before the reasoner loads (a warm cache
+means the reason phase never loads it).
+
+**Why this is safe re: OOM.** OCR adds *text* tokens, not vision tokens, and the
+input-token cap (`_truncate_context`, section 7) hard-bounds the combined text:
+if Marker + OCR + layout exceeds the budget, the **tail is dropped** (a plain
+token-count cut, not summarization) before it ever reaches the O(seq^2) V100
+attention. So more text just means more truncation, never a bigger attention
+matrix. Because the order is `[text] → [ocr] → [layout]` and truncation trims the
+tail, the layout JSON (biggest, least dense) is cut first, OCR next, Marker text
+most protected. On oracle pages (usually 1-2 pages) OCR roughly duplicates the
+page's Marker text (~a few hundred to ~1-2k extra tokens), so `T`/`TO` rarely
+truncate at all; only the dense `TOL`/`TOLV` cells lose some layout tail.
+
+**Known issues / caveats.** (1) This renames `TL`→`TOL` and `TLV`→`TOLV`, which
+touches the frozen `schema.Modality` type, the frontier order, the table builders,
+and G5's reasoning rung — a frozen-interface checkpoint, and the existing
+`bf16-lowres` cache/tables won't map to the new names, so the OCR run needs a fresh
+`--run-tag`. (2) OCR roughly doubles the parse-pre-pass cost per page (PaddleOCR on
+top of Marker), bounded by the per-page disk cache. (3) `V` stays vision-only (no
+text/OCR) to keep the "can vision alone answer" signal.
 
 ## 5. Visual resolution and downscaling
 
@@ -271,8 +317,10 @@ The cell order for the ladder tasks (G1, G2, G3) is **question-major,
 rung-minor**. So the model answers question 1 at `T`, then `TL`, then `TLV`, then
 `V`, then moves to question 2 at `T`/`TL`/`TLV`/`V`, and so on. It is **not** all
 questions at `T` first and then all at `TL`; the reasoner loads once and walks the
-whole list. For G5, each question contributes two consecutive cells (matched
-vision-retrieval then cross text-retrieval, both `TLV`).
+whole list. For G5 the cells are question-major, k-minor: each question
+contributes, for every k in `config.k_values`, a matched (vision-retrieval) then
+cross (text-retrieval) cell, all `TLV`. So with the default `(1, 3, 5, 7, 9)`
+that's 10 consecutive cells per question.
 
 ## The tasks, one by one
 
@@ -353,20 +401,22 @@ specific to each.
   real (imperfect) retrieval at a vision-bearing rung, compare *matched*
   (vision-retrieval feeding vision reasoning) against *cross* (text-retrieval
   feeding vision reasoning). Also records how good each retriever is.
-- **Corpus & reasoner.** Shared corpus; primary reasoner; both cells run at `TLV`.
-- **Cells & run.** Per question, two consecutive cells: `retrieved_vision_k{k}`
-  and `retrieved_text_k{k}`, where k = `config.k_values[0]` (default 1). The two
-  retrievers: **text** = BM25 over page text plus dense BGE similarity
-  (`bge-small-en-v1.5`); **vision** = ColQwen2.5 late-interaction over rendered
-  page images (retrieval renders at dpi 96). Both are memoized so a page is scored
-  once. In the generate phase the driver passes the real retrievers; in the judge
-  phase it passes guards that raise if called, so every retrieved cell must be a
-  prediction-cache hit.
-- **Data.** Standard per-cell records (with `condition` = the retriever name),
+- **Corpus & reasoner.** Shared corpus; primary reasoner; all cells run at `TLV`.
+- **Cells & run.** A full **top-k sweep**: for every k in `config.k_values`
+  (default `(1, 3, 5, 7, 9)`), per question two cells `retrieved_vision_k{k}` and
+  `retrieved_text_k{k}` (question-major, k-minor). The two retrievers: **text** =
+  BM25 over page text plus dense BGE similarity (`bge-small-en-v1.5`); **vision** =
+  ColQwen2.5 late-interaction over rendered page images (retrieval renders at dpi
+  96). Both are memoized by `(question, page_count, k)` so a ranking is computed
+  once even though multiple cells reuse it. In the generate phase the driver passes
+  the real retrievers; in the judge phase it passes guards that raise if called, so
+  every retrieved cell must be a prediction-cache hit.
+- **Data.** Standard per-cell records (with `condition` = `retrieved_{modality}_k{k}`),
   plus the side artifact `retrieval.jsonl`: one `RetrievalEvalRow` per (question,
-  retriever modality) with `retriever`, `modality`, `k`, `retrieved_pages`,
+  retriever modality, **k**) with `retriever`, `modality`, `k`, `retrieved_pages`,
   `gold_pages`, and page `precision` / `recall` / `f1`.
-- **Feeds.** Table 6 (matched vs cross).
+- **Feeds.** Table 6 (matched vs cross), which now reports **each k separately**
+  (a `k` column), so you can read matched-vs-cross as a function of retrieval depth.
 
 ### G6_classifier
 
@@ -420,8 +470,9 @@ re-running the model.
 
 Side artifacts are one record per unit, not per cell:
 
-- **`retrieval.jsonl`** (G5): one record per (question, retriever modality) with
-  the retriever name, modality, k, and page-retrieval precision / recall / F1.
+- **`retrieval.jsonl`** (G5): one record per (question, retriever modality, k) —
+  every k in the sweep is logged — with the retriever name, modality, k, and
+  page-retrieval precision / recall / F1.
 - **`classifier.jsonl`** (G6): one record per distinct document with `doc_id`,
   gold and predicted `doc_type`, gold and predicted `bin`, `correct_bin`,
   `confidence`, `latency_s`, and the classifier name.

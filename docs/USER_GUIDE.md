@@ -210,7 +210,7 @@ A cluster submits `cli/generate.py`; see `kaya/KAYA_USER_GUIDE.md`.
 | `G1_sufficiency` | oracle pages x the T/TL/TLV/V ladder, primary 8B | 1, 2, 5, 7 |
 | `G2_family` | the same ladder on InternVL3-8B | 3 (with G1) |
 | `G3_dataset` | the ladder on a held-out MMLongBench subset (text_heavy + in_between) | 4 |
-| `G5_retrieval` | matched/cross retrieval cells + retrieval R/P/F1 | 6 |
+| `G5_retrieval` | matched/cross retrieval cells swept over k=(1,3,5,7,9) + retrieval R/P/F1 per k | 6 |
 | `G6_classifier` | the doc-type classifier per document (side only) | 7 (routing price) |
 
 (A scale-sanity task for 2B/32B, feeding Table 8, is out of scope for now, so
@@ -341,8 +341,9 @@ python -m scripts.gates classifier-pilot --full \
 
 Table notes: **Table 4** replicates on a held-out subset of MMLongBench documents
 (disjoint docs for text_heavy/in_between; visual_heavy is out of scope for now, so
-that bin is blank). **Table 6** is only populated for bins whose Table-1 frontier
-is `TLV`/`V`. **Table 7** predicted routing reports the classifier's amortized
+that bin is blank). **Table 6** is only populated for bins where vision materially
+helps, and reports matched-vs-cross **per k** (a `k` column) across the G5 sweep
+`(1, 3, 5, 7, 9)`. **Table 7** predicted routing reports the classifier's amortized
 latency as its own column. **Table 8** (scale) shows the single primary size until
 a scale generation task exists.
 

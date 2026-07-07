@@ -18,6 +18,7 @@ Arguments:
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -426,18 +427,28 @@ def predict_frontier_from_composition(
     return max(candidates, key=lambda rung: rank.get(rung, -1))
 
 
+def _condition_k(condition: str) -> int | None:
+    """Parse the top-k from a `retrieved_{modality}_k{K}` conditioner name."""
+
+    match = re.search(r"_k(\d+)$", str(condition))
+    return int(match.group(1)) if match else None
+
+
 def _retrieval_summary_for(
     records: Sequence[Mapping[str, object]],
     *,
     doc_ids: set[str],
     modality: str,
+    k: int | None = None,
 ) -> dict[str, float]:
-    """Return macro retrieval metrics for selected docs/modality."""
+    """Return macro retrieval metrics for selected docs/modality (optionally one k)."""
 
     selected = [
         record
         for record in records
-        if str(record.get("doc_id", "")) in doc_ids and str(record.get("modality", "")) == modality
+        if str(record.get("doc_id", "")) in doc_ids
+        and str(record.get("modality", "")) == modality
+        and (k is None or "k" not in record or int(record.get("k", -1)) == k)
     ]
     if not selected:
         return {"retrieval_precision": 0.0, "retrieval_recall": 0.0, "retrieval_f1": 0.0}
@@ -487,9 +498,9 @@ def build_table6_matched_vs_cross(
         >= margin
     }
     retrieval_records = list(retrieval_records or [])
-    out: list[dict[str, object]] = []
     columns = [
         "bin",
+        "k",
         "pipeline",
         "condition",
         "retrieval_modality",
@@ -506,53 +517,66 @@ def build_table6_matched_vs_cross(
         "retrieval_recall",
         "retrieval_f1",
     ]
+    # The k-sweep produces retrieved_{modality}_k{K} conditions; report each k as
+    # its own matched-vs-cross pair. Fall back to a single implicit k if none parse.
+    sweep_ks = sorted(
+        {
+            _condition_k(row.condition)
+            for row in rows
+            if str(row.condition).startswith("retrieved_") and _condition_k(row.condition) is not None
+        }
+    )
+    out: list[dict[str, object]] = []
     for bin_name in bins:
         if bin_name not in vision_bins:
             continue
-        definitions = {
-            "matched_vision": [
-                row
-                for row in rows
-                if _safe_bin(row) == bin_name
-                and row.condition.startswith("retrieved_vision")
-                and row.representation in {"TLV", "V"}
-            ],
-            "cross_text_to_vision": [
-                row
-                for row in rows
-                if _safe_bin(row) == bin_name
-                and row.condition.startswith("retrieved_text")
-                and row.representation in {"TLV", "V"}
-            ],
-        }
-        baseline_acc = accuracy_summary(definitions["matched_vision"], n_bootstrap=n_bootstrap, seed=seed)
-        baseline_cost = cost_summary(definitions["matched_vision"])
-        for pipeline, group_rows in definitions.items():
-            acc = accuracy_summary(group_rows, n_bootstrap=n_bootstrap, seed=seed)
-            cost = cost_summary(group_rows)
-            modality = "vision" if pipeline == "matched_vision" else "text"
-            out.append(
-                {
-                    "bin": bin_name,
-                    "pipeline": pipeline,
-                    "condition": ",".join(sorted({row.condition for row in group_rows})) if group_rows else "",
-                    "retrieval_modality": modality,
-                    "reasoning_modality": "vision",
-                    "n_rows": acc.n_rows,
-                    "n_docs": acc.n_docs,
-                    "accuracy": acc.accuracy,
-                    "ci_low": acc.ci_low,
-                    "ci_high": acc.ci_high,
-                    "latency_bs1_s": cost.latency_bs1_s,
-                    "delta_accuracy_vs_matched": acc.accuracy - baseline_acc.accuracy,
-                    "delta_latency_vs_matched_s": cost.latency_bs1_s - baseline_cost.latency_bs1_s,
-                    **_retrieval_summary_for(
-                        retrieval_records,
-                        doc_ids={row.doc_id for row in group_rows},
-                        modality=modality,
-                    ),
-                }
-            )
+        for k in sweep_ks:
+            definitions = {
+                "matched_vision": [
+                    row
+                    for row in rows
+                    if _safe_bin(row) == bin_name
+                    and row.condition == f"retrieved_vision_k{k}"
+                    and row.representation in {"TLV", "V"}
+                ],
+                "cross_text_to_vision": [
+                    row
+                    for row in rows
+                    if _safe_bin(row) == bin_name
+                    and row.condition == f"retrieved_text_k{k}"
+                    and row.representation in {"TLV", "V"}
+                ],
+            }
+            baseline_acc = accuracy_summary(definitions["matched_vision"], n_bootstrap=n_bootstrap, seed=seed)
+            baseline_cost = cost_summary(definitions["matched_vision"])
+            for pipeline, group_rows in definitions.items():
+                acc = accuracy_summary(group_rows, n_bootstrap=n_bootstrap, seed=seed)
+                cost = cost_summary(group_rows)
+                modality = "vision" if pipeline == "matched_vision" else "text"
+                out.append(
+                    {
+                        "bin": bin_name,
+                        "k": k,
+                        "pipeline": pipeline,
+                        "condition": ",".join(sorted({row.condition for row in group_rows})) if group_rows else "",
+                        "retrieval_modality": modality,
+                        "reasoning_modality": "vision",
+                        "n_rows": acc.n_rows,
+                        "n_docs": acc.n_docs,
+                        "accuracy": acc.accuracy,
+                        "ci_low": acc.ci_low,
+                        "ci_high": acc.ci_high,
+                        "latency_bs1_s": cost.latency_bs1_s,
+                        "delta_accuracy_vs_matched": acc.accuracy - baseline_acc.accuracy,
+                        "delta_latency_vs_matched_s": cost.latency_bs1_s - baseline_cost.latency_bs1_s,
+                        **_retrieval_summary_for(
+                            retrieval_records,
+                            doc_ids={row.doc_id for row in group_rows},
+                            modality=modality,
+                            k=k,
+                        ),
+                    }
+                )
     return pd.DataFrame(out, columns=columns)
 
 

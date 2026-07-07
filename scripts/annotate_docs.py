@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import shutil
 import subprocess
 import sys
@@ -72,8 +73,18 @@ CHOICE_FIELDS: list[tuple[str, list[str], str | None]] = [
     ("multi_column", ["single", "multi"], None),
 ]
 
+# Fields that accept more than one value; stored as a ";"-joined string.
+MULTI_FIELDS = {"dominant_visual"}
+MULTI_SEP = ";"
+
 # Allowed human values (for a light validation pass in `score`).
 VALID = {field: set(options) for field, options, _ in CHOICE_FIELDS}
+
+
+def split_multi(value: str) -> list[str]:
+    """Split a stored multi-value cell into its tokens."""
+
+    return [token.strip() for token in (value or "").split(MULTI_SEP) if token.strip()]
 
 
 def unique_docs() -> dict[str, str]:
@@ -153,8 +164,12 @@ def invalid_values(rows: list[dict[str, str]]) -> list[str]:
     for row in rows:
         for column, allowed in VALID.items():
             value = (row.get(column) or "").strip()
-            if value and value not in allowed:
-                problems.append(f"{row['doc_id']}: {column}={value!r} not in {sorted(allowed)}")
+            if not value:
+                continue
+            tokens = split_multi(value) if column in MULTI_FIELDS else [value]
+            for token in tokens:
+                if token not in allowed:
+                    problems.append(f"{row['doc_id']}: {column}={token!r} not in {sorted(allowed)}")
     return problems
 
 
@@ -192,7 +207,7 @@ def score_sheet(rows: list[dict[str, str]]) -> dict:
         "scan_labelled": len(scan_labelled),
         "human_scanned": sum(1 for r in scan_labelled if r["scan_label"].strip() == "scanned"),
         "scan_agree": sum(1 for r in scan_labelled if r["scan_label"].strip() == r["auto_scan"].strip()),
-        "dominant_visual": dict(Counter((r.get("dominant_visual") or "").strip() for r in rows if (r.get("dominant_visual") or "").strip())),
+        "dominant_visual": dict(Counter(token for r in rows for token in split_multi(r.get("dominant_visual") or ""))),
         "multi_column": dict(Counter((r.get("multi_column") or "").strip() for r in rows if (r.get("multi_column") or "").strip())),
     }
 
@@ -256,6 +271,33 @@ def _prompt_choice(field: str, options: list[str], default: str | None) -> str |
         print("  invalid; enter one of the listed numbers")
 
 
+def _prompt_multi(field: str, options: list[str], default: str | None) -> str | None:
+    """Prompt a multi-select field. Return a ";"-joined value, or None to skip."""
+
+    current = split_multi(default or "")
+    print(f"\n{field} (multiple allowed):")
+    for i, option in enumerate(options, 1):
+        marker = "  <- current" if option in current else ""
+        print(f"  {i}) {option}{marker}")
+    while True:
+        raw = input("  select [comma-separated numbers / Enter=default / s=skip / q=save+quit]: ").strip().lower()
+        if raw == "q":
+            raise _Quit
+        if raw == "s":
+            return None
+        if raw == "" and current:
+            return MULTI_SEP.join(current)
+        tokens = [t for t in re.split(r"[,\s]+", raw) if t]
+        if tokens and all(t.isdigit() and 1 <= int(t) <= len(options) for t in tokens):
+            chosen: list[str] = []
+            for t in tokens:
+                option = options[int(t) - 1]
+                if option not in chosen:
+                    chosen.append(option)
+            return MULTI_SEP.join(chosen)
+        print("  invalid; enter one or more listed numbers separated by commas")
+
+
 def _prompt_notes(default: str) -> str:
     shown = f" [{default}]" if default else ""
     raw = input(f"\nnotes{shown} (Enter to keep): ").strip()
@@ -296,7 +338,8 @@ def _annotate_row(row: dict[str, str], *, open_cmd: str | None, do_open: bool) -
     for field, options, auto_col in CHOICE_FIELDS:
         current = (row.get(field) or "").strip()
         default = current or (row.get(auto_col, "") if auto_col else "") or None
-        choice = _prompt_choice(field, options, default)
+        prompt = _prompt_multi if field in MULTI_FIELDS else _prompt_choice
+        choice = prompt(field, options, default)
         if choice is not None:
             row[field] = choice
     row["notes"] = _prompt_notes((row.get("notes") or "").strip())

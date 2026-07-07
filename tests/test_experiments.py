@@ -129,6 +129,27 @@ def fake_channels(monkeypatch):
     monkeypatch.setattr(representation, "layout_channel", lambda pages: tuple("{}" for _ in pages))
 
 
+def test_matched_cross_sweep_cells_cover_every_k() -> None:
+    from covariates.retriever import StubRetriever
+    from experiments.base import matched_cross_sweep_cells
+
+    question = Question(
+        id="q1", doc_id="d.pdf", question="?", gold_answer="x", answer_format="String",
+        doc_type="Brochure", evidence_pages=(0,), evidence_sources=("Chart",),
+        hop="single", is_unanswerable=False,
+    )
+    cells = matched_cross_sweep_cells(
+        [question], retrievers=Retrievers(StubRetriever(), StubRetriever()), ks=(1, 3, 5)
+    )
+    # question-major, k-minor, matched (vision) then cross (text) per k
+    assert [c.conditioner.name for c in cells] == [
+        "retrieved_vision_k1", "retrieved_text_k1",
+        "retrieved_vision_k3", "retrieved_text_k3",
+        "retrieved_vision_k5", "retrieved_text_k5",
+    ]
+    assert all(c.representation == "TLV" for c in cells)
+
+
 def test_prediction_key_is_judge_independent() -> None:
     q = Question(
         id="q1", doc_id="d.pdf", question="?", gold_answer="x", answer_format="String",

@@ -118,3 +118,19 @@ def test_matched_cross_rows_are_well_formed_for_vision_bins() -> None:
     cross = table.set_index("pipeline").loc["cross_text_to_vision"]
     assert cross["delta_accuracy_vs_matched"] == -1.0
     assert cross["retrieval_f1"] == 0.0
+
+
+def test_table6_reports_each_swept_k_separately() -> None:
+    rows = ladder_rows("q-vis", "d-vis", "Brochure", ("Chart",))
+    # vision retrieval improves with k; text retrieval stays wrong. Two k values.
+    for k, vision_ok in ((1, False), (3, True)):
+        rows.append(row(question_id="q-vis", doc_id="d-vis", doc_type="Brochure", representation="TLV",
+                        correct=vision_ok, evidence_sources=("Chart",), condition=f"retrieved_vision_k{k}"))
+        rows.append(row(question_id="q-vis", doc_id="d-vis", doc_type="Brochure", representation="TLV",
+                        correct=False, evidence_sources=("Chart",), condition=f"retrieved_text_k{k}"))
+
+    table = build_table6_matched_vs_cross(rows, margin_points=0.0, n_bootstrap=0)
+
+    assert set(table["k"]) == {1, 3}
+    matched = table[(table["pipeline"] == "matched_vision")].set_index("k")["accuracy"]
+    assert matched.loc[1] == 0.0 and matched.loc[3] == 1.0  # per-k, not pooled

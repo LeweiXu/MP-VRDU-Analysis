@@ -114,3 +114,33 @@ def matched_cross_cells(
         cells.append(Cell(question, vision, representation))
         cells.append(Cell(question, text, representation))
     return cells
+
+
+def matched_cross_sweep_cells(
+    questions: Sequence[Question],
+    *,
+    retrievers: Retrievers,
+    ks: Sequence[int],
+    representation: Modality = "TLV",
+) -> list[Cell]:
+    """Matched/cross cells swept over several top-k values.
+
+    Question-major, k-minor: for each question, every k contributes a matched
+    (vision-retrieval) then cross (text-retrieval) cell, so one question's k-1..k-N
+    cells sit together. The `retrieved_{modality}_k{k}` conditioner name carries k,
+    so each k lands in its own prediction-cache row and Table 6 can separate them.
+    """
+
+    conditioners = [
+        (
+            RetrievedTopK(retrievers.vision, k, name=f"retrieved_vision_k{k}"),
+            RetrievedTopK(retrievers.text, k, name=f"retrieved_text_k{k}"),
+        )
+        for k in ks
+    ]
+    cells: list[Cell] = []
+    for question in questions:
+        for vision, text in conditioners:
+            cells.append(Cell(question, vision, representation))
+            cells.append(Cell(question, text, representation))
+    return cells

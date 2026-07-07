@@ -20,21 +20,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.base import Cell, GenerationTask, Retrievers, matched_cross_cells
+from experiments.base import Cell, GenerationTask, Retrievers, matched_cross_sweep_cells
 
 
 class G5Retrieval(GenerationTask):
     name = "G5_retrieval"
     side_artifact = "retrieval.jsonl"
 
-    def _top_k(self, config) -> int:
-        return int(config.k_values[0] if config.k_values else 1)
+    def _k_values(self, config) -> tuple[int, ...]:
+        return tuple(config.k_values) if config.k_values else (1,)
 
     def model_specs(self, config) -> tuple[str, ...]:
         return (config.reasoner_spec,)
 
     def generation_cells(self, config, questions, *, retrievers: Retrievers) -> list[Cell]:
-        return matched_cross_cells(questions, retrievers=retrievers, k=self._top_k(config))
+        return matched_cross_sweep_cells(questions, retrievers=retrievers, ks=self._k_values(config))
 
     def run_side(self, config, questions, side_dir: Path) -> None:
         """Log page R/P/F1 for both retrievers (evidence-modality diagnostic)."""
@@ -46,7 +46,7 @@ class G5Retrieval(GenerationTask):
         from data.render import pdf_page_count
         from metrics.retrieval import score_retrieval
 
-        top_k = self._top_k(config)
+        k_values = self._k_values(config)
         text = MemoizedRetriever(
             BM25BGERetriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)
         )
@@ -58,11 +58,12 @@ class G5Retrieval(GenerationTask):
             for question in questions:
                 page_count = pdf_page_count(resolve_pdf(question.doc_id, config.paths.data_dir))
                 for modality, retriever in (("vision", vision), ("text", text)):
-                    ranked = retriever.retrieve(question, page_count, top_k)
-                    record = asdict(
-                        score_retrieval(question, ranked, retriever=retriever.name, modality=modality, k=top_k)
-                    )
-                    for key, value in list(record.items()):
-                        if isinstance(value, tuple):
-                            record[key] = list(value)
-                    handle.write(json.dumps(record, sort_keys=True) + "\n")
+                    for k in k_values:
+                        ranked = retriever.retrieve(question, page_count, k)
+                        record = asdict(
+                            score_retrieval(question, ranked, retriever=retriever.name, modality=modality, k=k)
+                        )
+                        for key, value in list(record.items()):
+                            if isinstance(value, tuple):
+                                record[key] = list(value)
+                        handle.write(json.dumps(record, sort_keys=True) + "\n")

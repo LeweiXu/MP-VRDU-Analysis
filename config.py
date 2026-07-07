@@ -155,7 +155,7 @@ class ExperimentConfig:
 
     # Input conditions and their grids.
     conditions: tuple[str, ...] = ("oracle", "retrieved", "full", "buried")
-    k_values: tuple[int, ...] = (1, 3, 5)
+    k_values: tuple[int, ...] = (1, 3, 5, 7, 9)
     burying_levels: tuple[int, ...] = (10, 25, 50)
 
     # Representation ladder.

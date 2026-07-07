@@ -1,5 +1,5 @@
 doc_id,pdf_path,doc_type,auto_bin,auto_scan,avg_chars_per_page,page_count,bin_label,scan_label,dominant_visual,multi_column,notes
-05-03-18-political-release.pdf,.data/mmlongbench/documents/05-03-18-political-release.pdf,Research report / Introduction,text_heavy,digital,1298.2,17,,,,,
+05-03-18-political-release.pdf,.data/mmlongbench/documents/05-03-18-political-release.pdf,Research report / Introduction,text_heavy,digital,1298.2,17,in_between,digital,figures,,
 0b85477387a9d0cc33fca0f4becaa0e5.pdf,.data/mmlongbench/documents/0b85477387a9d0cc33fca0f4becaa0e5.pdf,Administration/Industry file,text_heavy,digital,3875.6,16,,,,,
 0e94b4197b10096b1f4c699701570fbf.pdf,.data/mmlongbench/documents/0e94b4197b10096b1f4c699701570fbf.pdf,Tutorial/Workshop,in_between,digital,173.0,15,,,,,
 11-21-16-Updated-Post-Election-Release.pdf,.data/mmlongbench/documents/11-21-16-Updated-Post-Election-Release.pdf,Research report / Introduction,text_heavy,digital,1563.4,45,,,,,
