@@ -24,13 +24,13 @@ from pathlib import Path
 
 
 def project_root(start: Path | None = None) -> Path:
-    """Return the repository root by walking up to `docs/implementation_plan.md`."""
+    """Return the repository root by walking up to the repo's `README.md`."""
 
     current = (start or Path(__file__)).resolve()
     if current.is_file():
         current = current.parent
     for candidate in [current, *current.parents]:
-        if (candidate / "docs/implementation_plan.md").is_file():
+        if (candidate / "README.md").is_file() and (candidate / "config.py").is_file():
             return candidate
     raise FileNotFoundError("could not locate repository root")
 
@@ -187,7 +187,7 @@ class ExperimentConfig:
     # "4bit", or "8bit". When set, it is appended to `reasoner_spec` as a
     # `-4bit`/`-8bit` suffix so the quantized run gets its own cache rows and the
     # 8B fits a single 16GB V100. Main tables stay bf16; this is for single-GPU
-    # iteration / the appendix quant-sensitivity row (see SINGLE_GPU_8B_FEASIBILITY.md).
+    # iteration / the appendix quant-sensitivity row (see docs/AGENT_GUIDE.md).
     quantization: str | None = None
     max_tokens: int = DEFAULT_MAX_TOKENS
 

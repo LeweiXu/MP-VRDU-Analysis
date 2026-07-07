@@ -1,7 +1,7 @@
 """Tests for the inference-inspection and document-annotation tooling.
 
 Purpose:
-    Covers `experiments/inspect.py` (joining cached predictions + judged rows +
+    Covers `gates/viewer.py` (joining cached predictions + judged rows +
     questions, filtering, and the all-fields markdown), the shared
     `data.render.classify_scanned` heuristic, and `scripts/annotate_docs.py`
     seeding + scoring. No GPU, no API, no real corpus: everything runs on a tiny
@@ -20,7 +20,7 @@ import pandas as pd
 from config import ExperimentConfig, ProjectPaths
 from data.loader import load_mmlongbench
 from data.render import classify_scanned
-from experiments.inspect import select_items, write_item
+from gates.viewer import select_items, write_item
 from experiments.paths import experiment_paths
 from pipeline.orchestrator import CachedPrediction, PredictionCache, ResultCache, ResultRow
 from scripts.annotate_docs import invalid_values, row_is_annotated, score_sheet

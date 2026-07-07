@@ -13,7 +13,7 @@ Purpose:
 
 Pipeline role:
     Used by `scripts/inspect_results.py` (browse cells) and the gate-F2
-    human-judging packet in `experiments/gates.py`.
+    human-judging packet in `gates/core.py`.
 
 Arguments:
     None. Import-only; callers pass an `ExperimentConfig`, a task name, and
@@ -31,7 +31,7 @@ from config import ExperimentConfig
 from data.loader import load_mmlongbench, resolve_pdf
 from data.render import render_pdf
 from experiments.paths import experiment_paths
-from experiments.tables import load_result_rows
+from reporting.tables import load_result_rows
 from pipeline.orchestrator import CachedPrediction, PredictionCache, ResultRow
 from schema import Question
 

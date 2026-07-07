@@ -17,10 +17,10 @@ Arguments:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from experiments.base import Cell, GenerationTask, Retrievers, matched_cross_sweep_cells
+from experiments.side_artifacts import write_retrieval_eval
 
 
 class G5Retrieval(GenerationTask):
@@ -37,33 +37,12 @@ class G5Retrieval(GenerationTask):
         return matched_cross_sweep_cells(questions, retrievers=retrievers, ks=self._k_values(config))
 
     def run_side(self, config, questions, side_dir: Path) -> None:
-        """Log page R/P/F1 for both retrievers (evidence-modality diagnostic)."""
+        """Log page R/P/F1 for both retrievers (evidence-modality diagnostic).
 
-        from dataclasses import asdict
-
-        from covariates.retriever import BM25BGERetriever, ColQwenRetriever, MemoizedRetriever
-        from data.loader import resolve_pdf
-        from data.render import pdf_page_count
-        from metrics.retrieval import score_retrieval
+        Vision-then-text, k-ascending: the same emission order as before the shared
+        writer, so existing retrieval.jsonl caches stay byte-identical.
+        """
 
         k_values = self._k_values(config)
-        text = MemoizedRetriever(
-            BM25BGERetriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)
-        )
-        vision = MemoizedRetriever(
-            ColQwenRetriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)
-        )
-        side_dir.mkdir(parents=True, exist_ok=True)
-        with (side_dir / self.side_artifact).open("w") as handle:
-            for question in questions:
-                page_count = pdf_page_count(resolve_pdf(question.doc_id, config.paths.data_dir))
-                for modality, retriever in (("vision", vision), ("text", text)):
-                    for k in k_values:
-                        ranked = retriever.retrieve(question, page_count, k)
-                        record = asdict(
-                            score_retrieval(question, ranked, retriever=retriever.name, modality=modality, k=k)
-                        )
-                        for key, value in list(record.items()):
-                            if isinstance(value, tuple):
-                                record[key] = list(value)
-                        handle.write(json.dumps(record, sort_keys=True) + "\n")
+        pairs = [("vision", k) for k in k_values] + [("text", k) for k in k_values]
+        write_retrieval_eval(config, questions, pairs, side_dir, filename=self.side_artifact)

@@ -1,7 +1,7 @@
 """Build phase (local): aggregate judged rows into the eight paper tables.
 
 Purpose:
-    The thin local entry point over `experiments.reporting.build_tables`. It reads
+    The thin local entry point over `reporting.build.build_tables`. It reads
     each generation task's judged `results.jsonl`, routes rows per the table ->
     source-task map, and writes the eight CSVs plus a combined `all_tables.md`.
     The CSVs are the source of truth; the markdown is for readability.
@@ -27,7 +27,7 @@ from pathlib import Path
 
 from experiments.driver import config_from_args
 from experiments.paths import configure_logging, mode
-from experiments.reporting import build_tables_from_artifacts
+from reporting.build import build_tables_from_artifacts
 
 
 def build_parser() -> argparse.ArgumentParser:

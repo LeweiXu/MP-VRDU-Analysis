@@ -6,10 +6,11 @@ Purpose:
     wrappers.
 
 Pipeline role:
-    `cli` holds only the three experiment roles, thin wrappers over the
-    `experiments` package: `cli.generate` (GPU), `cli.judge`, and `cli.build`.
-    Standalone utilities (feasibility probes `scripts.run_probe`, Section-2 gates
-    `scripts.gates`, inspection, annotation) live under `scripts/`.
+    `cli` holds only the three experiment roles: `cli.generate` (GPU), `cli.judge`,
+    and `cli.build`. Table building lives in the `reporting` package and the
+    Section-2 gates in the `gates` package (`python -m gates`); standalone utilities
+    (feasibility probes `scripts.run_probe`, inspection, annotation) live under
+    `scripts/`.
 
 Arguments:
     None. This package initializer is import-only; arguments live in the

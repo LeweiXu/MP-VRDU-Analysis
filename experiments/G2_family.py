@@ -7,7 +7,7 @@ Purpose:
 
 Pipeline role:
     One `GenerationTask`. Its InternVL rows plus G1's primary-family rows build
-    Table 3 (see `experiments/tables.py` routing).
+    Table 3 (see `reporting.tables` routing).
 
 Arguments:
     None. Import-only; the registry instantiates `G2Family()`.

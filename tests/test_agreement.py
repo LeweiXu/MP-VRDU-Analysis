@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.gates import (
+from gates.core import (
     agreement_gate,
     cohen_kappa,
     score_agreement_sheet,

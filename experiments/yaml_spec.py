@@ -31,14 +31,11 @@ from typing import Any
 import yaml
 
 from config import ExperimentConfig
-from covariates.retriever import BM25BGERetriever, ColQwenRetriever, MemoizedRetriever
 from data.binning import doc_type_bin
-from data.loader import resolve_pdf
-from data.render import pdf_page_count
 from experiments.base import Cell, GenerationTask, Retrievers
 from experiments.corpus import sample_table4_replication
 from experiments.paths import experiment_paths
-from metrics.retrieval import score_retrieval
+from experiments.side_artifacts import write_classifier_eval, write_retrieval_eval
 from pipeline.conditioner import BuriedOracle, FullDoc, InputConditioner, OracleConditioner, RetrievedTopK
 from schema import Modality, Question
 from tools.text import ANNOTATION_SHEET
@@ -281,9 +278,10 @@ class YamlGenerationTask(GenerationTask):
 
     def run_side(self, config: ExperimentConfig, questions: Sequence[Question], side_dir: Path) -> None:
         if self.retrieval_eval:
-            _write_retrieval_eval(config, questions, self.conditions, side_dir)
+            pairs = sorted({(c.retriever or "", int(c.k or 1)) for c in self.conditions if c.type == "retrieved"})
+            write_retrieval_eval(config, questions, pairs, side_dir)
         if self.classifier_eval:
-            _write_classifier_eval(config, questions, side_dir)
+            write_classifier_eval(config, questions, side_dir)
 
 
 @dataclass(frozen=True)
@@ -382,73 +380,3 @@ def load_yaml_experiment(path: Path) -> YamlExperiment:
         tasks=tasks,
         sha256=hashlib.sha256(source.encode()).hexdigest(),
     )
-
-
-def _write_retrieval_eval(
-    config: ExperimentConfig,
-    questions: Sequence[Question],
-    conditions: Sequence[ConditionSpec],
-    side_dir: Path,
-) -> None:
-    """Write retrieval R/P/F1 records for retrieved YAML conditions."""
-
-    wanted = sorted({(c.retriever or "", int(c.k or 1)) for c in conditions if c.type == "retrieved"})
-    if not wanted:
-        return
-    retrievers = {
-        "text": MemoizedRetriever(BM25BGERetriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)),
-        "vision": MemoizedRetriever(ColQwenRetriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)),
-    }
-    side_dir.mkdir(parents=True, exist_ok=True)
-    with (side_dir / "retrieval.jsonl").open("w") as handle:
-        for question in questions:
-            page_count = pdf_page_count(resolve_pdf(question.doc_id, config.paths.data_dir))
-            for modality, k in wanted:
-                ranked = retrievers[modality].retrieve(question, page_count, k)
-                record = score_retrieval(question, ranked, retriever=retrievers[modality].name, modality=modality, k=k)
-                data = record.__dict__.copy()
-                for key, value in list(data.items()):
-                    if isinstance(value, tuple):
-                        data[key] = list(value)
-                handle.write(json.dumps(data, sort_keys=True) + "\n")
-
-
-def _write_classifier_eval(config: ExperimentConfig, questions: Sequence[Question], side_dir: Path) -> None:
-    """Write document classifier records, matching the legacy G6 side artifact."""
-
-    from covariates.classifier import QwenDocTypeClassifier
-
-    classifier = QwenDocTypeClassifier(
-        data_dir=config.paths.data_dir,
-        cache_dir=config.paths.cache_dir,
-        dpi=config.dpi,
-        max_pixels=config.max_pixels,
-        max_input_tokens=config.max_input_tokens,
-    )
-    seen: set[str] = set()
-    side_dir.mkdir(parents=True, exist_ok=True)
-    with (side_dir / "classifier.jsonl").open("w") as handle:
-        for question in questions:
-            if question.doc_id in seen:
-                continue
-            seen.add(question.doc_id)
-            prediction = classifier.classify(question)
-            gold_bin = doc_type_bin(question.doc_type)
-            predicted_bin = str(prediction.bin or gold_bin)
-            handle.write(
-                json.dumps(
-                    {
-                        "doc_id": question.doc_id,
-                        "gold_doc_type": question.doc_type,
-                        "predicted_doc_type": prediction.doc_type,
-                        "gold_bin": gold_bin,
-                        "predicted_bin": predicted_bin,
-                        "correct_bin": predicted_bin == gold_bin,
-                        "confidence": prediction.confidence,
-                        "latency_s": prediction.latency_s,
-                        "classifier": classifier.name,
-                    },
-                    sort_keys=True,
-                )
-                + "\n"
-            )

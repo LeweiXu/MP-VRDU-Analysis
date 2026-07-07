@@ -13,10 +13,10 @@ Pipeline role:
     trusted.
 
 CLI:
-    `python -m scripts.gates <frontier|agreement-sample|agreement-score|classifier-pilot|classifier-score> ...`
+    `python -m gates <frontier|agreement-sample|agreement-score|classifier-pilot|classifier-score> ...`
 
 Arguments:
-    See `python -m scripts.gates --help` and each subcommand's help text.
+    See `python -m gates --help` and each subcommand's help text.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from pathlib import Path
 from config import ROOT, ExperimentConfig
 from covariates.classifier import QwenDocTypeClassifier
 from experiments.corpus import load_questions
-from experiments.gates import (
+from gates.core import (
     agreement_sheet_rows,
     classifier_pilot_sample,
     frontier_divergence_gate,
@@ -44,7 +44,7 @@ from experiments.gates import (
     write_gate_json,
 )
 from experiments.paths import experiment_paths
-from experiments.tables import load_result_rows
+from reporting.tables import load_result_rows
 from scripts.prestage import prepare_tool_cache_env
 
 

@@ -1,9 +1,10 @@
 """The generation-task registry: names -> `GenerationTask`, plus groups.
 
 Purpose:
-    One place that lists every generation task and the run order. The driver and
-    CLIs resolve `--generation <name|group>` through here, so adding a task is a
-    one-line change (import the new `experiments/G*_*.py` class and append it).
+    One place that lists every generation task and the run order. The driver task
+    loops (`run_generate`/`run_judge`) and the table-routing in `reporting` resolve
+    a task name/group through here, so adding a task is a one-line change (import
+    the new `experiments/G*_*.py` class and append it).
 
 Pipeline role:
     Maps `experiments/G*_*.py` to stable names. `GENERATION_TASKS` is the dict,

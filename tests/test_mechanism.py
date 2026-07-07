@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from experiments.tables import (
+from reporting.tables import (
     build_table5_composition_mediation,
     build_table6_matched_vs_cross,
     predict_frontier_from_composition,

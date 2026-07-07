@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.gates import frontier_divergence_gate, load_table1_frontiers
+from gates.core import frontier_divergence_gate, load_table1_frontiers
 
 
 def test_frontier_gate_returns_no_go_when_all_bins_match() -> None:

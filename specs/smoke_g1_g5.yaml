@@ -1,6 +1,6 @@
 version: 1
-name: smoke-generation-template
-run_tag: yaml-smoke
+name: smoke-g1-g5
+run_tag: yaml-smoke-g1-g5
 mode: smoke
 dataset: mmlongbench
 
@@ -15,15 +15,6 @@ runs:
     questions:
       limit: 2
     models: [qwen3vl-2b-local]
-    cells:
-      conditions:
-        - type: oracle
-      representations: [T, TL]
-
-  - name: G2_family
-    questions:
-      limit: 1
-    models: [internvl3-8b-local]
     cells:
       conditions:
         - type: oracle

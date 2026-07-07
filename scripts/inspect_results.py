@@ -6,7 +6,7 @@ Purpose:
     was fed, and an `info.md` with the question, gold pages, gold answer, model
     answer, every cached generate/judge field, and (if the judge phase ran) the
     verdict. Output goes to a gitignored `inspect/` folder at the repo root. This
-    is a thin wrapper over `experiments.inspect`.
+    is a thin wrapper over `gates.viewer`.
 
 Pipeline role:
     A standalone debugging utility; it reads the prediction/result caches a run
@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import ROOT, ExperimentConfig  # noqa: E402
-from experiments.inspect import select_items, write_item  # noqa: E402
+from gates.viewer import select_items, write_item  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:

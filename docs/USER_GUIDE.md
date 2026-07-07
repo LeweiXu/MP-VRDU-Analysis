@@ -1,12 +1,11 @@
 # User guide: A Doc-Type Recipe for Multi-Page Document QA (v3)
 
 > The user-facing guide: *what* the paper claims and *why* (below), plus *how to
-> run* the experiments (the Runbook at the end). The companion
-> `implementation_plan.md` governs how the codebase is built, and
-> `docs/AGENT_GUIDE.md` holds the implementation decisions and reference. This
-> guide mirrors the v3 experimental plan and supersedes all earlier
-> multi-topic / nine-RQ / three-topic specs. Where an older doc disagrees, this
-> file is current.
+> run* the experiments (the Runbook at the end). `README.md` is the ground truth
+> for how the codebase is built, and `docs/AGENT_GUIDE.md` holds the
+> implementation decisions and reference. This guide mirrors the v3 experimental
+> plan and supersedes all earlier multi-topic / nine-RQ / three-topic specs.
+> Where an older doc disagrees, this file is current.
 
 ---
 
@@ -63,8 +62,8 @@ parser-independent reference.
 **RQ1 — Recipe by doc type (what to build).** Given the correct pages, what is the cheapest
 representation that lets an 8B MLLM reason to an answer, and does that frontier depend on document
 type? *Deliverable:* a 3-row headline table (text-heavy / in-between / visual-heavy) × four
-representations, sufficiency frontier marked; replicated on a second model family and a second
-dataset.
+representations, sufficiency frontier marked; replicated on a second model family and a held-out
+document set.
 
 **RQ2 — Mechanism behind the recipe (why it looks that way).** What explains the doc-type effect,
 and does retrieval require the same modality as reasoning? *Deliverable:* (a) the doc-type effect
@@ -91,7 +90,7 @@ Every choice below is fixed before the main runs.
 - **Doc-type binning (Option A, fixed):** MMLongBench-Doc native `doc_type` categories aggregated
   by semantic domain into three bins:
   - **Text-heavy** = Administration/Industry file + Academic paper + Research report/Introduction
-    (**578 Q / 54 docs**).
+    (**578 Q / 70 docs**).
   - **In-between** = Financial report + Guidebook + Tutorial/Workshop (**412 Q / 50 docs**).
   - **Visual-heavy** = Brochure (**101 Q / 15 docs**).
   Data-driven clustering by evidence-modality distribution is reported in the Appendix as
@@ -104,21 +103,24 @@ Every choice below is fixed before the main runs.
   (Marker vs PyMuPDF) in the Appendix.
 - **Reasoner:** Qwen3-VL-8B primary. InternVL3-8B replicates the RQ1 headline table only.
   Qwen3-VL-2B / 32B for scale sanity in the Appendix.
-- **Retrieval:** BM25 + BGE-large (text), ColQwen (vision). RQ2 compares *matched* (retrieval
-  modality = reasoning modality) vs *cross* (text retrieval + vision reasoning). Vision-retrieval +
-  text-reasoning is not tested (no practical rationale; inflates the comparison surface).
-- **Judge:** GPT-4o-mini (different family from Qwen and InternVL). Judge–human agreement on 200
-  hand-labelled questions; **Cohen's κ ≥ 0.75 required** before any main-run number is trusted.
-- **Confidence:** every headline number carries a bootstrap 95% CI (1000 resamples over
-  questions). A frontier claim requires the cheaper representation's CI upper bound to reach within
-  3 points of the strongest representation's point estimate.
+- **Retrieval:** BM25 + BGE (`bge-small-en-v1.5`) for text, ColQwen (`colqwen2.5-v0.2`) for vision,
+  swept over k in {1, 3, 5, 7, 9}. RQ2 compares *matched* (retrieval modality = reasoning modality)
+  vs *cross* (text retrieval + vision reasoning). Vision-retrieval + text-reasoning is not tested
+  (no practical rationale; inflates the comparison surface).
+- **Judge:** a different family from the reasoner. Gemini 2.5 Flash is the default (free tier);
+  GPT-4o-mini is the paid alternative. Judge-human agreement on 200 hand-labelled questions;
+  **Cohen's κ ≥ 0.75 required** before any main-run number is trusted.
+- **Confidence:** every headline number carries a **document-level** bootstrap 95% CI (1000
+  resamples over documents, because questions cluster within docs). A frontier claim requires the
+  cheaper representation's CI upper bound to reach within 3 points of the strongest
+  representation's point estimate.
 
 ## 7. Experiments
 
 - **Exp 1 · RQ1 — Recipe by document type.** Sweep the ladder on oracle pages with Qwen3-VL-8B;
   fill the 3×4 headline table (Table 1), mark the frontier; re-slice by question type into the
   analytical 3×4 (Table 2, not for deployment); replicate the headline on InternVL3-8B (Table 3)
-  and LongDocURL (Table 4).
+  and on a held-out MMLongBench document subset (Table 4).
 - **Exp 2 · RQ2 — Mechanism.** (a) Evidence-composition mediation: decompose each doc-type bin
   into shares of text/table/chart/figure/layout evidence; show per-modality frontier + composition
   predicts the doc-type frontier (Table 5). (b) Retrieval-side modality: on cells where RQ1 says
@@ -140,8 +142,8 @@ Every choice below is fixed before the main runs.
   if all three land on the same rung → doc-type is not a useful axis; reframe around evidence
   composition alone.
 - **Gate 2 · Judge–human agreement.** Hand-label 200 questions across doc-type × question-type
-  strata. **Go** if GPT-4o-mini reaches κ ≥ 0.75. **No-go** → iterate the judge prompt or fall back
-  to GPT-4o full before any main run.
+  strata. **Go** if the judge (Gemini 2.5 Flash) reaches κ ≥ 0.75. **No-go** → iterate the judge
+  prompt or fall back to a stronger judge before any main run.
 - **Gate 3 · Classifier feasibility.** On a 100-doc pilot, run Qwen3-VL-2B few-shot doc-type
   classification from the first two pages. **Go** if top-1 ≥ 70%. **No-go** → upgrade the
   classifier or scope RQ3 to the oracle-routing upper bound only.
@@ -156,10 +158,11 @@ Every choice below is fixed before the main runs.
 - **Sampling correlation.** Questions cluster within documents (135 docs, 1091 Q). Any subsetting
   and all CIs are handled at the **document level** (draw documents, take their questions) so
   precision is not overstated.
-- **Qwen3-VL API availability.** `transformers==4.53.2` did not expose the Qwen3-VL model class at
-  Stage 1; resolving the load path (transformers upgrade within the vLLM/colpali window, or a
-  confirmed vLLM path) is on the critical path before Gate 1, since every number needs a working
-  8B reasoner.
+- **V100 hardware limits.** Kaya's V100s are Volta (sm_70): no FlashAttention-2, so attention can
+  fall back to an O(seq²) kernel that OOMs long multi-page sequences, and the 8B does not fit one
+  V100 in bf16. Mitigations are baked in (efficient-attention kernel, per-size input-token and
+  vision-pixel caps, the >10-evidence-page drop, per-cell skip on OOM, 2×V100 sharding or 4-bit).
+  The 32B is out of scope on our hardware; it needs the supervisor's A100.
 
 ## 10. What was cut (and where it went)
 
@@ -229,7 +232,7 @@ small 2B smoke template. Representations may be any ordered combination of text
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--spec PATH` | required for generate | YAML generation spec. Legacy `--generation` is deprecated. |
+| `--spec PATH` | required for generate | YAML generation spec; it carries all run config. |
 | `--full` | off (smoke) | Full corpus + 8B reasoner. Without it: the frozen ~7-doc smoke corpus + 2B. |
 | `--judge SPEC` | `gemini` | (judge only) `gemini` (free tier), `gpt-4o-mini` (paid), or `stub` (offline). |
 | `--questions N` | none | Global cap: first N questions. Overrides `--per-bin-questions`. |
@@ -330,16 +333,16 @@ Judge API keys live only in the local `.env` (`GEMINI_API_KEY` /
 
 ```bash
 # F1: Go if >=2 bins differ. --table defaults to the Table-1 CSV for the mode/run-tag.
-python -m scripts.gates frontier --run-tag bf16-lowres \
+python -m gates frontier --run-tag bf16-lowres \
     --json-output results/gates/F1_frontier_divergence.json
 # F2: 200-row sheet + a viewing packet (page images) under results/gates/agreement_view/.
 # --results defaults to G1's results.jsonl for the mode/run-tag.
-python -m scripts.gates agreement-sample --full --run-tag bf16-lowres \
+python -m gates agreement-sample --full --run-tag bf16-lowres \
     --output results/gates/agreement_sample.csv
 # hand-label the human_label column in the CSV (open agreement_view.md alongside), then:
-python -m scripts.gates agreement-score --sheet results/gates/agreement_sample.csv \
+python -m gates agreement-score --sheet results/gates/agreement_sample.csv \
     --json-output results/gates/F2_judge_human_agreement.json    # F2: Cohen's kappa, gate 0.75
-python -m scripts.gates classifier-pilot --full \
+python -m gates classifier-pilot --full \
     --output results/gates/classifier_pilot.csv \
     --json-output results/gates/F3_classifier_feasibility.json   # F3: gate top-1 bin accuracy 0.70
 ```

@@ -10,7 +10,7 @@ Purpose:
       `_SpecOnlyReasoner`);
     - task definitions live one-per-file in `experiments/G*_*.py`
       (`experiments.registry` collects them);
-    - `experiments.reporting` routes each task's judged rows into the eight table
+    - `reporting.build` routes each task's judged rows into the eight table
       CSVs; a table with no source rows still emits a skeleton.
 
 Test role:
@@ -33,12 +33,13 @@ import pytest
 
 from config import ExperimentConfig, ProjectPaths
 from data.loader import load_mmlongbench
-from experiments import driver, reporting
+from experiments import driver
 from experiments.base import Retrievers
 from experiments.driver import _GuardRetriever, _SpecOnlyReasoner
 from experiments.paths import experiment_paths
 from experiments.registry import GENERATION_TASKS, resolve
-from experiments.tables import build_table1_headline
+from reporting import build as reporting_build
+from reporting.tables import build_table1_headline
 from models.payload import ModelInput
 from pipeline.judge import Judge, StubJudge
 from pipeline.orchestrator import (
@@ -201,7 +202,7 @@ def test_guards_refuse_to_run() -> None:
     )
     with pytest.raises(RuntimeError, match="judge phase"):
         _GuardRetriever("colqwen").retrieve(q, 5, 1)
-    with pytest.raises(RuntimeError, match="judge phase"):
+    with pytest.raises(RuntimeError, match="no weights loaded"):
         _SpecOnlyReasoner("spec").answer(q, ModelInput(parts=()))
 
 
@@ -253,7 +254,7 @@ def test_build_gates_tables_on_finished_dependencies(tmp_path: Path, fake_channe
     # Only G1 is generated and judged; G2/G3/G5/G6 never run.
     driver.generate(config, GENERATION_TASKS["G1_sufficiency"], questions)
     driver.run_judge(config, "G1_sufficiency", questions, judge_impl=KeywordJudge(), continue_on_error=True)
-    written = reporting.build_tables(config, config.paths.results_dir / "tables" / "smoke",
+    written = reporting_build.build_tables(config, config.paths.results_dir / "tables" / "smoke",
                                  n_bootstrap=0, markdown_path=tmp_path / "all_tables.md")
 
     # G1-sourced tables build and have rows.
@@ -263,11 +264,48 @@ def test_build_gates_tables_on_finished_dependencies(tmp_path: Path, fake_channe
     # Tables whose dependencies aren't finished are not written at all (no
     # misleading skeleton). table8 is blocked because its G4 scale task
     # doesn't exist; table3/4/6/7 wait on G2/G3/G5/G6.
-    from experiments.tables import TABLE_FILENAMES
+    from reporting.tables import TABLE_FILENAMES
     for key in ("table3", "table4", "table6", "table7", "table8"):
         assert key not in written, key
         assert not (config.paths.results_dir / "tables" / "smoke" / TABLE_FILENAMES[key]).exists(), key
     assert written["markdown"].exists()
+
+
+def test_prewarm_runs_before_reasoner_is_built(tmp_path: Path, fake_channels, monkeypatch) -> None:
+    """The parse pre-pass must warm caches before reasoner_for builds any model.
+
+    Regression guard: the driver used to construct the reasoner at the top of the
+    per-spec loop, before the pre-pass, contradicting the "reasoner not loaded"
+    design. This asserts the first thing that happens is a prewarm, not a reasoner
+    build, while still confirming the real reasoner is built for inference.
+    """
+
+    config = _make_config(tmp_path)
+    questions = load_mmlongbench(config.paths.data_dir)
+    task = GENERATION_TASKS["G1_sufficiency"]
+
+    events: list[str] = []
+
+    def spy_reasoner_for(spec, config=None):  # noqa: ANN001
+        events.append("reasoner_for")
+        return CountingReasoner()
+
+    monkeypatch.setattr(driver, "reasoner_for", spy_reasoner_for)
+
+    real_prewarm = Orchestrator.prewarm_cell
+
+    def spy_prewarm(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        events.append("prewarm")
+        return real_prewarm(self, *args, **kwargs)
+
+    monkeypatch.setattr(Orchestrator, "prewarm_cell", spy_prewarm)
+
+    driver.generate(config, task, questions)
+
+    assert "prewarm" in events and "reasoner_for" in events
+    # The pre-pass starts before any reasoner is built, so the very first event is
+    # a prewarm; the old bug would have made reasoner_for come first.
+    assert events[0] == "prewarm"
 
 
 def test_generate_fails_when_every_cell_is_skipped(tmp_path: Path, fake_channels, monkeypatch) -> None:

@@ -4,13 +4,13 @@ Purpose:
     The build role's engine (behind the `cli/build.py` wrapper). Each of the
     eight tables is a pure aggregation over one or more generation tasks' judged
     rows (plus, for tables 6 and 7, a side artifact). This module owns that
-    routing. Because the builders in `experiments/tables.py` mostly don't filter
+    routing. Because the builders in `reporting.tables` mostly don't filter
     by model_spec, handing each table exactly its source tasks' rows is what keeps
     them correct (this replaces the old per-experiment `depends_on`).
 
 Pipeline role:
     Reads `results/cache/<mode>[/<run_tag>]/<task>/results.jsonl` and each side
-    artifact, calls the `experiments/tables.py` builders, and writes the eight
+    artifact, calls the `reporting.tables` builders, and writes the eight
     CSVs plus one combined markdown. No GPU, no judge — just pandas.
 
 Arguments:
@@ -30,7 +30,7 @@ from config import ExperimentConfig
 from experiments.paths import experiment_paths, log
 from experiments.registry import GENERATION_TASKS
 from experiments.artifacts import iter_result_files, iter_side_files
-from experiments.tables import (
+from reporting.tables import (
     TABLE_FILENAMES,
     build_table1_headline,
     build_table2_analytical,

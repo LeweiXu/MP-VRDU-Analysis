@@ -8,7 +8,7 @@ Purpose:
     - `judge` (no GPU, no PDFs): re-scores the cached predictions with a real
       judge; the guards raise `CacheMiss` if a cell was never generated.
 
-    Table building is a separate role (`experiments/tables.py`); this engine only
+    Table building is a separate role (`reporting.tables`); this engine only
     produces `predictions.jsonl` and `results.jsonl` per task.
 
 Pipeline role:
@@ -36,6 +36,7 @@ from pipeline.judge import Judge, StubJudge, get_judge
 from pipeline.orchestrator import Orchestrator, PredictionCache, ResultCache
 from pipeline.reasoner import Reasoner
 from schema import Prediction, Question
+from tools.text import reset_ocr_engine
 
 
 # ---------------------------------------------------------------------------
@@ -114,15 +115,22 @@ class _GuardRetriever(Retriever):
 
 
 class _SpecOnlyReasoner(Reasoner):
-    """Judge-phase reasoner that only carries a spec; answering is a bug."""
+    """A reasoner that only carries a spec, with no weights; answering is a bug.
+
+    Used in two spots where the pipeline needs a reasoner's spec string for a
+    cache-key check but must not load a model: the judge phase (re-scoring cached
+    predictions) and the generate parse pre-pass (warming disk caches before the
+    real reasoner is built). If `answer` ever runs, a cell that should have been a
+    cache hit fell through, so it raises.
+    """
 
     def __init__(self, spec: str) -> None:
         self.spec = spec
 
     def answer(self, question: Question, model_input) -> Prediction:  # noqa: ANN001
         raise CacheMiss(
-            f"reasoner {self.spec!r} was called in the judge phase for "
-            f"question {question.id!r}: the prediction must be cached from generate"
+            f"reasoner {self.spec!r} was asked to answer question {question.id!r} "
+            "with no weights loaded: this cell should have been a cache hit"
         )
 
 
@@ -170,27 +178,29 @@ def generate(
     total_cells = 0
     total_skipped = 0
     for spec in specs:
-        reasoner = reasoner_for(spec, config)
-        orchestrator = Orchestrator(
-            config,
-            reasoner=reasoner,
-            judge=StubJudge("generate-throwaway"),
-            cache=generate_cache,
-            prediction_cache=prediction_cache,
-        )
         cells = task.generation_cells(config, task_questions, retrievers=retrievers)
         log.info("%s spec=%s: %d cells to run", task.name, spec, len(cells))
         total_cells += len(cells)
         skipped_cells = 0
 
-        # Parse pre-pass: warm the Marker/Surya (and retrieval) disk caches with
-        # the reasoner NOT yet loaded, then free those model stacks. This is what
-        # stops the parser and the reasoner from sharing VRAM on a 16GB V100.
+        # Parse pre-pass: warm the Marker/Surya/PaddleOCR (and retrieval) disk
+        # caches with the reasoner NOT yet constructed, then free those model
+        # stacks. This is what stops the parser and the reasoner from sharing VRAM
+        # on a 16GB V100. The prewarm orchestrator only needs the reasoner *spec*
+        # for prediction-cache key checks (see Orchestrator.prewarm_cell), so a
+        # spec-only reasoner keeps the real weights off the GPU until inference.
         log.info("%s spec=%s: parse pre-pass (warming caches, reasoner not loaded)", task.name, spec)
         prewarm_started = time.perf_counter()
+        prewarm_orchestrator = Orchestrator(
+            config,
+            reasoner=_SpecOnlyReasoner(spec),
+            judge=StubJudge("generate-throwaway"),
+            cache=generate_cache,
+            prediction_cache=prediction_cache,
+        )
         for index, cell in enumerate(cells, start=1):
             try:
-                orchestrator.prewarm_cell(cell.question, cell.conditioner, cell.representation)
+                prewarm_orchestrator.prewarm_cell(cell.question, cell.conditioner, cell.representation)
             except Exception:
                 log.error(
                     "prewarm FAILED %s cell %d/%d q=%s cond=%s rep=%s",
@@ -199,8 +209,19 @@ def generate(
                 raise
         retrievers.text.unload()
         retrievers.vision.unload()
+        reset_ocr_engine()  # release the shared PaddleOCR engine warmed above
         free_gpu()
         log.info("%s spec=%s: pre-pass done (%.1fs); GPU freed for reasoner", task.name, spec, time.perf_counter() - prewarm_started)
+
+        # Now that parser/OCR/retriever state is freed, load the real reasoner.
+        reasoner = reasoner_for(spec, config)
+        orchestrator = Orchestrator(
+            config,
+            reasoner=reasoner,
+            judge=StubJudge("generate-throwaway"),
+            cache=generate_cache,
+            prediction_cache=prediction_cache,
+        )
 
         for index, cell in enumerate(cells, start=1):
             label = (
@@ -355,7 +376,7 @@ def judge(
     if specs and len(prediction_cache) == 0:
         raise SystemExit(
             f"{task.name}: no cached predictions at {paths.predictions}; run the "
-            "generate phase first (python -m cli.generate --generation ...)"
+            "generate phase first (python -m cli.generate --spec ...)"
         )
 
     skipped = 0

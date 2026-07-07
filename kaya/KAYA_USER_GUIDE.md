@@ -207,7 +207,7 @@ runs repo files by path.
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 \
-  cli/generate.py -- --generation G1_sufficiency --full
+  cli/generate.py -- --spec specs/full_generation.yaml
 envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --arg-for-job value
 ```
 

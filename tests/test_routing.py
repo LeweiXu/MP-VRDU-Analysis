@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from experiments.tables import build_table7_routing
+from reporting.tables import build_table7_routing
 from pipeline.orchestrator import ResultRow
 
 

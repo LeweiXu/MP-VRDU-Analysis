@@ -9,7 +9,7 @@ Purpose:
 
 Pipeline role:
     A leaf contract module. `experiments/driver.py` runs a task (generate on GPU,
-    judge locally); `experiments/tables.py` aggregates the judged rows into the
+    judge locally); `reporting.tables` aggregates the judged rows into the
     paper tables. This file holds only the ABC and the two cell factories shared
     across tasks (the oracle ladder and the matched/cross retrieval cells).
 

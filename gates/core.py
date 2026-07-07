@@ -8,7 +8,7 @@ Purpose:
     leave expensive generation/classification to callers.
 
 Pipeline role:
-    `scripts.gates` exposes these helpers for real runs, while tests exercise the
+    `python -m gates` exposes these helpers for real runs, while tests exercise the
     predicates and samplers without loading models. Keeping the gate logic here
     makes the human checkpoints reproducible from cached rows and side artifacts.
 
@@ -369,7 +369,7 @@ def render_agreement_packet(
     """
 
     # Imported here so the pure gate predicates stay import-light for tests.
-    from experiments.inspect import items_by_cell, write_packet
+    from gates.viewer import items_by_cell, write_packet
 
     by_cell = items_by_cell(config, task)
     items = []

@@ -15,7 +15,7 @@ Arguments:
 
 from __future__ import annotations
 
-from experiments.gates import classifier_gate, classifier_pilot_sample, score_classifier_records
+from gates.core import classifier_gate, classifier_pilot_sample, score_classifier_records
 from schema import Question
 
 

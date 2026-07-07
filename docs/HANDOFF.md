@@ -1,117 +1,210 @@
-# Session handoff — 2026-07-07
+# Session handoff - 2026-07-07
 
-This session was pipeline tooling + two experiment changes, not a cluster run.
-Everything below is **committed on `main`** (commits `02bffb6 large refactor +
-README` and `cd85fad add top k sweep`); the tree is clean. Tests: **94 passed, 1
-skipped**.
+This session changed the generation pipeline to be YAML-first, added scanned-vs-
+digital text routing, and launched the full G1/G2/G5 rerun on Kaya.
 
-The one big open thread is the **OCR-as-a-rung** change: it's fully designed and
-documented but deliberately **not implemented yet** (it's a frozen-interface
-checkpoint). See "The main open thread" below.
+Current active cluster job:
 
-## What shipped this session
+- Job: `1012121`
+- Name: `g1g2g5-full`
+- Spec: `specs/g1_g5_rerun.yaml`
+- Run tag: `yaml-g1-g2-g5-rerun`
+- Resources: `2x V100`, `64G`, `24h`
+- Last checked: running on `k036` at `52:19` elapsed, still in
+  `G1_sufficiency` parse pre-pass.
+- Status at last check: green. Logs show active Marker/OCR/layout work, with no
+  `Traceback`, `ERROR`, `CUDA out of memory`, `Killed`, or Slurm failure text.
 
-- **`cli/` now holds only the three experiment roles** (`generate`, `judge`,
-  `build`). Everything else moved to `scripts/`: `gates.py`, `run_probe.py`, plus
-  the new tools. Invoke as `python -m scripts.<name>`. Target tree in
-  `docs/implementation_plan.md` reflects it.
-- **Item-1 cleanup (the "temp/cache/full looks table-organized" thing).** That was
-  a stale gitignored `temp/` from before the generation-task refactor; deleted. The
-  live cache is task-keyed `results/cache/[<run-tag>/]<smoke|full>/<task>/`. Also
-  repointed `scripts/gates.py`'s old hardcoded `T1_headline` defaults to run-tag-
-  aware resolution (`default_results_path`/`default_table1_path`, driven by
-  `--run-tag`/`--full`).
-- **Inspection tool.** `experiments/inspect.py` (library) + `scripts/inspect_results.py`.
-  Joins a task's `predictions.jsonl` + `results.jsonl` back to the question + PDF,
-  renders the fed pages, and dumps each cell into `./inspect/<slug>/` (copied PDF,
-  page PNGs, `info.md` listing **every** generate + judge field). Filters:
-  `--question/--doc/--representation/--condition/--incorrect-only/--abstained-only/--limit`.
-  `inspect/` is gitignored.
-- **Gate-F2 human-judging viewer.** `scripts.gates agreement-sample --render` now
-  renders the sampled cells' pages into a scrollable `agreement_view.md`
-  (`experiments/gates.py::render_agreement_packet`) so a human can label from
-  VSCode; `agreement-score` (Cohen's kappa) is unchanged.
-- **Document annotation tool.** `scripts/annotate_docs.py`: interactive, resumable
-  `annotate` (opens each PDF, menu per field, writes after every doc);
-  `dominant_visual` accepts **multiple** picks (stored `;`-joined). Fields:
-  bin (text/in-between/visual-heavy), scanned/digital, dominant_visual, multi_column,
-  notes; seeded with `doc_type_bin` + `data.render.classify_scanned` priors.
-  `score` reports human-bin-vs-doc_type-bin agreement (tests the 3-domain
-  assumption) + scanned fraction. Writes `annotations/doc_labels.csv` (committed,
-  version-controlled). Companion `scripts/split_docs_by_type.py` groups the 135
-  PDFs into per-doc_type folders under `.data/mmlongbench_docs_split/`.
-- **G5 top-k sweep (implemented).** `config.k_values = (1, 3, 5, 7, 9)`. G5 now runs
-  the full sweep: `matched_cross_sweep_cells` emits 10 cells/question
-  (`retrieved_{vision,text}_k{k}`, question-major/k-minor), `run_side` logs
-  `retrieval.jsonl` per (question, modality, k), and `build_table6_matched_vs_cross`
-  reports **each k separately** (new `k` column, `_condition_k` parses k from the
-  conditioner name). Retrievers memoize by `(question, page_count, k)`.
+A local watcher is running for the transition into inference:
 
-## The main open thread: OCR as its own rung (designed, NOT implemented)
+- Watcher session: `18442`
+- It runs `kaya pull` once per minute.
+- It exits and reports when
+  `results/cache/yaml-g1-g2-g5-rerun/full/G1_sufficiency/predictions.jsonl`
+  appears with at least one row.
+- Watcher log: `/tmp/mpvrdu_inference_watch_1012121.log`
 
-Agreed plan, deferred on purpose. Full writeup lives in **README → "Planned: OCR as
-its own rung"** and **AGENT_GUIDE → "G5 top-k sweep; OCR-rung plan (deferred)"**.
-Summary:
+## Main changes made
 
-- Add OCR as a fourth channel and its own cumulative rung → ladder becomes
-  **`T / TO / TOL / TOLV / V`**. `T` stays pure Marker text; `TO` adds an `[ocr]`
-  block; `V` stays vision-only. Payload order `[text]→[ocr]→[layout]→images`.
-- OCR runs on **every** page (digital or scanned), cached to disk per (page, dpi)
-  like Marker, warmed in the parse pre-pass, GPU freed before the reasoner. Use the
-  existing `tools/text.py::ocr` (PaddleOCR), currently wired but unused.
-- **Not an OOM risk** (analysis in README): the `max_input_tokens` cap truncates
-  the combined text tail before attention; OCR adds text tokens, not vision tokens.
-- **Why it's a checkpoint, not a silent edit:** it renames `schema.Modality`
-  `TL`→`TOL`, `TLV`→`TOLV`, which touches the frontier order (`metrics/frontier.py`
-  `RUNG_ORDER`), the table builders (`experiments/tables.py`: `{TLV,V}` sets, rung
-  tuples, composition special-cases), `matched_cross_*` default rung, and
-  `scripts/gates.py`'s agreement default rung. It needs a **fresh `--run-tag`**
-  because the `bf16-lowres` cache/tables use the old rung names. When you implement
-  it, work through those references and re-run.
+### OCR routing while keeping paper rungs
 
-## Other open items
+The representation ladder remains the paper ladder:
 
-1. **Re-run G5 to populate the sweep.** The existing `bf16-lowres` G5 cache only has
-   `retrieved_*_k1` (the pre-sweep single k). Table 6 there is k=1 only. To get the
-   full k=(1,3,5,7,9) table, re-generate + re-judge G5 (same run-tag adds the new
-   cells since each k is its own condition/prediction row), then rebuild. The
-   oracle-ladder tasks (G1/G2/G3) are unaffected by the sweep.
-2. **`annotations/doc_labels.csv` is seeded, not annotated.** It has the 135 rows
-   with auto priors but only 1 stray `bin_label` from a smoke test. To start real
-   annotation, either `python -m scripts.annotate_docs annotate` (it skips
-   already-done rows) or rebuild clean with `annotate_docs sheet --force`.
-3. **The `inspect/` folder** (gitignored) has the G5 cells that were being viewed;
-   safe to delete anytime with `rm -rf inspect/`.
-4. **Deprioritized from the prior handoff:** the G2 InternVL replication (said to be
-   not important right now) and the separate 4-bit run. Those Kaya job IDs from the
-   earlier handoff are stale.
+- `T`
+- `TL`
+- `TLV`
+- `V`
 
-## Tooling quick reference
+There is no OCR-specific rung. Instead, the text channel now routes by document
+scan label:
+
+- digital-born documents use Marker text
+- scanned documents use PaddleOCR text
+
+The scan/digital source is `annotations/doc_labels.csv`; human `scan_label` wins,
+then `auto_scan`, with render-based classification as fallback. `TL` and `TLV`
+continue using the existing layout channel.
+
+### YAML-first experiment specs
+
+Generation now supports YAML specs through:
 
 ```bash
-# inspect cached inference cells (writes ./inspect/, open in VSCode)
-python -m scripts.inspect_results --run-tag bf16-lowres --full \
-    --generation G1_sufficiency --incorrect-only --limit 20
-
-# annotate the 135 docs (interactive, resumable)
-python -m scripts.annotate_docs annotate
-python -m scripts.annotate_docs score
-
-# gate F2 with a viewing packet
-python -m scripts.gates agreement-sample --full --run-tag bf16-lowres --render
-python -m scripts.gates agreement-score --sheet results/gates/agreement_sample.csv
-
-# group the 135 PDFs by doc_type for browsing
-python scripts/split_docs_by_type.py
+python -m cli.generate --spec <spec.yaml>
 ```
 
-## Dataset note (came up at the end)
+The loader expands runs into the existing `GenerationTask` machinery. Specs can
+define:
 
-The **246 zero-evidence-page questions are the *unanswerable* ones** (gold answer
-`"Not answerable"`, `hop="none"`, `is_unanswerable=True`; ~22% of the corpus). They
-are not trick/general-knowledge questions; the correct behavior is to **abstain**,
-and the judge scores them correct only on abstention. For G1 (oracle) there are no
-gold pages, so `OracleConditioner`/`render_question_pages` feed **page 0 only** as a
-sanity anchor. So for these, G1 is really an abstention/hallucination probe (does
-the model say "not answerable" instead of inventing an answer from page 0), not a
-reading-comprehension test.
+- `version`, `name`, `run_tag`, `mode`, `dataset`
+- shared `config`
+- multiple `runs`
+- question selectors
+- models
+- conditions: `oracle`, `full`, `buried`, `retrieved`
+- representations
+- side artifacts such as retrieval diagnostics
+
+Run-tag based artifact consumption is also wired:
+
+```bash
+python -m cli.judge --run-tag <tag> --judge stub
+python -m cli.build --run-tag <tag> --bootstrap 0
+```
+
+### Representations
+
+The code supports dynamic channel combinations such as `TV` and `LV`, but this
+project's paper experiments should use the rung set only:
+
+```yaml
+representations: [T, TL, TLV, V]
+```
+
+For G5 retrieval, the rerun intentionally uses `TLV` only.
+
+## Specs
+
+Important YAML files:
+
+- `specs/full_generation.yaml`: full generation template.
+- `specs/smoke_generation.yaml`: smoke spec, currently minimal and includes G1,
+  G2, and G5.
+- `specs/smoke_g1_g5.yaml`: minimal one-GPU G1/G5 smoke spec.
+- `specs/g1_g5_rerun.yaml`: active full rerun spec, despite the old filename.
+
+The active rerun spec currently contains:
+
+- `G1_sufficiency`
+  - model: `qwen3vl-8b-local`
+  - reps: `T, TL, TLV, V`
+  - condition: `oracle`
+- `G2_family`
+  - model: `internvl3-8b-local`
+  - reps: `T, TL, TLV, V`
+  - condition: `oracle`
+- `G5_retrieval`
+  - model: `qwen3vl-8b-local`
+  - rep: `TLV`
+  - retrievers: `vision`, `text`
+  - k sweep: `1, 3, 5, 7, 9`
+  - writes `retrieval.jsonl`
+
+The spec was validated with `experiments.yaml_spec.load_yaml_experiment`.
+
+## Smoke tests and verification
+
+Local focused tests passed:
+
+```text
+21 passed
+```
+
+Earlier broader local run passed:
+
+```text
+54 passed, 1 skipped, 1 deselected
+```
+
+The deselected test was the known network/Hugging Face related prestage test.
+
+Kaya smoke job `1012073` completed successfully:
+
+- run tag: `yaml-smoke-g1-g5`
+- G1 expanded to `2 questions x 2 reps = 4 predictions`
+- G5 expanded to `1 question x 2 k values x 2 retrievers = 4 predictions`
+- G5 retrieval artifact had the expected text/vision rows at `k=1` and `k=3`
+- run-tag judge/build paths worked with the stub judge
+
+## Kaya jobs from this session
+
+Cancelled:
+
+- `1011922` - old `yaml-smoke`
+- `1011928` - old 15 minute smoke
+- `1011965` - old 15 minute smoke
+- `1011968` - pending G2-inclusive smoke
+- `1012106` - G1/G5-only full job, cancelled before replacing with G1/G2/G5
+
+Completed:
+
+- `1012073` - one-GPU G1/G5 smoke, successful
+
+Active:
+
+- `1012121` - full G1/G2/G5 rerun
+
+## Dependency note
+
+`PyYAML==6.0.2` was added to both requirements files and installed directly into
+the Kaya environment:
+
+```bash
+envs/mpvrdu/bin/python -m pip install PyYAML==6.0.2
+```
+
+It was already present on Kaya when checked.
+
+## Useful commands
+
+Check active job state:
+
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya watch 1012121 --tail-lines 160
+```
+
+Pull live logs/artifacts without waiting for job completion:
+
+```bash
+envs/mpvrdu/bin/python -m kaya.kaya pull
+```
+
+Inspect live logs:
+
+```bash
+tail -n 120 logs/g1g2g5-full_1012121.out
+tail -n 120 logs/g1g2g5-full_1012121.err
+```
+
+Search logs for failures:
+
+```bash
+rg -n "Traceback|Exception|ERROR|CRITICAL|CUDA out of memory|OutOfMemory|OOM|FAILED|Killed|slurmstepd|RuntimeError" \
+  logs/g1g2g5-full_1012121.out logs/g1g2g5-full_1012121.err
+```
+
+Check whether G1 inference has started:
+
+```bash
+test -s results/cache/yaml-g1-g2-g5-rerun/full/G1_sufficiency/predictions.jsonl && \
+  wc -l results/cache/yaml-g1-g2-g5-rerun/full/G1_sufficiency/predictions.jsonl
+```
+
+After the job completes, score and build:
+
+```bash
+python -m cli.judge --run-tag yaml-g1-g2-g5-rerun --judge <judge>
+python -m cli.build --run-tag yaml-g1-g2-g5-rerun --bootstrap 1000
+```
+
+Use `--judge stub` only for plumbing checks, not final experiment scoring.

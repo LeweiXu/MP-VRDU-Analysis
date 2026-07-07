@@ -54,6 +54,35 @@ def _paddle_ocr_engine() -> Any:
     )
 
 
+# Process-local PaddleOCR engine, built once and reused across every ocr() call
+# in a parse pre-pass. Constructing PP-OCRv5 is expensive (it loads the det/rec
+# models), and text_channel() calls ocr() fresh for every cell/page, so without
+# this the same engine was rebuilt hundreds of times on a cold run. reset_ocr_engine()
+# drops it so free_gpu() can release the memory before the reasoner loads.
+_DEFAULT_OCR_ENGINE: Any | None = None
+
+
+def _default_ocr_engine() -> Any:
+    """Return the shared PaddleOCR engine, constructing it on first use."""
+
+    global _DEFAULT_OCR_ENGINE
+    if _DEFAULT_OCR_ENGINE is None:
+        _DEFAULT_OCR_ENGINE = _paddle_ocr_engine()
+    return _DEFAULT_OCR_ENGINE
+
+
+def reset_ocr_engine() -> None:
+    """Drop the shared PaddleOCR engine so its GPU/CPU memory is released.
+
+    Wired into the generate driver right after the parse pre-pass, alongside the
+    retriever unloads, so the OCR model stack does not stay resident while the
+    reasoner runs inference.
+    """
+
+    global _DEFAULT_OCR_ENGINE
+    _DEFAULT_OCR_ENGINE = None
+
+
 def _safe_stem(name: str) -> str:
     """Filesystem-safe PDF stem for text-tool cache files."""
 
@@ -198,7 +227,7 @@ def ocr(
             out.append(cached)
             continue
         if ocr_engine is None:
-            ocr_engine = _paddle_ocr_engine()
+            ocr_engine = _default_ocr_engine()
         texts = _collect_ocr_texts(_predict_ocr(ocr_engine, page.image_path))
         text = "\n".join(texts).strip()
         cache_ok = bool(text)

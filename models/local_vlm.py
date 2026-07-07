@@ -375,7 +375,7 @@ class LocalVLMBackend(Reasoner):
         GPU; 4-bit is ~7GB, 8-bit ~10GB). Quantized weights are an approximation
         of the pre-registered bf16 model, so this is for single-GPU iteration and
         the appendix quant-sensitivity row, not the main tables. See
-        `SINGLE_GPU_8B_FEASIBILITY.md`.
+        `docs/AGENT_GUIDE.md` ("Quantized reasoner").
         """
 
         if self.quantization is None:

@@ -213,7 +213,7 @@ splits on the placeholders and rebuilds an interleaved text/image chat message, 
 each `<image>` binds to the right page's pixels through the processor. Within a
 page, vision tokens follow Qwen's grid raster order (the `t*h*w` image grid).
 
-API backends (`models/api_vlm.py`) get the identical ordering through
+A hosted API backend would get the identical ordering through
 `to_chat_messages()`, which emits the same parts as text and base64 `image_url`
 blocks. InternVL (`models/internvl.py`, the second model family) consumes the same
 `ModelInput` but binds images through its own processor.
@@ -245,9 +245,10 @@ All reasoners sit behind one `Reasoner` ABC and consume the backend-neutral
   family. 2B is the smoke model, 8B the main full-run model.
 - **InternVL3-8B** local (`models/internvl.py`) - the second family, used to check
   whether the sufficiency findings replicate across architectures.
-- **API VLMs** (`models/api_vlm.py`) - a reserved seam for hosted
-  OpenAI/Gemini/Anthropic reasoners; they'd consume `ModelInput.to_chat_messages()`
-  behind the same ABC, so adding one doesn't touch the pipeline.
+- **API VLMs** - not implemented, but the seam is real: a hosted
+  OpenAI/Gemini/Anthropic reasoner would be a new `get_reasoner` registry entry that
+  consumes `ModelInput.to_chat_messages()` behind the same ABC, so adding one doesn't
+  touch the pipeline.
 
 Weights load in bf16 by default. For single-GPU iteration and the quantization
 appendix, 4-bit NF4 (double-quant) and 8-bit are available via bitsandbytes so the
@@ -281,34 +282,98 @@ is one file in `experiments/` (`G1_sufficiency` .. `G6_classifier`) subclassing
 
 ## Inference ordering inside a task
 
-For one task, `driver.py::generate` does:
+The whole point of the ordering is that the parser/OCR/retriever model stacks and
+the reasoner never sit on the same 16GB V100 at once. `driver.py::generate` does
+this for one task:
 
-1. Resolve the question set (`resolve_questions`).
-2. For each reasoner spec (every current task has 0 or 1 spec):
-   - build the ordered cell list (`generation_cells`);
-   - **parse pre-pass**: walk every cell running only condition -> render ->
-     representation, to warm the Marker/render disk cache *with the reasoner not
-     loaded*, then unload the retrievers and free the GPU (section 4);
-   - load the reasoner and answer every cell **in list order**, caching each
-     prediction; a cell that raises is logged and skipped (`--continue-on-error`)
-     rather than aborting the task;
-   - free the reasoner.
-3. Run any side work (`run_side`).
+1. **Resolve the corpus** (`resolve_questions`) and open the two per-task caches
+   in `results/cache/<run_tag>/<mode>/<task>/`: `predictions.jsonl`
+   (`PredictionCache`) and `generate_results.jsonl` (`ResultCache`). Build the two
+   retrievers *lazily* (`real_retrievers`): the objects exist but no BGE/ColQwen
+   weights load until something calls `retrieve`.
+2. For each reasoner spec (every current task has 0 or 1):
+   - **Build the ordered cell list** (`generation_cells`). A cell is
+     `(question, conditioner, rung)`.
+   - **Parse pre-pass.** A throwaway orchestrator built with a *spec-only*
+     reasoner (`_SpecOnlyReasoner`, no weights) walks every cell and runs only the
+     A->B path: `conditioner.condition` -> `render_pages` ->
+     `representation.build`. That is what forces the expensive preprocessing to
+     happen now, with no reasoner on the GPU: page PNGs get rendered, Marker/Surya
+     produce text + layout, PaddleOCR produces scanned-page text, and (for G5) the
+     retrievers rank pages. Everything lands in the disk caches below. Cells whose
+     prediction is already cached are skipped (nothing left to parse).
+   - **Tear down the parser/OCR/retriever state.** Unload the retrievers
+     (`retrievers.text.unload()` / `.vision.unload()` drop the BGE/ColQwen weights
+     but keep the in-memory rankings), `reset_ocr_engine()` drops the shared
+     PaddleOCR engine, then `free_gpu()`. After this the GPU is clear.
+   - **Load the reasoner** (`reasoner_for`) and answer every cell **in list
+     order**. Weights load lazily on the first `answer()`. On a warm cache the
+     representation step is all disk reads, so Marker/Surya/PaddleOCR never reload
+     and never share VRAM with the reasoner. Each answer is appended to
+     `predictions.jsonl` immediately (see "Fields recorded per instance"), so the
+     presence of that file is the signal that inference has actually started. A
+     cell that raises is logged and skipped when `--continue-on-error` is set
+     (with a `free_gpu()` to recover activation memory), instead of aborting.
+   - **Free the reasoner** (`reasoner.free()` + `free_gpu()`) before the next spec.
+3. **Run side work** (`run_side`), then `free_gpu()` again.
 
-The cell order for the ladder tasks (G1, G2, G3) is **question-major,
-rung-minor**. So the model answers question 1 at `T`, then `TL`, then `TLV`, then
-`V`, then moves to question 2 at `T`/`TL`/`TLV`/`V`, and so on. It is **not** all
-questions at `T` first and then all at `TL`; the reasoner loads once and walks the
-whole list. For G5 the cells are question-major, k-minor: each question
-contributes, for every k in `config.k_values`, a matched (vision-retrieval) then
-cross (text-retrieval) cell, all `TLV`. So with the default `(1, 3, 5, 7, 9)`
-that's 10 consecutive cells per question.
+Note the order flipped in mid-2026: the reasoner used to be constructed at the top
+of the spec loop, before the pre-pass. It is now constructed after, so the "reasoner
+not loaded during the pre-pass" invariant holds in code, not just in the comment.
+
+**Cell order.** For the ladder tasks (G1, G2, G3) it is **question-major,
+rung-minor**: the model answers question 1 at `T`, then `TL`, then `TLV`, then `V`,
+then moves to question 2, and so on. It is *not* all questions at `T` first. The
+reasoner loads once and walks the whole list. For G5 the cells are question-major,
+k-minor: for every k in `config.k_values`, each question contributes a matched
+(vision-retrieval) then a cross (text-retrieval) cell, all at `TLV`; with the
+default `(1, 3, 5, 7, 9)` that is 10 consecutive cells per question.
+
+## What each rung preprocesses, and what gets cached
+
+A cell's rung decides which channels `representation.build(pages)` composes, and
+each channel is a different preprocessing path (all of this runs in the pre-pass):
+
+- **`T` (text).** `text_channel(pages)` routes per document using
+  `annotations/doc_labels.csv`: digital-born docs go through **Marker** (markdown
+  text), scanned docs go through **PaddleOCR PP-OCRv5**. PyMuPDF embedded text is
+  the cheap fallback. Emitted as one `[text]` string block.
+- **`TL` (text + layout).** `T`, plus `layout_channel` = Marker `bbox` JSON
+  (per-page block type + bounding boxes, serialized). Strings only, `[layout]`
+  block.
+- **`TLV` (text + layout + visual).** `TL`, plus `visual_channel` = one full-page
+  `ImagePart` per rendered page.
+- **`V` (visual).** Page images only, no text/layout.
+
+The modality boundary is structural and re-checked in `Payload.__post_init__`:
+only `TLV` and `V` ever attach images.
+
+The disk caches these paths fill are keyed by content so re-runs are idempotent.
+`--run-tag` is folded into `config.paths.cache_dir` (so it becomes
+`results/cache/<run_tag>`), and the parse artifacts live directly under it, shared
+across every mode and task in that run:
+
+- `results/cache/<run_tag>/renders/<stem>__dpi<N>/page_XXXX.png`: rendered page
+  images at the run's dpi (`config.dpi`, 144 in full). Text spans are re-extracted
+  each call (cheap) rather than cached.
+- `results/cache/<run_tag>/marker/<stem>__pXXXX__text.md` and `__bbox.json`: Marker
+  text and layout, one file per page. The PyMuPDF fallback is deliberately *not*
+  cached, so a later real Marker pass can replace it.
+- `results/cache/<run_tag>/ocr/<stem>__dpiN__pXXXX.txt`: PaddleOCR text per scanned
+  page. Empty/fallback results are not cached, so a blank page is retried rather
+  than frozen as blank.
+- Retrieval rankings are memoized **in memory** per `(question, page_count, k)` by
+  `MemoizedRetriever`, so a k that repeats across cells is computed once; the memo
+  survives the retriever unload into the inference phase.
+
+The per-cell reasoner output is task-scoped, one level deeper under
+`results/cache/<run_tag>/<mode>/<task>/`: `predictions.jsonl` and the throwaway
+stub-scored `generate_results.jsonl` (see "Fields recorded per instance").
 
 ## The tasks, one by one
 
 Every task caches per-cell records and (optionally) a side artifact as described
-in the two subsections above; the per-task notes below only call out what is
-specific to each.
+above; the per-task notes below only call out what is specific to each.
 
 ### G1_sufficiency
 
@@ -386,13 +451,16 @@ specific to each.
 - **Corpus & reasoner.** Shared corpus; primary reasoner; all cells run at `TLV`.
 - **Cells & run.** A full **top-k sweep**: for every k in `config.k_values`
   (default `(1, 3, 5, 7, 9)`), per question two cells `retrieved_vision_k{k}` and
-  `retrieved_text_k{k}` (question-major, k-minor). The two retrievers: **text** =
-  BM25 over page text plus dense BGE similarity (`bge-small-en-v1.5`); **vision** =
-  ColQwen2.5 late-interaction over rendered page images (retrieval renders at dpi
-  96). Both are memoized by `(question, page_count, k)` so a ranking is computed
-  once even though multiple cells reuse it. In the generate phase the driver passes
-  the real retrievers; in the judge phase it passes guards that raise if called, so
-  every retrieved cell must be a prediction-cache hit.
+  `retrieved_text_k{k}` (question-major, k-minor). The `k` lives in the conditioner
+  name so each k gets its own prediction-cache row. Page selection runs in the
+  pre-pass: **text** = BM25 over page text plus dense BGE similarity
+  (`bge-small-en-v1.5`, reads page text only, no image render); **vision** =
+  ColQwen2.5 late-interaction over rendered page images at the run's dpi. Both are
+  memoized by `(question, page_count, k)`, so a ranking is computed once even
+  though several cells reuse it, and the memo outlives the retriever unload. In the
+  generate phase the driver passes the real retrievers; in the judge phase it
+  passes guards that raise if called, so every retrieved cell must be a
+  prediction-cache hit.
 - **Data.** Standard per-cell records (with `condition` = `retrieved_{modality}_k{k}`),
   plus the side artifact `retrieval.jsonl`: one `RetrievalEvalRow` per (question,
   retriever modality, **k**) with `retriever`, `modality`, `k`, `retrieved_pages`,
@@ -410,9 +478,12 @@ specific to each.
 - **Corpus & reasoner.** Shared corpus, but there are **no reasoner cells**
   (`model_specs` is empty). The only GPU work is the classifier in `run_side`.
 - **Cells & run.** `run_side` runs `QwenDocTypeClassifier` once per *distinct
-  document* (not per question): it renders the first two pages (dpi 96, `TLV`) and
-  asks Qwen3-VL-2B to pick one of the native MMLongBench document types, then maps
-  that to an Option-A bin.
+  document* (not per question, deduped by `doc_id`): it renders the first two pages
+  at the run's dpi as a `TLV` input and asks Qwen3-VL-2B
+  (`CLASSIFIER_REASONER_SPEC`) to pick one of the native MMLongBench document
+  types, then maps that to an Option-A bin. Because this is a plain `run_side`
+  task with no reasoner cells, it never enters the pre-pass/inference loop above;
+  the classifier is the only thing that loads a model.
 - **Data.** No `predictions.jsonl`. The side artifact `classifier.jsonl` holds one
   record per document: `doc_id`, gold and predicted `doc_type`, gold and predicted
   `bin`, `correct_bin`, `confidence`, `latency_s`, and the classifier name.
@@ -452,8 +523,8 @@ re-running the model.
 
 Side artifacts are one record per unit, not per cell:
 
-- **`retrieval.jsonl`** (G5): one record per (question, retriever modality, k) —
-  every k in the sweep is logged — with the retriever name, modality, k, and
+- **`retrieval.jsonl`** (G5): one record per (question, retriever modality, k)
+  (every k in the sweep is logged), with the retriever name, modality, k, and
   page-retrieval precision / recall / F1.
 - **`classifier.jsonl`** (G6): one record per distinct document with `doc_id`,
   gold and predicted `doc_type`, gold and predicted `bin`, `correct_bin`,
@@ -466,15 +537,22 @@ Side artifacts are one record per unit, not per cell:
 - `data/` - dataset loaders, Option-A binning, PDF rendering.
 - `tools/` - the text / layout / visual channel implementations.
 - `pipeline/` - conditioners, representations, reasoner/judge ABCs, orchestrator.
-- `models/` - backend registry, Qwen3-VL / InternVL / API reasoners, `ModelInput`.
+- `models/` - backend registry, Qwen3-VL / InternVL reasoners, `ModelInput`.
 - `covariates/` - retrievers and the doc-type classifier.
 - `metrics/` - accuracy, cost, frontier, retrieval, abstention.
-- `experiments/` - YAML spec loading, the generate+judge engine (`driver.py`),
-  table builders (`tables.py`), and table routing (`reporting.py`).
+- `experiments/` - generation only: YAML spec loading, the generate+judge engine
+  (`driver.py`), the `G*_*.py` tasks + registry, corpus/smoke resolvers, and the
+  shared side-artifact writers (`side_artifacts.py`).
+- `reporting/` - table building: the `tables/` package (one `T*_*.py` module per
+  paper table, mirroring the `G*` task naming, with `__init__` as the aggregation
+  entry point) and the table -> source-task routing that writes the CSVs + markdown
+  (`build.py`).
+- `gates/` - Section-2 go/no-go gates (`core.py`) plus the shared cached-cell viewer
+  (`viewer.py`); run as `python -m gates`.
 - `cli/` - the three experiment roles only: `generate` (GPU, YAML-first), `judge`, `build`.
 - `specs/` - YAML generation templates, including `full_generation.yaml`.
-- `scripts/` - standalone utilities: `run_probe` (feasibility probes), `gates`
-  (Section-2 go/no-go gates), `inspect_results` (view a cached inference cell),
-  `annotate_docs` (per-document manual labels), `split_docs_by_type`, staging.
+- `scripts/` - standalone utilities: `run_probe` (feasibility probes),
+  `inspect_results` (view a cached inference cell), `annotate_docs` (per-document
+  manual labels), `split_docs_by_type`, staging.
 - `kaya/` - cluster sync/submit runner and setup scripts.
-- `docs/` - user guide, agent/implementation notes, staged build plan.
+- `docs/` - user guide, project spec, agent/implementation notes.

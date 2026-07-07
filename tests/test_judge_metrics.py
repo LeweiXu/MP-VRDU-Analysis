@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from experiments.tables import (
+from reporting.tables import (
     TABLE_FILENAMES,
     build_all_tables,
     build_table6_matched_vs_cross,

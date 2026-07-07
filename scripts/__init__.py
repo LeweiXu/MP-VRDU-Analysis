@@ -4,8 +4,8 @@ Purpose:
     Groups the standalone operational utilities that are not part of the
     experiment pipeline but support it: dataset/model staging (`download_hf`,
     `prestage`), Kaya environment setup (`setup_env`), GPU/feasibility probes
-    (`gpu_test`, `single_gpu_probe`, `attn_probe`), and dataset profiling
-    (`profile_datasets`, `dataset_stats`, `kaya_status`). Each is runnable with
+    (`gpu_test`, `run_probe`), and dataset profiling (`profile_datasets`,
+    `dataset_stats`, `kaya_status`). Each is runnable with
     `python -m scripts.<name>` locally or dispatched to Kaya via the runner.
 
 Pipeline role:
