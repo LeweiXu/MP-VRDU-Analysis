@@ -36,10 +36,14 @@ are v3; the old three-topic v1 plan is archived at
   InternVL3-8B replicates the RQ1 headline only. All behind one `Reasoner` ABC
   with local-weight and HTTP-API backends. Closed models are for comparison/
   judging, not the deployment recommendation.
-- **Ladder:** `T` (Marker text), `TL` (Marker text + serialized bbox JSON),
-  `TLV` (text + page image), `V` (page image). **Marker is the primary parser;**
-  PyMuPDF/Docling/PP-Structure are the appendix parser-swap. Only `TLV`/`V` may
-  attach images (modality boundary, enforced structurally + in `Payload`).
+- **Ladder:** `T` (document-selected text), `TL` (document-selected text +
+  serialized bbox JSON), `TLV` (text + layout + page image), `V` (page image).
+  Digital-born documents use Marker text; scanned documents use PaddleOCR text,
+  routed by `annotations/doc_labels.csv` (`scan_label` if filled, else
+  `auto_scan`). **Marker remains the primary parser/layout source for digital
+  documents;** PyMuPDF/Docling/PP-Structure are the appendix parser-swap. Only
+  `TLV`/`V` may attach images (modality boundary, enforced structurally + in
+  `Payload`).
 - **Binning (Option A, semantic domain), the single source of truth in
   `data/binning.py`:** text_heavy = Administration/Industry file + Academic paper
   + Research report/Introduction (578 Q / **70 docs**); in_between = Financial
@@ -537,7 +541,7 @@ to run-tag-aware resolution via `experiment_paths` (`scripts/gates.py`
   tests the three-domain assumption) plus the scanned fraction. `classify_scanned`
   is the shared version of the Stage-1 scanned-vs-born-digital heuristic.
 
-## G5 top-k sweep; OCR-rung plan (deferred)
+## G5 top-k sweep; scanned-document OCR routing
 
 **G5 k-sweep (implemented).** `config.k_values` is now `(1, 3, 5, 7, 9)` and G5
 runs the **full sweep**, not just `k_values[0]`. `experiments/base.py`
@@ -551,16 +555,16 @@ frozen-interface change: additive cells + an extra table column; the cache
 key/`ResultRow` shape are untouched. Retrievers memoize by `(question, page_count,
 k)`, so the sweep computes each ranking once.
 
-**OCR as its own rung (planned, NOT implemented).** The next planned change adds
-OCR as a fourth channel and its own cumulative rung, making the ladder
-`T / TO / TOL / TOLV / V` (payload order `[text]→[ocr]→[layout]→images`; `T` stays
-pure Marker, `V` stays vision-only). The full plan, the OOM/truncation analysis,
-and the known issues live in the README ("Planned: OCR as its own rung"). It is a
-**frozen-interface checkpoint** (renames `schema.Modality` `TL`→`TOL`, `TLV`→`TOLV`;
-touches the frontier order, table builders, G5/gates default rung) and needs a
-fresh `--run-tag` because the existing `bf16-lowres` cache/tables use the old rung
-names. Do not implement it silently; it is recorded here as an agreed, pending
-change.
+**OCR routing (implemented).** The five-rung OCR plan is superseded. The ladder
+stays `T / TL / TLV / V`; OCR is now a document-level text-extractor choice inside
+the existing text channel. `tools.text.text_channel()` reads
+`annotations/doc_labels.csv`, preferring a human `scan_label` and falling back to
+`auto_scan`; scanned docs call `tools.text.ocr()` and digital docs call
+`tools.layout.marker_text()`. OCR output is cached under
+`results/cache/.../ocr/` per page and render DPI, so the parse pre-pass warms it
+before the reasoner loads. Use a fresh `--run-tag` when comparing with older
+Marker-for-everything caches, because the rung names are unchanged while scanned
+text content changes.
 
 ## Kaya operations (elsewhere)
 
@@ -622,17 +626,19 @@ Condensed from the former `MODELS.md`, `DATA.md`, `TOOLS.md`, and
 
 ## Tools (non-reasoner channels)
 
-- **Primary ladder (Marker).** `tools.layout.marker_text(pages)` and
-  `marker_bbox_json(pages)` feed `T`/`TL`/`TLV`; `tools.visual.full_page(pages)`
-  and `resolution(pages, scale)` feed `TLV`/`V`. Marker (`marker-pdf==1.10.2`,
-  GPL-3.0 code, Datalab OpenRail-M weights) is primary, run without LLM mode.
-  Marker output is disk-cached under `results/cache/marker/` (the pymupdf fallback
-  is not cached).
-- **Appendix/fallback.** `tools.text.embedded` (PyMuPDF), `tools.text.ocr`
-  (PaddleOCR PP-OCRv5), Docling parser-swap, and `tools.visual.region_crop` which
-  degrades to full page (MMLongBench has no in-page boxes). The pymupdf fallback in
-  `marker_bbox_json` exists only so local tests run before Marker is installed;
-  `prestage --smoke` calls Marker with `allow_fallback=False`.
+- **Primary ladder text/layout.** `tools.text.text_channel(pages)` feeds
+  `T`/`TL`/`TLV`: digital-born docs route to `tools.layout.marker_text(pages)`,
+  scanned docs route to `tools.text.ocr(pages)`. `marker_bbox_json(pages)` remains
+  the layout channel for `TL`/`TLV`; `tools.visual.full_page(pages)` and
+  `resolution(pages, scale)` feed `TLV`/`V`. Marker (`marker-pdf==1.10.2`,
+  GPL-3.0 code, Datalab OpenRail-M weights) is primary for digital text/layout,
+  run without LLM mode. Marker output is disk-cached under `results/cache/marker/`
+  and OCR output under `results/cache/ocr/` (PyMuPDF fallback is not cached).
+- **Appendix/fallback.** `tools.text.embedded` (PyMuPDF), Docling parser-swap, and
+  `tools.visual.region_crop` which degrades to full page (MMLongBench has no
+  in-page boxes). The pymupdf fallback in `marker_bbox_json` exists only so local
+  tests run before Marker is installed; `prestage --smoke` calls Marker with
+  `allow_fallback=False`.
 - **Prestage.** `scripts/prestage.py [--smoke]` stages Qwen weights, BGE, ColQwen,
   Marker/Surya, PaddleOCR, Docling (idempotent, offline-probing). `--local --smoke`
   uses local caches and CPU tool device.

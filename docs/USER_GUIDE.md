@@ -43,8 +43,8 @@ type.
 
 | Rung | Content | Role |
 |---|---|---|
-| `T` | raw text (Marker-extracted) | reference (cheap) |
-| `T+L` | text + serialized bbox layout (JSON) | cumulative |
+| `T` | document-selected text: Marker for digital-born, OCR for scanned | reference (cheap) |
+| `T+L` | document-selected text + serialized bbox layout (JSON) | cumulative |
 | `T+L+V` | text + layout + native-resolution page image | cumulative |
 | `V` | page image only | parser-independent reference |
 
@@ -98,8 +98,9 @@ Every choice below is fixed before the main runs.
   robustness (and is the fallback if the visual-heavy bin proves too thin; see §9). Semantic
   aggregation is practitioner-interpretable; data-driven grouping would leak the effect being
   studied, so it is validator, not primary.
-- **Ladder implementation:** `T` = Marker raw text; `T+L` = Marker text + serialized bbox JSON;
-  `T+L+V` = Marker text + native-resolution page image; `V` = page image only. Parser swap
+- **Ladder implementation:** `T` = document-selected text (Marker for digital-born PDFs, PaddleOCR
+  for scanned PDFs using `annotations/doc_labels.csv`); `T+L` = that text + serialized bbox JSON;
+  `T+L+V` = text + layout + native-resolution page image; `V` = page image only. Parser swap
   (Marker vs PyMuPDF) in the Appendix.
 - **Reasoner:** Qwen3-VL-8B primary. InternVL3-8B replicates the RQ1 headline table only.
   Qwen3-VL-2B / 32B for scale sanity in the Appendix.
@@ -363,4 +364,3 @@ python -m scripts.annotate_docs score        # human bin vs the doc_type-derived
 # Group the 135 PDFs into per-doc_type folders under .data/mmlongbench_docs_split/.
 python scripts/split_docs_by_type.py
 ```
-

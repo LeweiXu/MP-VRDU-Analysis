@@ -90,14 +90,13 @@ fed to the model is capped later (see section 5), not here.
 The representation ladder has four rungs, built by composing three independent
 channels (`tools/`). Each channel produces one string or image *per page*.
 
-- **Text layer** (`tools/text.py` -> `tools/layout.py::marker_text`): the primary
-  extractor is **Marker**, which converts each page to markdown. If Marker isn't
-  available it falls back to PyMuPDF embedded text. PaddleOCR PP-OCRv5 is wired in
-  (`tools/text.py::ocr`) but **currently unused by the pipeline** — the text
-  channel only ever calls Marker. OCR is reserved for the planned OCR rung (see
-  "Planned: OCR as its own rung" below) and appendix parser-swap comparisons.
-  Scanned pages are still read: Marker's own Surya models do the recognition, so
-  the text does not depend on PaddleOCR.
+- **Text layer** (`tools/text.py`): the primary text channel is selected per
+  document. Digital-born PDFs use **Marker** (`tools/layout.py::marker_text`),
+  which converts each page to markdown. Scanned PDFs use PaddleOCR PP-OCRv5
+  (`tools/text.py::ocr`) instead. The scanned/digital decision comes from
+  `annotations/doc_labels.csv`: a filled human `scan_label` wins, otherwise the
+  auto-seeded `auto_scan` value is used. If the sheet has no row for a document,
+  the embedded-text scanned heuristic is used as a fallback.
 - **Layout layer** (`tools/layout.py::marker_bbox_json`): Marker's JSON output,
   flattened to a list of blocks (block type + bounding box + short text) and
   **serialized as a JSON string**. This is important: layout is fed to the model
@@ -119,51 +118,35 @@ The rungs combine these:
 Only `TLV` and `V` carry images; `Payload.__post_init__` re-checks this so a bug
 can't leak an image into a text-only rung.
 
-**Parse pre-pass.** Marker (and its Surya sub-models) run on the GPU. To avoid the
-parser and the reasoner fighting over a 16 GB V100, the generate loop warms the
-Marker text/layout cache for every cell *first* (reasoner not yet loaded), writes
-the results to disk (`results/cache/.../marker/`), then frees the GPU before
-loading the reasoner. On a warm cache the reasoner phase never loads Surya.
+**Parse pre-pass.** Marker (and its Surya sub-models) and PaddleOCR can run on the
+GPU. To avoid the parser/OCR stack and the reasoner fighting over a 16 GB V100,
+the generate loop warms the text/layout cache for every cell *first* (reasoner not
+yet loaded), writes the results to disk (`results/cache/.../marker/` and
+`results/cache/.../ocr/`), then frees the GPU before loading the reasoner. On a
+warm cache the reasoner phase never loads Surya or PaddleOCR.
 
-### Planned: OCR as its own rung (not yet implemented)
+### OCR handling
 
-The next planned change adds **OCR as a fourth channel and its own cumulative
-ladder rung**, so the ladder becomes five rungs instead of four. Each rung adds
-one more (more expensive, more informative) layer than the last:
+OCR is **not** a separate ladder rung. The active design keeps the four existing
+rungs (`T` / `TL` / `TLV` / `V`) and chooses the text extractor by document:
+Marker for digital-born PDFs, PaddleOCR for scanned PDFs. This makes `T` the
+best available text channel for the document while preserving all existing cache
+keys, frontier logic, and table shapes.
 
-| Rung | Marker text | OCR text | Layout | Vision |
-|------|:---:|:---:|:---:|:---:|
-| `T`    | yes | | | |
-| `TO`   | yes | yes | | |
-| `TOL`  | yes | yes | yes | |
-| `TOLV` | yes | yes | yes | yes |
-| `V`    | | | | yes |
+The older five-rung idea (`T / TO / TOL / TOLV / V`) is deliberately superseded.
+That design would have run OCR on every page as a separate prompt block. The
+implemented design instead runs OCR only for documents marked scanned in
+`annotations/doc_labels.csv`, using `scan_label` when filled and `auto_scan`
+otherwise.
 
-`T` stays pure Marker text (the clean text-only baseline); `TO` adds an OCR block
-right after it. Payload/prompt order within a rung is `[text]` (Marker) → `[ocr]`
-→ `[layout]` → images. OCR would run on **every** page unconditionally (digital or
-scanned), be cached to disk per (page, dpi) like Marker, and be warmed in the
-parse pre-pass so PaddleOCR frees the GPU before the reasoner loads (a warm cache
-means the reason phase never loads it).
+**Why this is safe re: OOM.** OCR adds *text* tokens, not vision tokens, and only
+for scanned documents. The input-token cap (`_truncate_context`, section 7)
+hard-bounds the combined text before it reaches the O(seq^2) V100 attention.
 
-**Why this is safe re: OOM.** OCR adds *text* tokens, not vision tokens, and the
-input-token cap (`_truncate_context`, section 7) hard-bounds the combined text:
-if Marker + OCR + layout exceeds the budget, the **tail is dropped** (a plain
-token-count cut, not summarization) before it ever reaches the O(seq^2) V100
-attention. So more text just means more truncation, never a bigger attention
-matrix. Because the order is `[text] → [ocr] → [layout]` and truncation trims the
-tail, the layout JSON (biggest, least dense) is cut first, OCR next, Marker text
-most protected. On oracle pages (usually 1-2 pages) OCR roughly duplicates the
-page's Marker text (~a few hundred to ~1-2k extra tokens), so `T`/`TO` rarely
-truncate at all; only the dense `TOL`/`TOLV` cells lose some layout tail.
-
-**Known issues / caveats.** (1) This renames `TL`→`TOL` and `TLV`→`TOLV`, which
-touches the frozen `schema.Modality` type, the frontier order, the table builders,
-and G5's reasoning rung — a frozen-interface checkpoint, and the existing
-`bf16-lowres` cache/tables won't map to the new names, so the OCR run needs a fresh
-`--run-tag`. (2) OCR roughly doubles the parse-pre-pass cost per page (PaddleOCR on
-top of Marker), bounded by the per-page disk cache. (3) `V` stays vision-only (no
-text/OCR) to keep the "can vision alone answer" signal.
+**Current caveats.** OCR changes the text channel for scanned documents without
+changing rung names, so use a fresh `--run-tag` when comparing against older
+Marker-for-everything caches. `TL`/`TLV` still include the existing layout channel;
+`V` stays vision-only to keep the "can vision alone answer" signal.
 
 ## 5. Visual resolution and downscaling
 

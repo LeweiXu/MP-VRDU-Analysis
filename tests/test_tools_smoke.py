@@ -21,8 +21,9 @@ from pathlib import Path
 
 from data.render import render_pdf
 from tools import layout
+from tools import text as text_tools
 from tools.layout import marker_bbox_json, marker_text
-from tools.text import embedded, ocr
+from tools.text import embedded, ocr, text_channel
 from tools.visual import full_page, region_crop, resolution
 
 
@@ -98,6 +99,62 @@ def test_marker_bbox_json_falls_back_to_pymupdf_layout(tmp_path: Path, monkeypat
     assert payload["source"] == "pymupdf-fallback"
     assert payload["blocks"]
     assert payload["blocks"][0]["bbox"]
+
+
+def write_annotation_sheet(path: Path, *, doc_id: str, label: str, human_label: str = "") -> None:
+    """Write the minimum annotation sheet columns used by text routing."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "doc_id,scan_label,auto_scan\n"
+        f"{doc_id},{human_label},{label}\n"
+    )
+
+
+def test_text_channel_routes_scanned_docs_to_cached_ocr(tmp_path: Path, monkeypatch) -> None:
+    pages = rendered_page(tmp_path)
+    sheet = tmp_path / "annotations" / "doc_labels.csv"
+    write_annotation_sheet(sheet, doc_id=pages[0].doc_id, label="scanned")
+    monkeypatch.setattr(text_tools, "ANNOTATION_SHEET", sheet)
+    text_tools._annotation_scan_labels.cache_clear()
+
+    marker_calls = 0
+
+    def fake_marker_text(_pages):
+        nonlocal marker_calls
+        marker_calls += 1
+        return ("marker should not be used",)
+
+    monkeypatch.setattr(layout, "marker_text", fake_marker_text)
+
+    class FakeOCR:
+        calls = 0
+
+        def predict(self, image_path: str):
+            self.calls += 1
+            return [{"rec_texts": ["ocr routed text"]}]
+
+    engine = FakeOCR()
+    assert text_channel(pages, ocr_engine=engine) == ("ocr routed text",)
+    assert text_channel(pages, ocr_engine=engine) == ("ocr routed text",)
+    assert engine.calls == 1
+    assert marker_calls == 0
+
+
+def test_text_channel_routes_digital_docs_to_marker_and_human_label_wins(tmp_path: Path, monkeypatch) -> None:
+    pages = rendered_page(tmp_path)
+    sheet = tmp_path / "annotations" / "doc_labels.csv"
+    write_annotation_sheet(sheet, doc_id=pages[0].doc_id, label="scanned", human_label="digital")
+    monkeypatch.setattr(text_tools, "ANNOTATION_SHEET", sheet)
+    text_tools._annotation_scan_labels.cache_clear()
+
+    monkeypatch.setattr(layout, "marker_text", lambda _pages: ("marker routed text",))
+
+    class FailOCR:
+        def predict(self, image_path: str):
+            raise AssertionError("OCR should not be called for a human-labelled digital doc")
+
+    assert text_channel(pages, ocr_engine=FailOCR()) == ("marker routed text",)
 
 
 def test_prestage_smoke_selects_small_subset_and_is_repeatable(tmp_path: Path, monkeypatch) -> None:

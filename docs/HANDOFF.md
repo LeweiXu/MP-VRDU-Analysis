@@ -1,124 +1,117 @@
-# Session handoff — 2026-07-06 (afternoon)
+# Session handoff — 2026-07-07
 
-Continuation of the earlier 2026-07-06 session. bf16 judging is done and the
-tables are built; the open thread is **G2 / Table 3 (InternVL)**, which failed on
-a missing dependency and is now being smoke-tested. Everything below is
-**uncommitted on `main`**.
+This session was pipeline tooling + two experiment changes, not a cluster run.
+Everything below is **committed on `main`** (commits `02bffb6 large refactor +
+README` and `cd85fad add top k sweep`); the tree is clean. Tests: **94 passed, 1
+skipped**.
 
-## THE LIVE THING: G2 InternVL smoke test (job 1010783)
+The one big open thread is the **OCR-as-a-rung** change: it's fully designed and
+documented but deliberately **not implemented yet** (it's a frozen-interface
+checkpoint). See "The main open thread" below.
 
-**Why:** the full G2 run (job 1010307) reported `success` but wrote **zero
-predictions** - every InternVL cell died with `ImportError: ... requires timm`.
-`timm` was never a declared dependency. It's now in `requirements.txt`
-(`timm==1.0.20`) and installed in the Kaya env (you did this).
+## What shipped this session
 
-**Gotcha we hit:** a plain smoke run does NOT test InternVL. `G2Family.model_specs`
-returns `()` in smoke mode by design ("smoke has one family, Table 3 reuses G1"),
-so the first smoke submit (job 1010756) just did side work and exited in 40s
-without loading InternVL. The real test is a **capped full run**, which loads
-InternVL but only on a few questions:
+- **`cli/` now holds only the three experiment roles** (`generate`, `judge`,
+  `build`). Everything else moved to `scripts/`: `gates.py`, `run_probe.py`, plus
+  the new tools. Invoke as `python -m scripts.<name>`. Target tree in
+  `docs/implementation_plan.md` reflects it.
+- **Item-1 cleanup (the "temp/cache/full looks table-organized" thing).** That was
+  a stale gitignored `temp/` from before the generation-task refactor; deleted. The
+  live cache is task-keyed `results/cache/[<run-tag>/]<smoke|full>/<task>/`. Also
+  repointed `scripts/gates.py`'s old hardcoded `T1_headline` defaults to run-tag-
+  aware resolution (`default_results_path`/`default_table1_path`, driven by
+  `--run-tag`/`--full`).
+- **Inspection tool.** `experiments/inspect.py` (library) + `scripts/inspect_results.py`.
+  Joins a task's `predictions.jsonl` + `results.jsonl` back to the question + PDF,
+  renders the fed pages, and dumps each cell into `./inspect/<slug>/` (copied PDF,
+  page PNGs, `info.md` listing **every** generate + judge field). Filters:
+  `--question/--doc/--representation/--condition/--incorrect-only/--abstained-only/--limit`.
+  `inspect/` is gitignored.
+- **Gate-F2 human-judging viewer.** `scripts.gates agreement-sample --render` now
+  renders the sampled cells' pages into a scrollable `agreement_view.md`
+  (`experiments/gates.py::render_agreement_packet`) so a human can label from
+  VSCode; `agreement-score` (Cohen's kappa) is unchanged.
+- **Document annotation tool.** `scripts/annotate_docs.py`: interactive, resumable
+  `annotate` (opens each PDF, menu per field, writes after every doc);
+  `dominant_visual` accepts **multiple** picks (stored `;`-joined). Fields:
+  bin (text/in-between/visual-heavy), scanned/digital, dominant_visual, multi_column,
+  notes; seeded with `doc_type_bin` + `data.render.classify_scanned` priors.
+  `score` reports human-bin-vs-doc_type-bin agreement (tests the 3-domain
+  assumption) + scanned fraction. Writes `annotations/doc_labels.csv` (committed,
+  version-controlled). Companion `scripts/split_docs_by_type.py` groups the 135
+  PDFs into per-doc_type folders under `.data/mmlongbench_docs_split/`.
+- **G5 top-k sweep (implemented).** `config.k_values = (1, 3, 5, 7, 9)`. G5 now runs
+  the full sweep: `matched_cross_sweep_cells` emits 10 cells/question
+  (`retrieved_{vision,text}_k{k}`, question-major/k-minor), `run_side` logs
+  `retrieval.jsonl` per (question, modality, k), and `build_table6_matched_vs_cross`
+  reports **each k separately** (new `k` column, `_condition_k` parses k from the
+  conditioner name). Retrievers memoize by `(question, page_count, k)`.
 
-```
-python -m cli.generate --generation G2_family --full --questions 5 \
-    --visual-resolution low --run-tag g2-smoke
-```
+## The main open thread: OCR as its own rung (designed, NOT implemented)
 
-That's job **1010783** (2xV100, 1h), submitted and RUNNING.
+Agreed plan, deferred on purpose. Full writeup lives in **README → "Planned: OCR as
+its own rung"** and **AGENT_GUIDE → "G5 top-k sweep; OCR-rung plan (deferred)"**.
+Summary:
 
-### Watch it
+- Add OCR as a fourth channel and its own cumulative rung → ladder becomes
+  **`T / TO / TOL / TOLV / V`**. `T` stays pure Marker text; `TO` adds an `[ocr]`
+  block; `V` stays vision-only. Payload order `[text]→[ocr]→[layout]→images`.
+- OCR runs on **every** page (digital or scanned), cached to disk per (page, dpi)
+  like Marker, warmed in the parse pre-pass, GPU freed before the reasoner. Use the
+  existing `tools/text.py::ocr` (PaddleOCR), currently wired but unused.
+- **Not an OOM risk** (analysis in README): the `max_input_tokens` cap truncates
+  the combined text tail before attention; OCR adds text tokens, not vision tokens.
+- **Why it's a checkpoint, not a silent edit:** it renames `schema.Modality`
+  `TL`→`TOL`, `TLV`→`TOLV`, which touches the frontier order (`metrics/frontier.py`
+  `RUNG_ORDER`), the table builders (`experiments/tables.py`: `{TLV,V}` sets, rung
+  tuples, composition special-cases), `matched_cross_*` default rung, and
+  `scripts/gates.py`'s agreement default rung. It needs a **fresh `--run-tag`**
+  because the `bf16-lowres` cache/tables use the old rung names. When you implement
+  it, work through those references and re-run.
+
+## Other open items
+
+1. **Re-run G5 to populate the sweep.** The existing `bf16-lowres` G5 cache only has
+   `retrieved_*_k1` (the pre-sweep single k). Table 6 there is k=1 only. To get the
+   full k=(1,3,5,7,9) table, re-generate + re-judge G5 (same run-tag adds the new
+   cells since each k is its own condition/prediction row), then rebuild. The
+   oracle-ladder tasks (G1/G2/G3) are unaffected by the sweep.
+2. **`annotations/doc_labels.csv` is seeded, not annotated.** It has the 135 rows
+   with auto priors but only 1 stray `bin_label` from a smoke test. To start real
+   annotation, either `python -m scripts.annotate_docs annotate` (it skips
+   already-done rows) or rebuild clean with `annotate_docs sheet --force`.
+3. **The `inspect/` folder** (gitignored) has the G5 cells that were being viewed;
+   safe to delete anytime with `rm -rf inspect/`.
+4. **Deprioritized from the prior handoff:** the G2 InternVL replication (said to be
+   not important right now) and the separate 4-bit run. Those Kaya job IDs from the
+   earlier handoff are stale.
+
+## Tooling quick reference
+
 ```bash
-# blocking: waits, pulls results+logs, tails the log
-envs/mpvrdu/bin/python -m kaya.kaya watch 1010783
-# or just poll status
-ssh kaya 'sacct -j 1010783 -o JobID,State,Elapsed,ExitCode'
-# pull whenever
-envs/mpvrdu/bin/python -m kaya.kaya pull
+# inspect cached inference cells (writes ./inspect/, open in VSCode)
+python -m scripts.inspect_results --run-tag bf16-lowres --full \
+    --generation G1_sufficiency --incorrect-only --limit 20
+
+# annotate the 135 docs (interactive, resumable)
+python -m scripts.annotate_docs annotate
+python -m scripts.annotate_docs score
+
+# gate F2 with a viewing packet
+python -m scripts.gates agreement-sample --full --run-tag bf16-lowres --render
+python -m scripts.gates agreement-score --sheet results/gates/agreement_sample.csv
+
+# group the 135 PDFs by doc_type for browsing
+python scripts/split_docs_by_type.py
 ```
 
-### What a real pass looks like
-After it finishes, pull and check:
-```bash
-wc -l results/cache/g2-smoke/full/G2_family/predictions.jsonl   # expect ~20 (5 q x 4 rungs, minus any >10-page drop)
-cat  results/cache/g2-smoke/full/G2_family/generate_status.json # status: success
-grep -c "specs=(side-only)" logs/generate_1010783.out           # want 0 (InternVL must actually run)
-grep -ci timm logs/generate_1010783.err                         # want 0
-```
-Elapsed should be **minutes** (InternVL load takes a few), not 40s. The log should
-show InternVL loading and per-cell `done` lines. Note: the false-success bug is
-fixed now (see below), so if InternVL fails to load or every cell fails, the job
-exits non-zero / writes `status: failed` instead of lying. So `COMPLETED` + a
-non-empty `predictions.jsonl` = a genuine pass.
+## Dataset note (came up at the end)
 
-### If the smoke passes -> run the full G2
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --gres=gpu:v100:2 --mem=24G --time=06:00:00 --no-wait \
-  cli/generate.py -- --generation G2_family --full --visual-resolution low --run-tag bf16-lowres --continue-on-error
-# then pull, judge (needs a working Gemini key), build:
-envs/mpvrdu/bin/python -m kaya.kaya pull
-python -m cli.judge --generation G2_family --full --run-tag bf16-lowres --continue-on-error
-python -m cli.build --full --run-tag bf16-lowres
-```
-Once G2 is judged, **table3 (family replication) unblocks** and builds.
-
-### If it fails
-Read `logs/generate_1010783.err` / `.out`. Suspects: timm still not in the env
-(re-run `kaya run scripts/setup_env.py`), another InternVL dep, or a 2-GPU
-sharding OOM. Integration point is `models/internvl.py`.
-
-## bf16 results are done
-
-All bf16 judging finished (G1 1232, G3 836, G5 616 cells; judge said "3 scored, 0
-failed"). Tables built under `results/tables/full-bf16-lowres/`:
-
-- Built: table1, table2, table4, table5, table6, table7.
-- Skipped: table3 (waiting on G2 judge), table8 (blocked, no G4 scale task).
-- **New:** `all_tables_summarised.md` - paper-style compact tables (accuracy % with
-  95% CI, frontier in bold), alongside the raw `all_tables.md` and the CSVs.
-
-Headline (table1): frontiers are T / TL / TL (text or text+layout is sufficient at
-low res; vision never wins the frontier). table6 (matched vs cross retrieval) now
-reports in_between + visual_heavy, and shows text-retrieval (cross) is about as
-good as vision-retrieval (matched).
-
-## Code changed this session (all uncommitted)
-
-- `experiments/corpus.py` - drop questions with >10 evidence pages
-  (`MAX_EVIDENCE_PAGES`, 7 in the full corpus incl. the 24-page OOM case), applied
-  after per-bin sampling so it doesn't perturb the cache.
-- `pipeline/judge.py` - two-key Gemini fallback (`GEMINI_API_KEY` ->
-  `GEMINI_API_KEY_SECONDARY`), daily-quota 429 fast-fails to switch keys instead
-  of burning retries.
-- `experiments/driver.py` - a generate task whose every cell is skipped now
-  **raises** (writes `status: failed`) instead of false-success.
-- `experiments/reporting.py` - **table gate**: a table CSV is written only when
-  all its source tasks' generate+judge finished (success status + non-empty
-  output); unfinished/blocked tables are skipped and stale CSVs removed. table8
-  blocked (no G4). table6 now sources G1+G5 (it needs G1's oracle rows to pick
-  vision bins). Writes `all_tables_summarised.md`.
-- `experiments/tables.py` - table6 inclusion loosened from "vision is the
-  frontier" to "vision materially helps" (best TLV/V beats best T/TL by the
-  sufficiency margin, and the bin has data). Paper-style summariser
-  (`render_paper_tables_markdown`).
-- `requirements.txt` - `timm==1.0.20`.
-- Tests updated/added; suite is **86 passed, 1 skipped**.
-
-## Kaya jobs
-
-- `1010783 g2-smoke` - RUNNING, the InternVL smoke (this handoff's focus).
-- `1010304 4bit-resume` - RUNNING (~4.5h elapsed), the separate 4-bit full run.
-- `1010307 bf16-g2` - COMPLETED but FAILED (0 predictions, missing timm); superseded.
-- `1010308 4bit-g2` - CANCELLED earlier so bf16-g2 would run next.
-- `1010756 generate` - the no-op smoke (side-only); ignore.
-
-## Judge quota note
-
-Supervisor's key is Tier-1 (billed, ~10k/day) - it briefly dropped to free tier
-when the card expired, now restored. Personal free key is only 20/day (kept as a
-fallback). The two-key fallback in `pipeline/judge.py` covers both. See
-`memory/mpvrdu-judge-quota.md`.
-
-## Open items
-
-1. Watch job 1010783; if it passes, run the full G2 (commands above) -> table3.
-2. **Commit this session's work** (it's all uncommitted).
-3. 4-bit full run (`1010304`) is a separate track still resuming.
+The **246 zero-evidence-page questions are the *unanswerable* ones** (gold answer
+`"Not answerable"`, `hop="none"`, `is_unanswerable=True`; ~22% of the corpus). They
+are not trick/general-knowledge questions; the correct behavior is to **abstain**,
+and the judge scores them correct only on abstention. For G1 (oracle) there are no
+gold pages, so `OracleConditioner`/`render_question_pages` feed **page 0 only** as a
+sanity anchor. So for these, G1 is really an abstention/hallucination probe (does
+the model say "not answerable" instead of inventing an answer from page 0), not a
+reading-comprehension test.
