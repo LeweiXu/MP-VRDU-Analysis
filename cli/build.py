@@ -14,7 +14,10 @@ Arguments:
         overrides where CSVs land; --markdown sets the combined report path (or
         `none` to skip it). --bootstrap / --seed control the document-level
         bootstrap. No task selector: every table builds from its fixed source
-        tasks, with a blank skeleton for any table whose source has no rows.
+        tasks. A table is written only once all its source tasks' generate+judge
+        phases have finished (successful status + non-empty output); tables with
+        unfinished or unimplemented dependencies are skipped, not stubbed, and any
+        stale CSV from an earlier partial build is removed.
 """
 
 from __future__ import annotations

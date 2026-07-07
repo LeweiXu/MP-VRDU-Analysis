@@ -220,8 +220,8 @@ def test_run_generate_continue_on_error_records_per_task_status(tmp_path: Path, 
     assert json.loads(after_status.read_text())["status"] == "success"
 
 
-def test_build_routes_tasks_into_all_eight_tables(tmp_path: Path, fake_channels, monkeypatch) -> None:
-    """Generate G1 + G5 (reasoner cells), judge all, build all eight table CSVs."""
+def test_build_gates_tables_on_finished_dependencies(tmp_path: Path, fake_channels, monkeypatch) -> None:
+    """Only tables whose source tasks' generate+judge finished get a CSV."""
 
     config = _make_config(tmp_path)
     questions = load_mmlongbench(config.paths.data_dir)
@@ -229,22 +229,40 @@ def test_build_routes_tasks_into_all_eight_tables(tmp_path: Path, fake_channels,
     fake = CountingReasoner()
     monkeypatch.setattr(driver, "reasoner_for", lambda spec, config=None: fake)
 
-    # G1: oracle ladder via the real generate() path (no side work).
+    # Only G1 is generated and judged; G2/G3/G5/G6 never run.
     driver.generate(config, GENERATION_TASKS["G1_sufficiency"], questions)
-    # G5: run its matched/cross cells directly with a stub retriever, skipping the
-    # real-model run_side (retrieval R/P/F1 needs ColQwen/BM25 weights).
-    _generate_cells_with_stub(config, "G5_retrieval", questions, fake)
-
-    driver.run_judge(config, "all", questions, judge_impl=KeywordJudge(), continue_on_error=True)
+    driver.run_judge(config, "G1_sufficiency", questions, judge_impl=KeywordJudge(), continue_on_error=True)
     written = reporting.build_tables(config, config.paths.results_dir / "tables" / "smoke",
                                  n_bootstrap=0, markdown_path=tmp_path / "all_tables.md")
 
-    assert {f"table{i}" for i in range(1, 9)} <= set(written)
-    assert written["markdown"].exists()
-    for i in range(1, 9):
-        assert written[f"table{i}"].exists(), f"table{i}"
-    # Tables sourced from the generated tasks (G1 -> table1, G5 -> table6) have rows.
+    # G1-sourced tables build and have rows.
+    for key in ("table1", "table2", "table5"):
+        assert key in written and written[key].exists(), key
     assert len(pd.read_csv(written["table1"])) > 0
+    # Tables whose dependencies aren't finished are not written at all (no
+    # misleading skeleton). table8 is blocked because its G4 scale task
+    # doesn't exist; table3/4/6/7 wait on G2/G3/G5/G6.
+    from experiments.tables import TABLE_FILENAMES
+    for key in ("table3", "table4", "table6", "table7", "table8"):
+        assert key not in written, key
+        assert not (config.paths.results_dir / "tables" / "smoke" / TABLE_FILENAMES[key]).exists(), key
+    assert written["markdown"].exists()
+
+
+def test_generate_fails_when_every_cell_is_skipped(tmp_path: Path, fake_channels, monkeypatch) -> None:
+    """A task whose every cell fails must not report generate-success (no predictions)."""
+
+    class AlwaysBoom(CountingReasoner):
+        def answer(self, question: Question, model_input: ModelInput) -> Prediction:
+            raise RuntimeError("every cell fails (e.g. a missing dependency like timm)")
+
+    config = _make_config(tmp_path)
+    task = GENERATION_TASKS["G1_sufficiency"]
+    monkeypatch.setattr(driver, "reasoner_for", lambda spec, config=None: AlwaysBoom())
+
+    # Even with skip-on-error, an all-skipped task raises so run_generate records failed.
+    with pytest.raises(RuntimeError, match="all .* reasoner cell"):
+        driver.generate(config, task, load_mmlongbench(config.paths.data_dir), skip_failed_cells=True)
 
 
 def test_generate_skips_failed_cells_when_continue_on_error(tmp_path: Path, fake_channels, monkeypatch) -> None:

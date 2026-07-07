@@ -40,6 +40,7 @@ from experiments.tables import (
     build_table7_routing,
     build_table8_scale_sanity,
     load_result_rows,
+    render_paper_tables_markdown,
     render_tables_markdown,
 )
 from pipeline.orchestrator import ResultRow
@@ -64,6 +65,7 @@ class TableSpec:
     sources: tuple[str, ...]            # generation tasks whose judged rows feed it
     build: Builder
     side_sources: tuple[str, ...] = ()  # generation tasks whose side artifact feeds it
+    blocked_reason: str | None = None   # if set, never build (a dependency isn't implemented)
 
 
 def _t1(rows, side, c, nb, seed):
@@ -112,9 +114,13 @@ TABLES: tuple[TableSpec, ...] = (
     TableSpec("table3", ("G1_sufficiency", "G2_family"), _t3),
     TableSpec("table4", ("G3_dataset",), _t4),
     TableSpec("table5", ("G1_sufficiency",), _t5),
-    TableSpec("table6", ("G5_retrieval",), _t6, side_sources=("G5_retrieval",)),
+    # table6 needs G1's oracle rows too: it picks the vision-frontier bins from
+    # the oracle frontier (build_table6_matched_vs_cross), then measures G5's
+    # matched/cross retrieval rows within them. Without G1 there are no oracle
+    # rows, so it always emitted 0 rows regardless of the retrieval data.
+    TableSpec("table6", ("G1_sufficiency", "G5_retrieval"), _t6, side_sources=("G5_retrieval",)),
     TableSpec("table7", ("G1_sufficiency",), _t7, side_sources=("G6_classifier",)),
-    TableSpec("table8", ("G1_sufficiency",), _t8),
+    TableSpec("table8", ("G1_sufficiency",), _t8, blocked_reason="G4 scale task not implemented"),
 )
 
 
@@ -124,6 +130,49 @@ def _load_side_records(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _phase_succeeded(config: ExperimentConfig, task_name: str, phase: str) -> bool:
+    """True if a task's `<phase>_status.json` exists and reports success."""
+
+    status_path = experiment_paths(config, task_name).root / f"{phase}_status.json"
+    if not status_path.exists():
+        return False
+    try:
+        return json.loads(status_path.read_text()).get("status") == "success"
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def _nonempty(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
+
+
+def _table_blocker(config: ExperimentConfig, spec: "TableSpec") -> str | None:
+    """Why this table can't build yet, or None if all its dependencies are done.
+
+    A table is ready only when every row-source task's *judge* phase succeeded and
+    left a non-empty `results.jsonl`, and every side-artifact task's *generate*
+    phase succeeded and left a non-empty artifact. Status alone isn't enough: a
+    task can report generate-success with zero predictions (all cells skipped), so
+    we also require the actual output file to be non-empty.
+    """
+
+    if spec.blocked_reason:
+        return spec.blocked_reason
+    missing: list[str] = []
+    for task_name in spec.sources:
+        results = experiment_paths(config, task_name).results
+        if not (_phase_succeeded(config, task_name, "judge") and _nonempty(results)):
+            missing.append(f"{task_name}(judge)")
+    for task_name in spec.side_sources:
+        artifact = GENERATION_TASKS[task_name].side_artifact
+        artifact_ok = True
+        if artifact:
+            artifact_ok = _nonempty(experiment_paths(config, task_name).side_dir / artifact)
+        if not (_phase_succeeded(config, task_name, "generate") and artifact_ok):
+            missing.append(f"{task_name}(generate)")
+    return "waiting on " + ", ".join(missing) if missing else None
 
 
 def build_tables(
@@ -143,6 +192,15 @@ def build_tables(
     sources_used: set[str] = set()
 
     for spec in TABLES:
+        out = output_dir / TABLE_FILENAMES[spec.key]
+        blocker = _table_blocker(config, spec)
+        if blocker is not None:
+            # Not all dependencies are finished. Don't write a misleading
+            # skeleton, and drop any stale CSV left by an earlier partial build.
+            if out.exists():
+                out.unlink()
+            log.info("skipped %s (%s)", spec.key, blocker)
+            continue
         rows: list[ResultRow] = []
         for task_name in spec.sources:
             task_rows = list(load_result_rows(experiment_paths(config, task_name).results))
@@ -156,7 +214,6 @@ def build_tables(
                 side[task_name] = _load_side_records(experiment_paths(config, task_name).side_dir / artifact)
         frame = spec.build(rows, side, config, n_bootstrap, seed)
         tables[spec.key] = frame
-        out = output_dir / TABLE_FILENAMES[spec.key]
         frame.to_csv(out, index=False)
         written[spec.key] = out
         log.info("built %s (%d rows) from %s -> %s", spec.key, len(frame), ",".join(spec.sources), out)
@@ -166,4 +223,8 @@ def build_tables(
         source_label = ", ".join(sorted(sources_used)) or "(no cached rows)"
         markdown_path.write_text(render_tables_markdown(tables, source=source_label, n_rows=None) + "\n")
         written["markdown"] = markdown_path
+        # Paper-style companion: same tables, only the interpretable columns.
+        summary_path = markdown_path.parent / "all_tables_summarised.md"
+        summary_path.write_text(render_paper_tables_markdown(tables, source=source_label) + "\n")
+        written["markdown_summary"] = summary_path
     return written

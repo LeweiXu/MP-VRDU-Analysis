@@ -458,7 +458,15 @@ def build_table6_matched_vs_cross(
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> pd.DataFrame:
-    """Build Table 6: matched-vs-cross retrieval on vision-frontier bins."""
+    """Build Table 6: matched-vs-cross retrieval on bins where vision helps.
+
+    A bin is included when reasoning *materially benefits* from vision: the best
+    vision-bearing rung (TLV/V) beats the best text-only rung (T/TL) by at least
+    the sufficiency margin. This is looser than "vision is the frontier" (which
+    also requires vision to be the *cheapest* sufficient rung) - with wide per-bin
+    CIs the frontier often lands on TL even where TLV is much higher, dropping
+    bins where matched-vs-cross is still worth reporting.
+    """
 
     oracle_rows = [row for row in rows if row.condition == "oracle" and _safe_bin(row)]
     oracle_table = build_table1_headline(
@@ -468,10 +476,15 @@ def build_table6_matched_vs_cross(
         n_bootstrap=n_bootstrap,
         seed=seed,
     ).set_index("bin")
+    margin = margin_points / 100.0
     vision_bins = {
         bin_name
         for bin_name in bins
-        if bin_name in oracle_table.index and str(oracle_table.loc[bin_name, "frontier"]) in {"TLV", "V"}
+        if bin_name in oracle_table.index
+        and oracle_table.loc[bin_name, "n_questions"] > 0  # skip empty bins (0 - 0 >= 0)
+        and max(oracle_table.loc[bin_name, "TLV_acc"], oracle_table.loc[bin_name, "V_acc"])
+        - max(oracle_table.loc[bin_name, "T_acc"], oracle_table.loc[bin_name, "TL_acc"])
+        >= margin
     }
     retrieval_records = list(retrieval_records or [])
     out: list[dict[str, object]] = []
@@ -772,6 +785,156 @@ def render_tables_markdown(
         lines.append(f"_CSV: `{TABLE_FILENAMES[key]}` ({note})_")
         lines.append("")
         lines.append(_table_to_markdown(df))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _fmt_pct(value: object, digits: int = 1) -> str:
+    """Format a 0-1 accuracy as a percentage string, or '' if missing/non-numeric."""
+
+    try:
+        return f"{float(value) * 100:.{digits}f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _acc_ci(record: Mapping[str, object], prefix: str) -> str:
+    """'44.4 [35.0, 53.7]' for a rung prefix (T/TL/TLV/V), or '' if no data."""
+
+    acc = _fmt_pct(record.get(f"{prefix}_acc"))
+    if not acc or not record.get(f"{prefix}_n"):
+        return ""
+    return f"{acc} [{_fmt_pct(record.get(f'{prefix}_ci_low'))}, {_fmt_pct(record.get(f'{prefix}_ci_high'))}]"
+
+
+def _md_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
+    """Render a github-flavoured markdown table."""
+
+    if not rows:
+        return "_(no rows)_"
+    out = ["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
+    for row in rows:
+        out.append("| " + " | ".join("" if cell is None else str(cell) for cell in row) + " |")
+    return "\n".join(out)
+
+
+def _paper_ladder(df: pd.DataFrame, id_cols: Sequence[str], id_headers: Sequence[str], *, extra: Sequence[str] = ()) -> str:
+    """Compact rung table: id cols, n, T/TL/TLV/V (acc [CI], frontier bold), frontier + latency."""
+
+    rungs = ("T", "TL", "TLV", "V")
+    headers = [*id_headers, "n", *rungs, "Frontier"]
+    has_latency = "latency_at_frontier_s" in df.columns
+    if "frontier" in df.columns and has_latency:
+        headers.append("Frontier lat (s)")
+    headers.extend(extra)
+    rows: list[list[object]] = []
+    for _, r in df.iterrows():
+        front = str(r.get("frontier", "")) if "frontier" in df.columns else ""
+        cells = []
+        for rung in rungs:
+            cell = _acc_ci(r, rung)
+            cells.append(f"**{cell}**" if cell and rung == front else cell)
+        row: list[object] = [r[c] for c in id_cols] + [int(r.get("n_questions", 0) or 0), *cells, front]
+        if "frontier" in df.columns and has_latency:
+            row.append(f"{float(r.get('latency_at_frontier_s', 0) or 0):.2f}")
+        row.extend(r.get(c, "") for c in extra)
+        rows.append(row)
+    return _md_table(headers, rows)
+
+
+def _paper_table2(df: pd.DataFrame) -> str:
+    rungs = ("T", "TL", "TLV", "V")
+    headers = ["Bin", "Question type", "n", *rungs]
+    rows = [
+        [r["bin"], r["question_type"], int(r.get("n_questions", 0) or 0), *[_fmt_pct(r.get(f"{g}_acc")) for g in rungs]]
+        for _, r in df.iterrows()
+    ]
+    return _md_table(headers, rows)
+
+
+def _paper_table5(df: pd.DataFrame) -> str:
+    headers = ["Bin", "Evidence", "Share %", "Modality frontier", "Bin frontier", "Predicted bin frontier", "Match"]
+    rows = [
+        [
+            r["bin"], r["evidence_modality"], _fmt_pct(r.get("share")),
+            r.get("modality_frontier", ""), r.get("bin_frontier", ""), r.get("predicted_bin_frontier", ""),
+            "yes" if r.get("predicted_matches_bin") else "no",
+        ]
+        for _, r in df.iterrows()
+    ]
+    return _md_table(headers, rows)
+
+
+def _paper_table6(df: pd.DataFrame) -> str:
+    headers = ["Bin", "Pipeline", "Retrieval", "Accuracy [CI]", "Δ vs matched (pts)", "Retrieval F1"]
+    rows = []
+    for _, r in df.iterrows():
+        acc = _fmt_pct(r.get("accuracy"))
+        acc_ci = f"{acc} [{_fmt_pct(r.get('ci_low'))}, {_fmt_pct(r.get('ci_high'))}]" if acc else ""
+        delta = r.get("delta_accuracy_vs_matched")
+        delta_str = f"{float(delta) * 100:+.1f}" if delta is not None and str(delta) != "nan" else ""
+        rows.append([r["bin"], r["pipeline"], r.get("retrieval_modality", ""), acc_ci, delta_str, _fmt_pct(r.get("retrieval_f1"))])
+    return _md_table(headers, rows)
+
+
+def _paper_table7(df: pd.DataFrame) -> str:
+    headers = ["Policy", "Chosen rungs", "n", "Accuracy [CI]", "Total latency (s)"]
+    rows = []
+    for _, r in df.iterrows():
+        acc = _fmt_pct(r.get("accuracy"))
+        acc_ci = f"{acc} [{_fmt_pct(r.get('ci_low'))}, {_fmt_pct(r.get('ci_high'))}]" if acc else ""
+        rows.append([r["policy"], r.get("chosen_rungs", ""), int(r.get("n_rows", 0) or 0), acc_ci, f"{float(r.get('total_latency_bs1_s', 0) or 0):.2f}"])
+    return _md_table(headers, rows)
+
+
+_PAPER_RENDERERS: Mapping[str, "Callable[[pd.DataFrame], str]"] = {
+    "table1": lambda df: _paper_ladder(df, ["bin"], ["Bin"]),
+    "table2": _paper_table2,
+    "table3": lambda df: _paper_ladder(df, ["model_spec", "model_size", "bin"], ["Model", "Size", "Bin"], extra=["matches_primary_frontier"]),
+    "table4": lambda df: _paper_ladder(df, ["dataset", "bin"], ["Dataset", "Bin"]),
+    "table5": _paper_table5,
+    "table6": _paper_table6,
+    "table7": _paper_table7,
+}
+
+
+def render_paper_tables_markdown(tables: Mapping[str, pd.DataFrame], *, source: str | None = None) -> str:
+    """Render the built tables as compact, paper-style markdown (all_tables_summarised.md).
+
+    Only the interpretable columns: document-level accuracy as a percentage with a
+    95% bootstrap CI in brackets, the frontier rung in bold. Tables that weren't
+    built (unfinished dependency, or table 8's unimplemented scale task) get a
+    one-line note instead of a wall of empty columns.
+    """
+
+    from datetime import datetime, timezone
+
+    lines = ["# MP-VRDU results (paper tables)", ""]
+    meta = [f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}."]
+    if source:
+        meta.append(f"Source: `{source}`.")
+    lines.append(" ".join(meta))
+    lines.append("")
+    lines.append(
+        "Cells are document-level accuracy (%) with a 95% bootstrap CI in [brackets]. "
+        "Rungs: T = text, TL = text+layout, TLV = text+layout+vision, V = vision. "
+        "The frontier (cheapest sufficient rung) is in **bold**."
+    )
+    lines.append("")
+    for key in TABLE_FILENAMES:
+        number = key.removeprefix("table")
+        lines.append(f"## Table {number}. {TABLE_TITLES.get(key, key)}")
+        lines.append("")
+        df = tables.get(key)
+        if df is None or df.empty:
+            note = (
+                "_Not built: scale task (G4) is not implemented._"
+                if key == "table8"
+                else "_Not built yet: its source experiments' generate/judge haven't all finished._"
+            )
+            lines.append(note)
+        else:
+            lines.append(_PAPER_RENDERERS[key](df))
         lines.append("")
     return "\n".join(lines)
 

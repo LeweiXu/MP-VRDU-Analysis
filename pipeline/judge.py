@@ -44,7 +44,32 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _RETRYABLE_NAMES = {"ServerError", "APIConnectionError", "APITimeoutError"}
 
 
+def _is_daily_quota(exc: Exception) -> bool:
+    """True for a per-day quota exhaustion (RPD), not a transient per-minute 429.
+
+    A daily cap won't clear for ~a day, so retrying the *same* key is pointless;
+    the caller should switch to a fallback key instead. Gemini spells the daily
+    metric out in the error body ("per_model_per_day" / "PerDay").
+    """
+
+    msg = str(exc)
+    return "per_model_per_day" in msg or "PerDay" in msg
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """True for any rate/quota rejection (429 or RESOURCE_EXHAUSTED)."""
+
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if isinstance(code, int) and code == 429:
+        return True
+    return "RESOURCE_EXHAUSTED" in str(exc)
+
+
 def _is_retryable(exc: Exception) -> bool:
+    # A daily-quota 429 is not retryable on the same key (it won't recover for
+    # hours); raise so a multi-key judge can fall back to the next key at once.
+    if _is_daily_quota(exc):
+        return False
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     if isinstance(code, int) and code in _RETRYABLE_STATUS:
         return True
@@ -225,13 +250,33 @@ class GPT4oMiniJudge(Judge):
         return _score_from_verdict(question, prediction, payload, judge_spec=self.spec, model=self.model)
 
 
+def _gemini_api_keys() -> list[str]:
+    """Ordered, de-duplicated Gemini API keys from the environment.
+
+    Primary first (`GEMINI_API_KEY`, then `GOOGLE_API_KEY`), then the optional
+    `GEMINI_API_KEY_SECONDARY` fallback. A run that exhausts the primary key's
+    free-tier daily quota rolls over to the next key instead of failing. List a
+    second key under a personal account to roughly double the daily ceiling.
+    """
+
+    keys: list[str] = []
+    for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY_SECONDARY"):
+        value = (os.environ.get(name) or "").strip()
+        if value and value not in keys:
+            keys.append(value)
+    return keys
+
+
 class GeminiJudge(Judge):
     """Google Gemini judge (different family, free tier) via the google-genai SDK.
 
-    Reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`). `google-genai` is already a
-    dependency (Marker pulls it in), so this adds no new package. Flash models
-    have a free tier, which is why this is a good default for the smoke run and
-    the κ-validation gate.
+    Reads `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) plus an optional
+    `GEMINI_API_KEY_SECONDARY`. `google-genai` is already a dependency (Marker
+    pulls it in), so this adds no new package. Flash models have a free tier,
+    which is why this is a good default for the smoke run and the κ-validation
+    gate. With more than one key it fails over to the next on a quota/rate error
+    (see `_generate_with_fallback`), which matters because the free tier caps
+    both per-minute and per-day request counts.
     """
 
     spec = "gemini-flash-judge"
@@ -245,29 +290,52 @@ class GeminiJudge(Judge):
     ) -> None:
         self.model = model
         self.spec = spec or self.spec
-        if client is None:
-            from google import genai
+        self._index = 0  # sticky: once a key is exhausted we stay on the fallback
+        if client is not None:
+            self._clients: list[Any] = [client]
+            return
+        from google import genai
 
-            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-            client = genai.Client(api_key=api_key) if api_key else genai.Client()
-        self.client = client
+        keys = _gemini_api_keys()
+        self._clients = [genai.Client(api_key=key) for key in keys] if keys else [genai.Client()]
 
     def score(self, question: Question, prediction: Prediction) -> Score:
         from google.genai import types
 
-        response = _with_retry(
-            lambda: self.client.models.generate_content(
-                model=self.model,
-                contents=_judge_user_payload(question, prediction),
-                config=types.GenerateContentConfig(
-                    system_instruction=JUDGE_SYSTEM_PROMPT,
-                    temperature=0,
-                    response_mime_type="application/json",
-                ),
-            )
+        config = types.GenerateContentConfig(
+            system_instruction=JUDGE_SYSTEM_PROMPT,
+            temperature=0,
+            response_mime_type="application/json",
+        )
+        contents = _judge_user_payload(question, prediction)
+        response = self._generate_with_fallback(
+            lambda client: client.models.generate_content(model=self.model, contents=contents, config=config)
         )
         payload = _extract_json_object(response.text or "")
         return _score_from_verdict(question, prediction, payload, judge_spec=self.spec, model=self.model)
+
+    def _generate_with_fallback(self, call: Callable[[Any], Any]) -> Any:
+        """Try the active key (with retry); on a quota error roll to the next key."""
+
+        last_exc: Exception | None = None
+        while self._index < len(self._clients):
+            client = self._clients[self._index]
+            try:
+                return _with_retry(lambda: call(client))
+            except Exception as exc:
+                last_exc = exc
+                if self._index + 1 < len(self._clients) and _is_quota_error(exc):
+                    log.warning(
+                        "judge key #%d hit quota/rate limit (%s); falling back to key #%d",
+                        self._index + 1,
+                        type(exc).__name__,
+                        self._index + 2,
+                    )
+                    self._index += 1
+                    continue
+                raise
+        assert last_exc is not None  # loop entered at least once (>=1 client)
+        raise last_exc
 
 
 def get_judge(spec: str) -> Judge:

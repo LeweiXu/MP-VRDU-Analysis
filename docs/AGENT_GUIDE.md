@@ -413,6 +413,19 @@ OOM), and the loop continues instead of aborting the whole task. So a run
 completes over the ~99.7% of cells that fit and simply omits the handful of
 pathological many-page cells; the judge (`--continue-on-error`) then scores
 what was generated. This turns a fatal task failure into a small, documented gap.
+
+**Explicit filter (implemented): drop >10-evidence-page questions.**
+`experiments/corpus.py::load_questions` now drops any question whose gold
+evidence spans more than `MAX_EVIDENCE_PAGES` (=10) pages, applied *after* per-bin
+sampling so it never perturbs which documents get drawn (the existing bf16 cache
+stays consistent). On the full corpus this is 7 questions (12-24 pages; incl.
+`mmlongbench:000855` at 24). This is a deterministic superset of the per-cell
+skip: at `--visual-resolution low` only the 24-page question actually OOMs, so the
+cutoff is conservative (it also drops 6 that generated fine at low res), but it's
+resolution-independent and doesn't rely on a runtime OOM. Both phases resolve the
+same filtered set, so judge/build agree. Chosen over a higher cutoff to keep the
+rule simple; raise `MAX_EVIDENCE_PAGES` if the low-res 12-21 page cells are wanted
+back.
 **Also:** 4-bit weights are ~7GB vs bf16's ~13GB resident, but 4-bit is *slower*
 per cell (dequant) and, at full resolution, timed out a 12h run; bf16 at
 `--visual-resolution low` completed in 10h. See `docs/HANDOFF.md`.

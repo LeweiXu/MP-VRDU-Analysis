@@ -167,6 +167,8 @@ def generate(
     )
 
     reasoner = None
+    total_cells = 0
+    total_skipped = 0
     for spec in specs:
         reasoner = reasoner_for(spec, config)
         orchestrator = Orchestrator(
@@ -178,6 +180,7 @@ def generate(
         )
         cells = task.generation_cells(config, task_questions, retrievers=retrievers)
         log.info("%s spec=%s: %d cells to run", task.name, spec, len(cells))
+        total_cells += len(cells)
         skipped_cells = 0
 
         # Parse pre-pass: warm the Marker/Surya (and retrieval) disk caches with
@@ -229,6 +232,7 @@ def generate(
 
         if skipped_cells:
             log.warning("%s spec=%s: skipped %d/%d cell(s) that failed (see FAILED lines above)", task.name, spec, skipped_cells, len(cells))
+        total_skipped += skipped_cells
 
         # Release the reasoner before the next spec or the side work, so a
         # multi-spec task (or the classifier in run_side) starts from a clean GPU.
@@ -237,6 +241,16 @@ def generate(
         del orchestrator
         reasoner = None
         free_gpu()
+
+    # A task whose every reasoner cell failed produced no predictions, so its
+    # "generate" phase must not report success (that false-success is how a
+    # broken run, e.g. a missing `timm` for InternVL, slipped through as a table
+    # dependency). Raise so run_generate records status=failed instead.
+    if total_cells and total_skipped == total_cells:
+        raise RuntimeError(
+            f"{task.name}: all {total_cells} reasoner cell(s) failed and were skipped; "
+            "no predictions were written (see FAILED lines above)"
+        )
 
     log.info("%s: running side work in %s", task.name, paths.side_dir)
     started = time.perf_counter()

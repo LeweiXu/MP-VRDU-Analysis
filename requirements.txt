@@ -5,6 +5,10 @@ vllm==0.9.2
 transformers==4.57.6
 accelerate==1.8.1
 qwen-vl-utils==0.0.11
+# InternVL3 (G2/Table 3) loads its vision tower through timm via trust_remote_code;
+# without it every InternVL cell dies with "requires timm". Not pulled in by
+# anything else, so it must be explicit.
+timm==1.0.20
 PyMuPDF==1.26.3
 paddleocr==3.1.0
 paddlex[ie,multimodal,ocr]>=3.1.0,<3.2.0

@@ -21,7 +21,12 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from experiments.tables import TABLE_FILENAMES, build_all_tables, write_all_tables
+from experiments.tables import (
+    TABLE_FILENAMES,
+    build_all_tables,
+    build_table6_matched_vs_cross,
+    write_all_tables,
+)
 from metrics.accuracy import accuracy_summary
 from metrics.frontier import FrontierCell, sufficiency_frontier
 from pipeline.judge import GeminiJudge, GPT4oMiniJudge, get_judge
@@ -75,19 +80,20 @@ def row(
     correct: bool,
     model_spec: str = "qwen3vl-2b-local",
     evidence_sources: tuple[str, ...] = ("Text",),
+    condition: str = "oracle",
 ) -> ResultRow:
     """Build a minimal cached result row for table tests."""
 
     return ResultRow(
-        cache_key=f"{question_id}-{representation}-{model_spec}",
+        cache_key=f"{question_id}-{representation}-{model_spec}-{condition}",
         question_id=question_id,
         doc_id=doc_id,
         doc_type=doc_type,
         hop="single",
         is_unanswerable=False,
         evidence_sources=evidence_sources,
-        condition="oracle",
-        provenance="oracle",
+        condition=condition,
+        provenance=condition,
         page_indices=(0,),
         representation=representation,
         model_spec=model_spec,
@@ -181,6 +187,54 @@ def test_gemini_judge_returns_valid_score() -> None:
     assert client.models.calls[0]["model"] == "gemini-2.5-flash"
 
 
+class _DailyQuota(Exception):
+    """Stand-in for a google-genai per-day 429 (message the judge sniffs for)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "429 RESOURCE_EXHAUSTED quotaId 'GenerateRequestsPerDayPerProjectPerModel' "
+            "metric generativelanguage.googleapis.com/generate_requests_per_model_per_day"
+        )
+        self.code = 429
+
+
+class FailingGeminiModels:
+    """A `models` endpoint whose first N calls raise a daily-quota 429."""
+
+    def __init__(self, payload: dict, fail_times: int) -> None:
+        self.payload = payload
+        self.remaining_failures = fail_times
+        self.calls: list[dict] = []
+
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.remaining_failures > 0:
+            self.remaining_failures -= 1
+            raise _DailyQuota()
+        return SimpleNamespace(text=json.dumps(self.payload))
+
+
+def test_gemini_judge_falls_back_to_second_key_on_daily_quota() -> None:
+    payload = {"verdict": "correct", "extracted_answer": "42", "rationale": "match"}
+    exhausted = SimpleNamespace(models=FailingGeminiModels(payload, fail_times=99))
+    fresh = SimpleNamespace(models=FailingGeminiModels(payload, fail_times=0))
+    judge = GeminiJudge(client=exhausted)
+    judge._clients = [exhausted, fresh]  # two keys; primary is out of daily quota
+
+    # First cell: primary raises daily-quota (no wasted retries), fall back to fresh.
+    score = judge.score(question(), Prediction(text="The value is 42."))
+    assert score.correct
+    assert exhausted.models.calls, "primary key should have been tried once"
+    assert fresh.models.calls, "fallback key should have scored the cell"
+    assert judge._index == 1  # switch is sticky
+
+    # Second cell goes straight to the fallback key without re-probing the dead one.
+    before = len(exhausted.models.calls)
+    judge.score(question(), Prediction(text="The value is 42."))
+    assert len(exhausted.models.calls) == before
+    assert len(fresh.models.calls) == 2
+
+
 def test_get_judge_resolves_specs(monkeypatch) -> None:
     # Dummy keys so the SDK clients construct without a real credential.
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -241,3 +295,32 @@ def test_all_table_builders_emit_csv_shapes(tmp_path: Path) -> None:
     assert {"bin", "pipeline", "accuracy", "delta_accuracy_vs_matched"}.issubset(tables["table6"].columns)
     assert {"policy", "chosen_rungs", "accuracy", "total_latency_bs1_s"}.issubset(tables["table7"].columns)
     assert {"scale_family", "model_spec", "frontier"}.issubset(tables["table8"].columns)
+
+
+def test_table6_needs_oracle_rows_to_find_vision_bins() -> None:
+    """Table 6 selects vision-frontier bins from oracle rows, so they must be routed in.
+
+    Regression: table6 used to be sourced from G5 alone, which has no `oracle`
+    rows, so vision-bin selection always came up empty and the table was silently
+    blank regardless of the retrieval data.
+    """
+
+    docs = [("q-v1", "d1.pdf"), ("q-v2", "d2.pdf"), ("q-v3", "d3.pdf")]
+    oracle_rows = [
+        row(question_id=q, doc_id=d, doc_type="Brochure", representation=rep,
+            correct=(rep in {"TLV", "V"}), evidence_sources=("Chart",))
+        for q, d in docs for rep in ("T", "TL", "TLV", "V")
+    ]
+    retrieval_rows = [
+        row(question_id=q, doc_id=d, doc_type="Brochure", representation="TLV",
+            correct=matched, evidence_sources=("Chart",),
+            condition=("retrieved_vision_k1" if matched else "retrieved_text_k1"))
+        for q, d in docs for matched in (True, False)
+    ]
+
+    # Retrieval rows alone: no oracle rows -> no vision bins -> empty table.
+    assert build_table6_matched_vs_cross(retrieval_rows, n_bootstrap=0).empty
+    # With the oracle rows routed in, the vision bin is found and both pipelines emit.
+    combined = build_table6_matched_vs_cross(oracle_rows + retrieval_rows, n_bootstrap=0)
+    assert not combined.empty
+    assert set(combined["pipeline"]) == {"matched_vision", "cross_text_to_vision"}

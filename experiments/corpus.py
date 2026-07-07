@@ -16,6 +16,7 @@ Arguments:
 
 from __future__ import annotations
 
+import logging
 import random
 
 from config import ExperimentConfig
@@ -23,6 +24,13 @@ from data.binning import doc_type_bin
 from experiments.smoke import load_smoke_questions
 from data.loader import load_longdocurl, load_mmlongbench
 from schema import Question
+
+log = logging.getLogger("mpvrdu.corpus")
+
+# Questions whose gold evidence spans more pages than this are dropped from every
+# run (see load_questions). The oracle conditioner feeds all gold pages at once,
+# and past this many the attention cost OOMs a V100.
+MAX_EVIDENCE_PAGES = 10
 
 
 def load_questions(config: ExperimentConfig, *, limit: int | None = None) -> list[Question]:
@@ -46,18 +54,43 @@ def load_questions(config: ExperimentConfig, *, limit: int | None = None) -> lis
     # experiments that resolve their own corpus, like T4.
     cap = limit if limit is not None else config.sample
     if cap is not None:
-        return questions[: max(1, cap)]
-
+        selected = questions[: max(1, cap)]
     # Otherwise, on the full mmlongbench run, keep each Option-A bin to ~N
     # questions by drawing whole documents (document-level sampling).
-    if config.dataset == "mmlongbench" and config.per_bin_sample:
-        return sample_questions_per_bin(
+    elif config.dataset == "mmlongbench" and config.per_bin_sample:
+        selected = sample_questions_per_bin(
             questions,
             config.per_bin_sample,
             bins=config.bins,
             seed=config.sample_seed,
         )
-    return questions
+    else:
+        selected = questions
+
+    # Drop the handful of questions whose gold evidence spans more than
+    # MAX_EVIDENCE_PAGES pages: the oracle conditioner feeds every gold page to
+    # the reasoner, and past ~10 pages the O(seq^2) attention OOMs a V100 even at
+    # low visual resolution (see docs/AGENT_GUIDE.md "Third OOM"). It's only a
+    # couple of questions in the whole subset, so this doesn't move any result;
+    # it just makes the skip explicit instead of relying on a runtime OOM +
+    # --continue-on-error. Applied last so it never perturbs the per-bin sample.
+    return _drop_oversized_evidence(selected)
+
+
+def _drop_oversized_evidence(questions: list[Question]) -> list[Question]:
+    """Drop questions with more than MAX_EVIDENCE_PAGES gold evidence pages."""
+
+    kept = [q for q in questions if len(q.evidence_pages) <= MAX_EVIDENCE_PAGES]
+    dropped = len(questions) - len(kept)
+    if dropped:
+        ids = ", ".join(q.id for q in questions if len(q.evidence_pages) > MAX_EVIDENCE_PAGES)
+        log.info(
+            "dropped %d question(s) with >%d evidence pages: %s",
+            dropped,
+            MAX_EVIDENCE_PAGES,
+            ids,
+        )
+    return kept
 
 
 def sample_questions_per_bin(
