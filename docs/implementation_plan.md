@@ -170,12 +170,10 @@ mpvrdu/                 # == the working directory / repo root
     driver.py          # the generate (GPU) + judge (local) engine over tasks
     tables.py          # pure per-table aggregation functions (frontier, metric columns)
     reporting.py       # table -> source-task routing; builds CSVs + combined .md
-  cli/                       # the runnable entry points (thin wrappers)
+  cli/                       # the three experiment roles ONLY (thin wrappers)
     generate.py        # GPU: cache predictions for task(s)  (a cluster submits this)
     judge.py           # local: score a task's cached predictions (no tables)
     build.py           # local: route source-task rows -> the 8 CSVs + .md
-    run_probe.py       # Stage 1 feasibility probes
-    gates.py           # Section-2 go/no-go gate evaluation
 kaya/
   config.json          # static Kaya site/project/module/SLURM/path config
   kaya.py              # Python SSH/rsync/SLURM runner for login and GPU jobs
@@ -185,6 +183,11 @@ kaya/
 scripts/               # standalone ops utilities (not imported by the package)
   profile_datasets.py  # table-readiness profile of the 5 datasets (existing)
   dataset_stats.py     # full per-dataset statistics -> md + csv (existing prep script)
+  run_probe.py         # Stage 1 feasibility probes
+  gates.py             # Section-2 go/no-go gate evaluation
+  inspect_results.py   # inspect one/many cached inference results (doc + answers)
+  annotate_docs.py     # per-document manual annotation sheet + scoring
+  split_docs_by_type.py # copy the 135 docs into per-doc_type folders
 docs/
   implementation_plan.md # this staged build plan + target tree + frozen-interface rules
   AGENT_GUIDE.md       # fixed decisions, tree-to-paper map, findings, models/data/tools/eval reference

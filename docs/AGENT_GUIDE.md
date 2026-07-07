@@ -182,8 +182,9 @@ judge). No stub reasoners or injected scorers on this path.
   retrieval R/P/F1 → table 6), and `G6_classifier` (doc-type classifier side work
   → table 7's routing price). Adding an experiment is just a new `G*_*.py` +
   a line in `experiments/registry.py`; a scale task (2B/32B → table 8) is out of
-  scope for now. Each task caches under `results/cache/<smoke|full>[/<run-tag>]/<task>/`,
-  so jobs never collide. Groups: `all`, `reasoners`.
+  scope for now. Each task caches under `results/cache/[<run-tag>/]<smoke|full>/<task>/`
+  (run-tag namespaces the whole tree, so it sits *before* `<smoke|full>`), so jobs
+  never collide. Groups: `all`, `reasoners`.
 - **Table routing replaces `depends_on`.** `experiments/reporting.py`'s `TABLES`
   registry declares each table's source task(s): table1←G1, table3←G1+G2,
   table4←G3, table6←G5 (+retrieval side), table7←G1 (+classifier side), table8←G1.
@@ -235,16 +236,16 @@ shape are untouched.
 ## Section-2 gates and full-stage tooling (F1-F6)
 
 Gate tooling is implemented in `experiments/gates.py` and exposed through
-`cli.gates`; commands are recorded in `docs/USER_GUIDE.md` (Runbook).
+`scripts.gates`; commands are recorded in `docs/USER_GUIDE.md` (Runbook).
 
-- **F1 frontier divergence.** `cli.gates frontier` reads the full Table-1 CSV and
+- **F1 frontier divergence.** `scripts.gates frontier` reads the full Table-1 CSV and
   returns Go when at least two Option-A bins have different frontiers. The full
   Qwen3-VL-8B run has not been executed in this log, so the verdict is pending.
-- **F2 judge-human agreement.** `cli.gates agreement-sample` writes the 200-row
+- **F2 judge-human agreement.** `scripts.gates agreement-sample` writes the 200-row
   human labelling sheet from judged rows; `agreement-score` computes Cohen's
   kappa over `correct` / `incorrect` / `abstained` and gates at 0.75. The human
   labels and kappa result are pending.
-- **F3 classifier feasibility.** `cli.gates classifier-pilot --full` samples 100
+- **F3 classifier feasibility.** `scripts.gates classifier-pilot --full` samples 100
   distinct documents, runs the first-two-page Qwen3-VL-2B classifier, and gates
   top-1 Option-A bin accuracy at 0.70. The pilot result and RQ3 scope decision
   are pending.
@@ -493,6 +494,48 @@ Added for the two full 8B runs (4-bit current-res vs bf16 aggressive-downscale):
   eight tables alongside the CSVs; tables with no cached rows render a blank
   skeleton row so the report always shows all shapes.
 
+## `cli/` is the three experiment roles only; utilities live in `scripts/`
+
+`cli/` holds exactly `generate.py`, `judge.py`, `build.py` (the thin wrappers a
+run submits). Every other runnable moved to `scripts/`: `run_probe.py`,
+`gates.py`, plus the new inspection/annotation tools below. Invoke them as
+`python -m scripts.<name>`. This is a deliberate structure decision (not a frozen
+interface); the target tree in `docs/implementation_plan.md` reflects it.
+
+**Stale `temp/` cache (diagnosis, resolved).** A gitignored `temp/cache/full/`
+tree keyed by *table* (`T1_headline`, `T2_analytical`, ...) survived from before
+the generation-task refactor and made it look like GPU output was still
+table-organized. It was dead (no code referenced it) and has been deleted. The
+live cache is task-keyed: `results/cache/[<run-tag>/]<smoke|full>/<task>/`
+(run-tag namespaces the whole tree, so it sits *before* `<smoke|full>`; see
+`experiments/paths.py::experiment_paths` + `config.py` `__post_init__`). The gate
+CLI's old hardcoded `results/cache/full/T1_headline/...` defaults were repointed
+to run-tag-aware resolution via `experiment_paths` (`scripts/gates.py`
+`default_results_path` / `default_table1_path`, driven by `--run-tag` / `--full`).
+
+**Inspection + annotation tooling.**
+- `experiments/inspect.py` (+ `scripts/inspect_results.py`): join a task's
+  `predictions.jsonl` and `results.jsonl` back to the `Question` + PDF, render the
+  fed pages, and dump each cell into `./inspect/<slug>/` (copied PDF, page PNGs,
+  and an `info.md` that lists *every* `CachedPrediction` and `ResultRow` field).
+  Filters: question/doc/representation/condition/incorrect-only/abstained-only.
+  Reuses `render_pdf` against the run's shared render cache (hits, not re-renders).
+  Limitation: the judge's free-text rationale is not persisted (only the
+  verdict/score in `ResultRow`), so it can't be shown.
+- Gate F2 viewer: `scripts.gates agreement-sample --render` calls
+  `experiments.gates.render_agreement_packet` (reusing `experiments/inspect.py`)
+  to render the sampled cells' pages into a scrollable `agreement_view.md`
+  alongside the CSV, so a human can label `human_label` while seeing the document.
+  `agreement-score` (Cohen's kappa, gate 0.75) is unchanged.
+- `scripts/annotate_docs.py`: interactive, resumable per-document annotation of the
+  135 docs. `annotate` opens each PDF in turn and prompts a menu per field
+  (text/visual bin, scanned vs digital, dominant visual element, multi-column),
+  seeded with `doc_type_bin` + `data.render.classify_scanned` priors, writing
+  `annotations/doc_labels.csv` (a committable dir, not gitignored `results/`) after
+  every doc. `score` reports human-bin-vs-`auto_bin` agreement per doc_type (this
+  tests the three-domain assumption) plus the scanned fraction. `classify_scanned`
+  is the shared version of the Stage-1 scanned-vs-born-digital heuristic.
+
 ## Kaya operations (elsewhere)
 
 The Kaya operational how-to, the `clear-cache` command, SLURM queue hazards,
@@ -575,7 +618,7 @@ Condensed from the former `MODELS.md`, `DATA.md`, `TOOLS.md`, and
   Each returns verdict (`correct`/`incorrect`/`abstained`) + extracted answer +
   rationale; an abstaining verdict on a native-unanswerable question counts
   correct. Keys live in the local `.env` only, never forwarded to Kaya. Gate F2
-  (`cli.gates agreement-*`) computes Cohen's kappa vs 200 human labels, gated at
+  (`scripts.gates agreement-*`) computes Cohen's kappa vs 200 human labels, gated at
   0.75.
 - **Accuracy.** `metrics.accuracy.accuracy_summary()` = mean correctness + 95%
   bootstrap CI, resampled at the **document level** (draw `doc_id`s with
@@ -584,7 +627,7 @@ Condensed from the former `MODELS.md`, `DATA.md`, `TOOLS.md`, and
   text/vision/output token sums (secondary).
 - **Frontier.** `metrics.frontier.sufficiency_frontier()` orders `T->TL->TLV->V`;
   the frontier is the cheapest rung whose upper CI reaches within the margin
-  (default 3 points) of the strongest rung's point estimate. `cli.gates frontier`
+  (default 3 points) of the strongest rung's point estimate. `scripts.gates frontier`
   gates F1 (Go when >=2 Option-A bins differ).
 - **Retrieval.** `metrics.retrieval` scores page precision/recall/F1 vs gold
   `evidence_pages`, sliced by `<retrieval-modality>:<evidence-source>` (e.g.
@@ -596,7 +639,7 @@ Condensed from the former `MODELS.md`, `DATA.md`, `TOOLS.md`, and
   two pages, builds `TLV`, asks Qwen3-VL-2B for a native doc_type, maps it through
   Option-A binning. Predicted routing counts classifier cost explicitly as total
   classifier latency / evaluated rows, reported as its own `classifier_latency_bs1_s`
-  column. Gate F3 (`cli.gates classifier-pilot`) gates top-1 bin accuracy at 0.70.
+  column. Gate F3 (`scripts.gates classifier-pilot`) gates top-1 bin accuracy at 0.70.
 - **Tables 1-8** are emitted by `experiments.tables`; **Table 4 is now a held-out
   MMLongBench subset** (disjoint documents for text_heavy/in_between, reused
   visual_heavy), not LongDocURL, binned by the same three domains as Table 1.

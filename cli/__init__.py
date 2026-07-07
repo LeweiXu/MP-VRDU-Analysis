@@ -6,10 +6,10 @@ Purpose:
     wrappers.
 
 Pipeline role:
-    `cli.run_probe` checks feasibility and `cli.gates` evaluates Section-2 gate
-    artifacts. The paper-table experiments moved to the `experiments` package,
-    split by role: `cli.generate` (GPU), `cli.judge`, and `cli.build` — thin
-    wrappers over the `experiments` package.
+    `cli` holds only the three experiment roles, thin wrappers over the
+    `experiments` package: `cli.generate` (GPU), `cli.judge`, and `cli.build`.
+    Standalone utilities (feasibility probes `scripts.run_probe`, Section-2 gates
+    `scripts.gates`, inspection, annotation) live under `scripts/`.
 
 Arguments:
     None. This package initializer is import-only; arguments live in the

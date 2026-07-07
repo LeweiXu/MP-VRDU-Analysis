@@ -438,6 +438,9 @@ Side artifacts are one record per unit, not per cell:
 - `metrics/` - accuracy, cost, frontier, retrieval, abstention.
 - `experiments/` - one generation task per file (`G1`..`G6`), the generate+judge
   engine (`driver.py`), table builders (`tables.py`), and table routing (`reporting.py`).
-- `cli/` - `generate` (GPU), `judge`, `build`, `gates`.
+- `cli/` - the three experiment roles only: `generate` (GPU), `judge`, `build`.
+- `scripts/` - standalone utilities: `run_probe` (feasibility probes), `gates`
+  (Section-2 go/no-go gates), `inspect_results` (view a cached inference cell),
+  `annotate_docs` (per-document manual labels), `split_docs_by_type`, staging.
 - `kaya/` - cluster sync/submit runner and setup scripts.
 - `docs/` - user guide, agent/implementation notes, staged build plan.

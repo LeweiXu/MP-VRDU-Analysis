@@ -8,7 +8,7 @@ Purpose:
     leave expensive generation/classification to callers.
 
 Pipeline role:
-    `cli.gates` exposes these helpers for real runs, while tests exercise the
+    `scripts.gates` exposes these helpers for real runs, while tests exercise the
     predicates and samplers without loading models. Keeping the gate logic here
     makes the human checkpoints reproducible from cached rows and side artifacts.
 
@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from config import DEFAULT_BINS
+from config import DEFAULT_BINS, ExperimentConfig
 from data.binning import doc_type_bin
 from pipeline.orchestrator import ResultRow
 from schema import Question
@@ -350,6 +350,41 @@ def agreement_sheet_rows(
             }
         )
     return sheet
+
+
+def render_agreement_packet(
+    config: "ExperimentConfig",
+    sheet_rows: Sequence[Mapping[str, Any]],
+    out_dir: Path,
+    *,
+    task: str = "G1_sufficiency",
+) -> Path:
+    """Render the sampled cells into a viewing packet for human labelling.
+
+    The CSV sheet is text-only, so a labeller can't see the document. This joins
+    each sampled row back to its cached cell (by question/condition/representation/
+    model_spec) and renders the fed pages + a scrollable markdown packet under
+    `out_dir`, in the same order as the CSV. The human reads the packet in VSCode
+    and fills `human_label` in the CSV (matched by question_id).
+    """
+
+    # Imported here so the pure gate predicates stay import-light for tests.
+    from experiments.inspect import items_by_cell, write_packet
+
+    by_cell = items_by_cell(config, task)
+    items = []
+    for row in sheet_rows:
+        key = (row["question_id"], row["condition"], row["representation"], row["model_spec"])
+        item = by_cell.get(key)
+        if item is not None:
+            items.append(item)
+    return write_packet(
+        items,
+        Path(out_dir),
+        config,
+        title="F2 judge-vs-human agreement — label each in the CSV's human_label column",
+        packet_name="agreement_view.md",
+    )
 
 
 def write_csv_records(records: Sequence[Mapping[str, Any]], path: Path) -> Path:

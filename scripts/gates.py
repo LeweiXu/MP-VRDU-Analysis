@@ -13,10 +13,10 @@ Pipeline role:
     trusted.
 
 CLI:
-    `python -m cli.gates <frontier|agreement-sample|agreement-score|classifier-pilot|classifier-score> ...`
+    `python -m scripts.gates <frontier|agreement-sample|agreement-score|classifier-pilot|classifier-score> ...`
 
 Arguments:
-    See `python -m cli.gates --help` and each subcommand's help text.
+    See `python -m scripts.gates --help` and each subcommand's help text.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from experiments.gates import (
     load_table1_frontiers,
     question_type_label,
     read_classifier_records,
+    render_agreement_packet,
     run_classifier_pilot,
     score_agreement_sheet,
     score_classifier_records,
@@ -42,13 +43,32 @@ from experiments.gates import (
     write_csv_records,
     write_gate_json,
 )
+from experiments.paths import experiment_paths
 from experiments.tables import load_result_rows
 from scripts.prestage import prepare_tool_cache_env
 
 
-DEFAULT_TABLE1 = ROOT / "results" / "tables" / "full" / "table1_headline.csv"
-DEFAULT_T1_RESULTS = ROOT / "results" / "cache" / "full" / "T1_headline" / "results.jsonl"
+# Table 1 / F1 / F2 all source the primary oracle-ladder task.
+GENERATION = "G1_sufficiency"
 DEFAULT_GATE_DIR = ROOT / "results" / "gates"
+
+
+def _paths_config(full: bool, run_tag: str | None) -> ExperimentConfig:
+    """Config used only to resolve run-tag-aware cache/table paths (no HF env)."""
+
+    return ExperimentConfig(smoke=not full, run_tag=run_tag)
+
+
+def default_results_path(full: bool, run_tag: str | None) -> Path:
+    """Resolve G1's judged results.jsonl under the current mode/run-tag."""
+
+    return experiment_paths(_paths_config(full, run_tag), GENERATION).results
+
+
+def default_table1_path(full: bool, run_tag: str | None) -> Path:
+    """Resolve the Table-1 CSV under the current mode/run-tag."""
+
+    return experiment_paths(_paths_config(full, run_tag), GENERATION).table_dir / "table1_headline.csv"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,12 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     frontier = sub.add_parser("frontier", help="evaluate F1 from a Table-1 CSV")
-    frontier.add_argument("--table", type=Path, default=DEFAULT_TABLE1, help="Table-1 CSV path")
+    frontier.add_argument("--table", type=Path, default=None, help="Table-1 CSV path (default: resolved from mode/run-tag)")
+    frontier.add_argument("--smoke", action="store_true", help="resolve the smoke table instead of full")
+    frontier.add_argument("--run-tag", help="run tag namespacing results/tables/<mode>-<tag>/")
     frontier.add_argument("--json-output", type=Path, help="optional gate JSON output path")
 
     agreement_sample = sub.add_parser("agreement-sample", help="write the F2 human-labelling sheet")
     agreement_sample.add_argument("--full", action="store_true", help="sample from the full corpus")
-    agreement_sample.add_argument("--results", type=Path, default=DEFAULT_T1_RESULTS, help="judged ResultRow JSONL")
+    agreement_sample.add_argument("--run-tag", help="run tag namespacing the cached results")
+    agreement_sample.add_argument("--results", type=Path, default=None, help="judged ResultRow JSONL (default: resolved from mode/run-tag)")
     agreement_sample.add_argument("--output", type=Path, default=DEFAULT_GATE_DIR / "agreement_sample.csv")
     agreement_sample.add_argument("--n", type=int, default=200, help="number of question rows to sample")
     agreement_sample.add_argument("--seed", type=int, default=0)
@@ -74,6 +97,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--questions-only",
         action="store_true",
         help="write only the stratified question frame, without requiring result rows",
+    )
+    agreement_sample.add_argument(
+        "--render",
+        dest="render",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="also render the sampled documents into a viewing packet (default: on)",
+    )
+    agreement_sample.add_argument(
+        "--render-dir",
+        type=Path,
+        default=DEFAULT_GATE_DIR / "agreement_view",
+        help="where to write the viewing packet (page PNGs + agreement_view.md)",
     )
 
     agreement_score = sub.add_parser("agreement-score", help="score a completed F2 sheet")
@@ -100,10 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _config(full: bool) -> ExperimentConfig:
+def _config(full: bool, run_tag: str | None = None) -> ExperimentConfig:
     """Return the smoke/full experiment config for gate commands."""
 
-    config = ExperimentConfig(smoke=not full)
+    config = ExperimentConfig(smoke=not full, run_tag=run_tag)
     prepare_tool_cache_env(config.paths.hf_home)
     return config
 
@@ -141,18 +177,20 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "frontier":
-        result = frontier_divergence_gate(load_table1_frontiers(args.table))
+        table = args.table or default_table1_path(not args.smoke, args.run_tag)
+        result = frontier_divergence_gate(load_table1_frontiers(table))
         _emit_gate(result, args.json_output)
         return 0
 
     if args.command == "agreement-sample":
-        config = _config(args.full)
+        config = _config(args.full, args.run_tag)
         questions = load_questions(config)
         if args.questions_only:
             sample = stratified_question_sample(questions, n=args.n, seed=args.seed)
             rows = _question_frame(sample)
         else:
-            result_rows = load_result_rows(args.results)
+            results_path = args.results or default_results_path(args.full, args.run_tag)
+            result_rows = load_result_rows(results_path)
             rows = agreement_sheet_rows(
                 questions,
                 result_rows,
@@ -164,6 +202,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         write_csv_records(rows, args.output)
         print(f"wrote {len(rows)} rows: {args.output}")
+        if args.render and not args.questions_only:
+            packet = render_agreement_packet(config, rows, args.render_dir, task=GENERATION)
+            print(f"wrote viewing packet: {packet}  (open in VSCode, label human_label in the CSV)")
         return 0
 
     if args.command == "agreement-score":

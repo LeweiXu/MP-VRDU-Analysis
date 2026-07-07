@@ -324,13 +324,17 @@ Judge API keys live only in the local `.env` (`GEMINI_API_KEY` /
 ## Gates
 
 ```bash
-python -m cli.gates frontier --table results/tables/full/table1_headline.csv \
-    --json-output results/gates/F1_frontier_divergence.json      # F1: Go if >=2 bins differ
-python -m cli.gates agreement-sample --full --results results/cache/full/G1_sufficiency/results.jsonl \
-    --output results/gates/agreement_sample.csv                  # F2: 200-row sheet to hand-label
-python -m cli.gates agreement-score --sheet results/gates/agreement_sample.csv \
+# F1: Go if >=2 bins differ. --table defaults to the Table-1 CSV for the mode/run-tag.
+python -m scripts.gates frontier --run-tag bf16-lowres \
+    --json-output results/gates/F1_frontier_divergence.json
+# F2: 200-row sheet + a viewing packet (page images) under results/gates/agreement_view/.
+# --results defaults to G1's results.jsonl for the mode/run-tag.
+python -m scripts.gates agreement-sample --full --run-tag bf16-lowres \
+    --output results/gates/agreement_sample.csv
+# hand-label the human_label column in the CSV (open agreement_view.md alongside), then:
+python -m scripts.gates agreement-score --sheet results/gates/agreement_sample.csv \
     --json-output results/gates/F2_judge_human_agreement.json    # F2: Cohen's kappa, gate 0.75
-python -m cli.gates classifier-pilot --full \
+python -m scripts.gates classifier-pilot --full \
     --output results/gates/classifier_pilot.csv \
     --json-output results/gates/F3_classifier_feasibility.json   # F3: gate top-1 bin accuracy 0.70
 ```
@@ -341,4 +345,21 @@ that bin is blank). **Table 6** is only populated for bins whose Table-1 frontie
 is `TLV`/`V`. **Table 7** predicted routing reports the classifier's amortized
 latency as its own column. **Table 8** (scale) shows the single primary size until
 a scale generation task exists.
+
+## Inspecting results and annotating documents
+
+```bash
+# Look at cached inference cells: copies the PDF + fed pages + an info.md (every
+# generate & judge field) into ./inspect/ so you can open them in VSCode.
+python -m scripts.inspect_results --run-tag bf16-lowres --full \
+    --generation G1_sufficiency --incorrect-only --limit 20
+
+# Manually label the 135 documents (text/visual bin, scanned vs digital, dominant
+# visual element, multi-column). Interactive + resumable; writes annotations/doc_labels.csv.
+python -m scripts.annotate_docs annotate
+python -m scripts.annotate_docs score        # human bin vs the doc_type-derived bin
+
+# Group the 135 PDFs into per-doc_type folders under .data/mmlongbench_docs_split/.
+python scripts/split_docs_by_type.py
+```
 

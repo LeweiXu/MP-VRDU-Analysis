@@ -11,7 +11,7 @@ Pipeline role:
     decide what assumptions are safe before the MVP and full runs.
 
 CLI:
-    `python -m cli.run_probe PROBE [options]`
+    `python -m scripts.run_probe PROBE [options]`
 
 Arguments:
     PROBE: one of `list`, `local`, `all`, or a named probe (`loader`,
@@ -711,7 +711,7 @@ def probe_model_family(config: ProbeConfig) -> ProbeVerdict:
         "load_generate": "not run",
         "target": "Kaya compute node with pre-staged HF cache",
         "run_command": (
-            "envs/mpvrdu/bin/python -m kaya.kaya submit cli/run_probe.py "
+            "envs/mpvrdu/bin/python -m kaya.kaya submit scripts/run_probe.py "
             "-- model-family --run-heavy --json"
         ),
     }
@@ -804,7 +804,7 @@ def probe_vision_retrieval(config: ProbeConfig) -> ProbeVerdict:
             "reason": "ColPali/ColQwen indexing requires GPU memory check on Kaya",
         },
         "run_command": (
-            "envs/mpvrdu/bin/python -m kaya.kaya submit cli/run_probe.py "
+            "envs/mpvrdu/bin/python -m kaya.kaya submit scripts/run_probe.py "
             "-- retrieval --run-heavy --json"
         ),
     }

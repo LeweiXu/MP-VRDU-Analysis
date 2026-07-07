@@ -182,7 +182,7 @@ and submits a GPU sbatch wrapper (same path as `submit`).
 Plus all [shared job options](#shared-job-options-run-and-submit).
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run cli/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/run_probe.py -- loader --json
 envs/mpvrdu/bin/python -m kaya.kaya run --target gpu --time 00:05:00 scripts/gpu_test.py
 ```
 
@@ -296,7 +296,7 @@ silently ignored.
 Login-node data probe:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run cli/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/run_probe.py -- loader --json
 ```
 
 GPU smoke:
@@ -308,8 +308,8 @@ envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 Heavy Stage 1 probes:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/run_probe.py -- model-family --run-heavy --json --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 cli/run_probe.py -- retrieval --run-heavy --json
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 scripts/run_probe.py -- model-family --run-heavy --json --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 scripts/run_probe.py -- retrieval --run-heavy --json
 ```
 
 Single generation-task smoke (cache the sufficiency-ladder predictions):

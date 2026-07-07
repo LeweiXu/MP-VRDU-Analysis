@@ -247,3 +247,6 @@ CLAUDE.md
 
 temp/
 .vscode/
+
+# inspection viewing packets (copied PDFs + rendered pages, throwaway)
+inspect/

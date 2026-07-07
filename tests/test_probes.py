@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from cli.run_probe import (
+from scripts.run_probe import (
     NEEDS_HARDWARE,
     PARTIAL,
     PASS,

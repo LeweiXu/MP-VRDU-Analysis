@@ -997,7 +997,7 @@ def build_parser() -> argparse.ArgumentParser:
               python -m kaya.kaya push
               python -m kaya.kaya run scripts/setup_env.py
               python -m kaya.kaya run scripts/prestage.py -- --skip-models
-              python -m kaya.kaya run cli/run_probe.py -- loader --json
+              python -m kaya.kaya run scripts/run_probe.py -- loader --json
               python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
               python -m kaya.kaya submit kaya/example.sbatch -- --script-arg value
               python -m kaya.kaya watch

@@ -1,19 +1,21 @@
 """Split the MMLongBench documents into per-doc_type folders for eyeballing.
 
-Why this exists:
+Purpose:
     The paper groups MMLongBench's seven native `doc_type` labels into three
     "Option-A" bins (text_heavy / in_between / visual_heavy, see
-    `data/binning.py`). Before trusting that grouping we want to actually look at
-    the PDFs in each doc_type and judge whether the text/visual assignment holds
-    up. This script copies each document into
-    `.data/mmlongbench_docs_split/<doc_type>/` so you can open a folder and flip
-    through the real docs.
+    `data/binning.py`). Before trusting that grouping we want to look at the PDFs
+    in each doc_type and judge whether the text/visual assignment holds up. This
+    script copies each document into `.data/mmlongbench_docs_split/<doc_type>/` so
+    you can open a folder and flip through the real docs. It only reads the staged
+    dataset and copies PDFs; it does not touch the parquet or any cache. Re-running
+    is safe (it overwrites the split dir).
 
-    It only reads the staged dataset and copies PDFs; it does not touch the
-    parquet or any cache. Re-running is safe (it overwrites the split dir).
+Pipeline role:
+    A standalone browsing utility, companion to `scripts/annotate_docs.py`. Not
+    part of the run pipeline.
 
-Run:
-    envs/mpvrdu/bin/python scripts/split_docs_by_type.py
+Arguments:
+    None. Run with `envs/mpvrdu/bin/python scripts/split_docs_by_type.py`.
 """
 
 from __future__ import annotations

@@ -19,11 +19,17 @@ Arguments:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from config import DEFAULT_PATHS
 from data.loader import resolve_pdf
 from schema import Page, Question, TextSpan
+
+
+# A page with fewer than this many embedded characters is treated as having no
+# text layer (scanned). Matches the Stage-1 scanned-vs-born-digital probe.
+SCANNED_MIN_CHARS_PER_PAGE = 20
 
 
 def safe_stem(name: str) -> str:
@@ -47,6 +53,45 @@ def pdf_page_count(pdf_path: Path) -> int:
 
     with fitz.open(pdf_path) as doc:
         return doc.page_count
+
+
+@dataclass(frozen=True)
+class ScanEstimate:
+    """Heuristic scanned-vs-born-digital verdict for one PDF."""
+
+    label: str  # "scanned" or "digital"
+    avg_chars_per_page: float
+    sampled_pages: int
+    page_count: int
+
+
+def classify_scanned(pdf_path: Path, max_pages: int = 5) -> ScanEstimate:
+    """Guess whether a PDF is scanned (no text layer) or born-digital.
+
+    Samples the embedded text of the first `max_pages` pages. A doc is "scanned"
+    when no sampled page carries a real text layer (avg chars/page below the
+    `SCANNED_MIN_CHARS_PER_PAGE` threshold). Same rule as the Stage-1 probe in
+    `scripts/run_probe.py`; this is the shared, reusable version.
+    """
+
+    import fitz
+
+    with fitz.open(pdf_path) as doc:
+        page_count = doc.page_count
+        lengths = [
+            len(doc.load_page(index).get_text("text").strip())
+            for index in range(min(page_count, max_pages))
+        ]
+    sampled = len(lengths)
+    avg_chars = round(sum(lengths) / sampled, 1) if sampled else 0.0
+    text_pages = sum(1 for length in lengths if length >= SCANNED_MIN_CHARS_PER_PAGE)
+    is_scanned = sampled == 0 or text_pages == 0 or avg_chars < SCANNED_MIN_CHARS_PER_PAGE
+    return ScanEstimate(
+        label="scanned" if is_scanned else "digital",
+        avg_chars_per_page=avg_chars,
+        sampled_pages=sampled,
+        page_count=page_count,
+    )
 
 
 def extract_text_spans(page) -> tuple[TextSpan, ...]:
