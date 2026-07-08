@@ -1,210 +1,90 @@
-# Session handoff - 2026-07-07
+# Session handoff - 2026-07-08
 
-This session changed the generation pipeline to be YAML-first, added scanned-vs-
-digital text routing, and launched the full G1/G2/G5 rerun on Kaya.
+This session was a documentation + code refactor to make future experiments
+easier to navigate. No pipeline behavior changed; everything is local working-tree
+edits (nothing committed, nothing pushed to Kaya). Full test suite is green:
+**99 passed, 1 skipped**.
 
-Current active cluster job:
+## Cluster job (from the previous session, not touched here)
 
-- Job: `1012121`
-- Name: `g1g2g5-full`
-- Spec: `specs/g1_g5_rerun.yaml`
-- Run tag: `yaml-g1-g2-g5-rerun`
-- Resources: `2x V100`, `64G`, `24h`
-- Last checked: running on `k036` at `52:19` elapsed, still in
-  `G1_sufficiency` parse pre-pass.
-- Status at last check: green. Logs show active Marker/OCR/layout work, with no
-  `Traceback`, `ERROR`, `CUDA out of memory`, `Killed`, or Slurm failure text.
-
-A local watcher is running for the transition into inference:
-
-- Watcher session: `18442`
-- It runs `kaya pull` once per minute.
-- It exits and reports when
-  `results/cache/yaml-g1-g2-g5-rerun/full/G1_sufficiency/predictions.jsonl`
-  appears with at least one row.
-- Watcher log: `/tmp/mpvrdu_inference_watch_1012121.log`
-
-## Main changes made
-
-### OCR routing while keeping paper rungs
-
-The representation ladder remains the paper ladder:
-
-- `T`
-- `TL`
-- `TLV`
-- `V`
-
-There is no OCR-specific rung. Instead, the text channel now routes by document
-scan label:
-
-- digital-born documents use Marker text
-- scanned documents use PaddleOCR text
-
-The scan/digital source is `annotations/doc_labels.csv`; human `scan_label` wins,
-then `auto_scan`, with render-based classification as fallback. `TL` and `TLV`
-continue using the existing layout channel.
-
-### YAML-first experiment specs
-
-Generation now supports YAML specs through:
+The full G1/G2/G5 rerun (`1012121`, run tag `yaml-g1-g2-g5-rerun`, spec
+`specs/g1_g5_rerun.yaml`, 2x V100) was still running at the last handoff. This
+session did **not** push to Kaya, so the remote job runs from its own synced
+snapshot and is unaffected by these local edits. Job state was not re-checked this
+session (watcher session `18442`, logs under `logs/g1g2g5-full_1012121.*`). After it
+finishes, score and build:
 
 ```bash
-python -m cli.generate --spec <spec.yaml>
-```
-
-The loader expands runs into the existing `GenerationTask` machinery. Specs can
-define:
-
-- `version`, `name`, `run_tag`, `mode`, `dataset`
-- shared `config`
-- multiple `runs`
-- question selectors
-- models
-- conditions: `oracle`, `full`, `buried`, `retrieved`
-- representations
-- side artifacts such as retrieval diagnostics
-
-Run-tag based artifact consumption is also wired:
-
-```bash
-python -m cli.judge --run-tag <tag> --judge stub
-python -m cli.build --run-tag <tag> --bootstrap 0
-```
-
-### Representations
-
-The code supports dynamic channel combinations such as `TV` and `LV`, but this
-project's paper experiments should use the rung set only:
-
-```yaml
-representations: [T, TL, TLV, V]
-```
-
-For G5 retrieval, the rerun intentionally uses `TLV` only.
-
-## Specs
-
-Important YAML files:
-
-- `specs/full_generation.yaml`: full generation template.
-- `specs/smoke_generation.yaml`: smoke spec, currently minimal and includes G1,
-  G2, and G5.
-- `specs/smoke_g1_g5.yaml`: minimal one-GPU G1/G5 smoke spec.
-- `specs/g1_g5_rerun.yaml`: active full rerun spec, despite the old filename.
-
-The active rerun spec currently contains:
-
-- `G1_sufficiency`
-  - model: `qwen3vl-8b-local`
-  - reps: `T, TL, TLV, V`
-  - condition: `oracle`
-- `G2_family`
-  - model: `internvl3-8b-local`
-  - reps: `T, TL, TLV, V`
-  - condition: `oracle`
-- `G5_retrieval`
-  - model: `qwen3vl-8b-local`
-  - rep: `TLV`
-  - retrievers: `vision`, `text`
-  - k sweep: `1, 3, 5, 7, 9`
-  - writes `retrieval.jsonl`
-
-The spec was validated with `experiments.yaml_spec.load_yaml_experiment`.
-
-## Smoke tests and verification
-
-Local focused tests passed:
-
-```text
-21 passed
-```
-
-Earlier broader local run passed:
-
-```text
-54 passed, 1 skipped, 1 deselected
-```
-
-The deselected test was the known network/Hugging Face related prestage test.
-
-Kaya smoke job `1012073` completed successfully:
-
-- run tag: `yaml-smoke-g1-g5`
-- G1 expanded to `2 questions x 2 reps = 4 predictions`
-- G5 expanded to `1 question x 2 k values x 2 retrievers = 4 predictions`
-- G5 retrieval artifact had the expected text/vision rows at `k=1` and `k=3`
-- run-tag judge/build paths worked with the stub judge
-
-## Kaya jobs from this session
-
-Cancelled:
-
-- `1011922` - old `yaml-smoke`
-- `1011928` - old 15 minute smoke
-- `1011965` - old 15 minute smoke
-- `1011968` - pending G2-inclusive smoke
-- `1012106` - G1/G5-only full job, cancelled before replacing with G1/G2/G5
-
-Completed:
-
-- `1012073` - one-GPU G1/G5 smoke, successful
-
-Active:
-
-- `1012121` - full G1/G2/G5 rerun
-
-## Dependency note
-
-`PyYAML==6.0.2` was added to both requirements files and installed directly into
-the Kaya environment:
-
-```bash
-envs/mpvrdu/bin/python -m pip install PyYAML==6.0.2
-```
-
-It was already present on Kaya when checked.
-
-## Useful commands
-
-Check active job state:
-
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya watch 1012121 --tail-lines 160
-```
-
-Pull live logs/artifacts without waiting for job completion:
-
-```bash
-envs/mpvrdu/bin/python -m kaya.kaya pull
-```
-
-Inspect live logs:
-
-```bash
-tail -n 120 logs/g1g2g5-full_1012121.out
-tail -n 120 logs/g1g2g5-full_1012121.err
-```
-
-Search logs for failures:
-
-```bash
-rg -n "Traceback|Exception|ERROR|CRITICAL|CUDA out of memory|OutOfMemory|OOM|FAILED|Killed|slurmstepd|RuntimeError" \
-  logs/g1g2g5-full_1012121.out logs/g1g2g5-full_1012121.err
-```
-
-Check whether G1 inference has started:
-
-```bash
-test -s results/cache/yaml-g1-g2-g5-rerun/full/G1_sufficiency/predictions.jsonl && \
-  wc -l results/cache/yaml-g1-g2-g5-rerun/full/G1_sufficiency/predictions.jsonl
-```
-
-After the job completes, score and build:
-
-```bash
-python -m cli.judge --run-tag yaml-g1-g2-g5-rerun --judge <judge>
+python -m cli.judge --spec specs/g1_g5_rerun.yaml --judge <judge>
 python -m cli.build --run-tag yaml-g1-g2-g5-rerun --bootstrap 1000
 ```
 
-Use `--judge stub` only for plumbing checks, not final experiment scoring.
+Note the judge CLI is now `--spec` (or `--full --run-tag`); the deprecated
+`--generation` flag was removed (see below).
+
+## Documentation changes
+
+- **`docs/PROJECT_SPEC.md`** rewritten from the README (it was the stale original
+  spec). Corrected: judge is Gemini-2.5-Flash default / GPT-4o-mini paid; retrievers
+  are `bge-small-en-v1.5` + `colqwen2.5-v0.2`; CIs are document-level bootstrap;
+  Table 4 is a held-out MMLongBench subset (not LongDocURL); 70 text-heavy docs (not
+  54); plus OCR routing and per-bin sampling.
+- **`docs/AGENT_GUIDE.md`** cut ~50% (dropped the build log and the blow-by-blow OOM
+  saga; kept decisions, frozen interfaces, caching contract, and the models/data/
+  tools/evaluation reference). Recorded the Phase-A checkpoint (shared side-artifact
+  writers).
+- **`docs/USER_GUIDE.md`** §1-10 refreshed to match PROJECT_SPEC (same fact fixes:
+  70 docs, bge-small, Gemini default, document-level bootstrap, held-out Table 4, and
+  the V100 hardware-limits risk replacing the resolved transformers-availability one).
+- **Dead `implementation_plan.md` refs** cleaned out after the user deleted the file:
+  the real breakage was `config.py::project_root` (root marker is now `README.md` +
+  `config.py`); also fixed `CLAUDE.md` and `USER_GUIDE.md`. Same for the deleted
+  `SINGLE_GPU_8B_FEASIBILITY.md` (two code comments repointed to `AGENT_GUIDE.md`).
+
+## Code changes (refactor)
+
+- **Deleted dead code:** `scripts/attn_probe.py`, `scripts/single_gpu_probe.py`
+  (zero-reference probes), `models/api_vlm.py` (empty placeholder).
+- **Side-artifact de-duplication:** new `experiments/side_artifacts.py`
+  (`write_retrieval_eval` / `write_classifier_eval`). `G5`, `G6`, and the YAML task
+  all call it now, so the two task systems can't drift. Emission order preserved, so
+  existing `retrieval.jsonl` / `classifier.jsonl` caches stay byte-identical.
+- **Removed the deprecated `--generation` CLI path** from `cli/generate.py` and
+  `cli/judge.py` (YAML `--spec` is the only entry point now). `generate.py` lost its
+  now-dead config flags; the driver's `run_generate`/`run_judge`/`judge` functions
+  were kept (still test-covered engine internals).
+- **Reorganized `experiments/` into top-level packages** (it now holds generation
+  only):
+  - `reporting/` = `tables/` (per-table builders) + `build.py` (table -> source-task
+    routing).
+  - `gates/` = `core.py` (Section-2 gate logic) + `viewer.py` (the shared cached-cell
+    viewer, moved out of `experiments/inspect.py`) + `__main__.py`. The gate CLI is
+    now **`python -m gates`** (was `python -m scripts.gates`).
+  - `scripts/inspect_results.py` stays as the debug CLI, importing `gates.viewer`.
+- **Split `reporting/tables.py`** (was 1004 lines) into a `reporting/tables/`
+  package: one `T*_*.py` module per table (`T1_headline` .. `T8_scale`, mirroring the
+  `G*` task naming), `_common.py` (shared helpers), `_markdown.py` (the two `.md`
+  renderers), and `__init__.py` as the entry point that re-exports everything and
+  owns the all-tables aggregation (`build_all_tables` / `write_all_tables`). The
+  `"table1".."table8"` dict keys are unchanged, so `reporting.build`'s routing and the
+  CSV filenames are untouched.
+
+Frozen interfaces were not touched. `GenerationTask.run_side` (refactored in Phase A)
+is not a frozen interface; the checkpoint is noted in `AGENT_GUIDE.md`.
+
+## Verification
+
+- `envs/mpvrdu/bin/python -m pytest` -> 99 passed, 1 skipped.
+- Entry points import/run: `python -m gates --help`, `python -m cli.{generate,judge,build} --help`,
+  `python -m scripts.inspect_results --help`, and `config.ROOT` still resolves.
+- Phase-A behavior was verified via the test suite only. The **byte-identical
+  side-artifact check needs a GPU** (retrievers/classifier), so it could not run on
+  the local sm_120 box; worth running the smoke spec on Kaya when the queue frees up.
+
+## Open items / next steps
+
+- Nothing is committed. We are on `main`; the plan is to commit this session on a
+  branch (the plan file is `~/.claude/plans/cheerful-toasting-lerdorf.md`).
+- All planned refactor phases (A-E) are done; none remain outstanding.
+- After job `1012121` finishes: `kaya.kaya pull`, then judge/build as above, then run
+  the F1 frontier gate (`python -m gates frontier --full --run-tag yaml-g1-g2-g5-rerun`).

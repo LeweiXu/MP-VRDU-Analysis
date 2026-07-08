@@ -308,6 +308,31 @@ def test_prewarm_runs_before_reasoner_is_built(tmp_path: Path, fake_channels, mo
     assert events[0] == "prewarm"
 
 
+def test_one_task_failure_does_not_abort_later_tasks(tmp_path: Path, monkeypatch) -> None:
+    """A failing task (e.g. a G2 OOM) records failed and the next task still runs.
+
+    Regression guard: the run loop used to re-raise on the first task failure when
+    continue_on_error was off, so an OOM in G2 silently dropped G5. Task-level
+    isolation is now unconditional; continue_on_error only governs cell skipping.
+    """
+
+    config = ExperimentConfig(smoke=True, paths=ProjectPaths(root=tmp_path, cache_dir=tmp_path / "results" / "cache"))
+    tasks = [SimpleNamespace(name="g1"), SimpleNamespace(name="g2"), SimpleNamespace(name="g5")]
+
+    def fake_generate(config, task, questions, *, skip_failed_cells=False):  # noqa: ANN001
+        if task.name == "g2":
+            raise RuntimeError("CUDA out of memory (simulated)")
+
+    monkeypatch.setattr(driver, "resolve", lambda selector: tasks)
+    monkeypatch.setattr(driver, "generate", fake_generate)
+
+    # Note: continue_on_error is False (the default the failing job used).
+    statuses = driver.run_generate(config, "fake", [], continue_on_error=False)
+
+    assert [s.status for s in statuses] == ["success", "failed", "success"]
+    assert json.loads((experiment_paths(config, "g5").root / "generate_status.json").read_text())["status"] == "success"
+
+
 def test_generate_fails_when_every_cell_is_skipped(tmp_path: Path, fake_channels, monkeypatch) -> None:
     """A task whose every cell fails must not report generate-success (no predictions)."""
 

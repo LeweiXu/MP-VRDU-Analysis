@@ -122,10 +122,14 @@ def get_reasoner(
         from models.internvl import LocalInternVLBackend
 
         # InternVL uses fixed 448px tiling, so its vision-token count is already
-        # bounded; only the generation cap is forwarded.
+        # bounded and `max_pixels` is not forwarded. `max_input_tokens` still is:
+        # without it a long TL/text context OOMs a V100 on the O(seq^2) attention,
+        # exactly like the Qwen backend (see LocalInternVLBackend truncation).
         kwargs = {}
         if max_new_tokens is not None:
             kwargs["max_new_tokens"] = max_new_tokens
+        if max_input_tokens is not None:
+            kwargs["max_input_tokens"] = max_input_tokens
         return LocalInternVLBackend(parsed.name, **kwargs)
     # Later stages dispatch non-Qwen local families and API backends here.
     from pipeline.reasoner import StubReasoner

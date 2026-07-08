@@ -206,6 +206,39 @@ def test_render_prompt_truncates_long_context_and_keeps_image_placeholders() -> 
     assert _truncate_context(tok, "short text", 0, 4096, 800) == "short text"
 
 
+def test_internvl_render_prompt_truncates_long_context() -> None:
+    from models.internvl import _truncate_context, render_prompt
+    from models.payload import IMAGE_PLACEHOLDER
+    from schema import TextPart
+
+    class WordTokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": text.split()}
+
+        def decode(self, ids, skip_special_tokens=True):
+            return " ".join(ids)
+
+    tok = WordTokenizer()
+    long_text = " ".join(f"w{i}" for i in range(5000))
+    out = _truncate_context(tok, long_text, 0, max_input_tokens=1000, per_image_tokens=1024)
+    assert len(out.split()) <= 1000 - 256
+    # A long TL/text cell is trimmed instead of feeding the full context (the G2 OOM).
+    prompt, _ = render_prompt(
+        question(), ModelInput((TextPart(long_text),)), tokenizer=tok, max_input_tokens=1000
+    )
+    assert len(prompt.split()) < 5000
+    # Without a cap the full context is used (unchanged behaviour for tests).
+    prompt_full, _ = render_prompt(question(), ModelInput((TextPart(long_text),)))
+    assert long_text in prompt_full
+    assert IMAGE_PLACEHOLDER  # placeholder constant is importable for parity with Qwen
+
+
+def test_registry_forwards_max_input_tokens_to_internvl() -> None:
+    reasoner = get_reasoner("internvl3-8b-local", max_input_tokens=4096)
+    assert isinstance(reasoner, LocalInternVLBackend)
+    assert reasoner.max_input_tokens == 4096
+
+
 def test_model_spec_parses_quantization_suffix() -> None:
     plain = ModelSpec.parse("qwen3vl-8b-local")
     assert plain.quantization is None

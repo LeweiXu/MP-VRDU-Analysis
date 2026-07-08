@@ -1,0 +1,38 @@
+version: 1
+name: smoke-prepass-fix
+run_tag: smoke-prepass-fix-cold
+# `full` here only means "use the real (curated 308q) corpus loader" so we can
+# hand-pick docs. The doc_ids + max_per_doc filter below keeps it to ~12
+# questions, so this is still a quick smoke run, not a real experiment.
+mode: full
+dataset: mmlongbench
+
+config:
+  reasoner_spec: qwen3vl-2b-local
+  max_tokens: 64
+  visual_resolution: low
+  representations: [T, TL, TLV, V]
+
+runs:
+  # One oracle ladder over four scanned docs (exercises PaddleOCR across many
+  # cold pages) and two digital docs (exercises Marker). max_per_doc: 2.
+  # This is the shape that surfaced the two pre-pass bugs:
+  #   - reasoner must NOT be loaded during the parse pre-pass (RC1)
+  #   - the PaddleOCR engine must be built once, not per page/cell (RC2)
+  - name: prepass_smoke
+    models: [qwen3vl-2b-local]
+    questions:
+      max_per_doc: 2
+      doc_ids:
+        # scanned -> PaddleOCR
+        - measuringsuccessonfacebooktwitterlinkedin-160317142140_95.pdf
+        - chapter8-geneticscompatibilitymode-141214140247-conversion-gate02_95.pdf
+        - dr-vorapptchapter1emissionsources-121120210508-phpapp02_95.pdf
+        - bigdatatrends-120723191058-phpapp02_95.pdf
+        # digital -> Marker
+        - 0e94b4197b10096b1f4c699701570fbf.pdf
+        - BRO-GL-MMONEY.pdf
+    cells:
+      conditions:
+        - type: oracle
+      representations: [T, TL, TLV, V]

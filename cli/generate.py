@@ -70,7 +70,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     for status in failed:
         print(f"failed {status.experiment}: {status.error_type}: {status.error} ({status.path})")
-    return 0
+    # Every task is attempted (a failed task no longer aborts the rest), but a
+    # partial failure still exits non-zero so it surfaces (e.g. SLURM state=FAILED)
+    # instead of looking like a clean run.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

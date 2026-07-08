@@ -67,10 +67,59 @@ def hf_cache_dir_from_env() -> str | None:
     return None
 
 
-def render_prompt(question: Question, model_input: ModelInput) -> tuple[str, tuple[ImagePart, ...]]:
-    """Render the frozen prompt and return ordered image parts."""
+# One 448px InternVL tile is (448 / 14) ** 2 = 1024 vision tokens; each page
+# image is a single tile (num_patches_list = [1, ...]).
+INTERNVL_TOKENS_PER_IMAGE = (448 // 14) ** 2
+
+
+def _truncate_context(
+    tokenizer: Any, context: str, n_images: int, max_input_tokens: int, per_image_tokens: int
+) -> str:
+    """Trim the free text so text + vision tokens stay under the input cap.
+
+    Mirrors the Qwen backend's `_truncate_context`: the V100 only has the
+    O(seq^2) math attention kernel, so a long `TL` layout dump OOMs. Keep every
+    image placeholder (so the placeholder/tile counts still line up), and trim the
+    text to the budget left after reserving for the images and the template.
+    """
+
+    reserve = 256  # prompt template + question + answer cue + generation headroom
+    text_budget = max(256, max_input_tokens - n_images * per_image_tokens - reserve)
+    text_only = context.replace(IMAGE_PLACEHOLDER, "")
+    try:
+        ids = tokenizer(text_only, add_special_tokens=False)["input_ids"]
+    except Exception:
+        try:
+            ids = tokenizer(text_only)["input_ids"]
+        except Exception:
+            ids = []
+    if ids and isinstance(ids[0], list):  # some tokenizers nest a batch dimension
+        ids = ids[0]
+    if not ids or len(ids) <= text_budget:
+        return context
+    truncated = tokenizer.decode(ids[:text_budget], skip_special_tokens=True)
+    return (IMAGE_PLACEHOLDER * n_images) + truncated
+
+
+def render_prompt(
+    question: Question,
+    model_input: ModelInput,
+    *,
+    tokenizer: Any | None = None,
+    max_input_tokens: int | None = None,
+) -> tuple[str, tuple[ImagePart, ...]]:
+    """Render the frozen prompt and return ordered image parts.
+
+    When a tokenizer and `max_input_tokens` are given, the document context is
+    truncated so the attention sequence stays within the cap (see
+    `_truncate_context`); without them the full context is used (tests).
+    """
 
     context, images = model_input.to_local_prompt()
+    if tokenizer is not None and max_input_tokens:
+        context = _truncate_context(
+            tokenizer, context, len(images), max_input_tokens, INTERNVL_TOKENS_PER_IMAGE
+        )
     context = context.strip() or "(no document evidence was provided)"
     return FROZEN_PROMPT_TEMPLATE.format(question=question.question.strip(), context=context), images
 
@@ -131,6 +180,7 @@ class LocalInternVLBackend(Reasoner):
         *,
         model_id: str | None = None,
         max_new_tokens: int = 64,
+        max_input_tokens: int | None = None,
         image_size: int = 448,
         tokenizer: Any | None = None,
         model: Any | None = None,
@@ -139,6 +189,7 @@ class LocalInternVLBackend(Reasoner):
         self.spec = spec
         self.model_id = model_id or model_id_for_spec(spec)
         self.max_new_tokens = int(max_new_tokens)
+        self.max_input_tokens = int(max_input_tokens) if max_input_tokens is not None else None
         self.image_size = int(image_size)
         self._tokenizer = tokenizer
         self._model = model
@@ -173,8 +224,15 @@ class LocalInternVLBackend(Reasoner):
         return tokenizer, model
 
     def answer(self, question: Question, model_input: ModelInput) -> Prediction:
-        prompt, images = render_prompt(question, model_input)
+        # Load the tokenizer first so render_prompt can truncate the context to
+        # max_input_tokens (a long TL/text context OOMs a V100 otherwise).
         tokenizer, model = self._load_components()
+        prompt, images = render_prompt(
+            question,
+            model_input,
+            tokenizer=tokenizer if self.max_input_tokens else None,
+            max_input_tokens=self.max_input_tokens,
+        )
         device = getattr(model, "device", None)
         pixel_values = _image_tensors(images, image_size=self.image_size, device=device)
         generation_config = {"max_new_tokens": self.max_new_tokens, "do_sample": False}
@@ -208,6 +266,7 @@ class LocalInternVLBackend(Reasoner):
                 "model_id": self.model_id,
                 "prompt_template_version": PROMPT_TEMPLATE_VERSION,
                 "max_new_tokens": self.max_new_tokens,
+                "max_input_tokens": self.max_input_tokens,
                 "n_image_parts": len(images),
                 "local_files_only": self.local_files_only,
                 "cache_dir": self.cache_dir,

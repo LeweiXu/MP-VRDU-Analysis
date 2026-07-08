@@ -294,6 +294,10 @@ def run_generate(
         try:
             generate(config, task, questions, skip_failed_cells=continue_on_error)
         except Exception as exc:
+            # Tasks are independent units of work, so one task's failure (e.g. a
+            # G2 OOM) records a failed status and moves on to the next task
+            # instead of aborting the whole run. `continue_on_error` still governs
+            # *cell*-level skipping inside a task (skip_failed_cells above).
             status = write_phase_status(config, task.name, phase="generate", status="failed", error=exc)
             statuses.append(status)
             log.error(
@@ -303,8 +307,6 @@ def run_generate(
                 status.error,
                 "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
             )
-            if not continue_on_error:
-                raise
             continue
         status = write_phase_status(config, task.name, phase="generate", status="success")
         statuses.append(status)
@@ -330,6 +332,9 @@ def run_generate_tasks(
         try:
             generate(config, task, questions, skip_failed_cells=continue_on_error)
         except Exception as exc:
+            # One task's failure records a failed status and continues to the next
+            # task; independent tasks (e.g. G5) must not be lost because an earlier
+            # task (e.g. G2) OOM'd. Cell-level skipping stays under continue_on_error.
             status = write_phase_status(config, task.name, phase="generate", status="failed", error=exc)
             statuses.append(status)
             log.error(
@@ -339,8 +344,6 @@ def run_generate_tasks(
                 status.error,
                 "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
             )
-            if not continue_on_error:
-                raise
             continue
         status = write_phase_status(config, task.name, phase="generate", status="success")
         statuses.append(status)
