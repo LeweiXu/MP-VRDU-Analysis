@@ -400,3 +400,12 @@ _One line per real judgement call: what, why, what it affected._
   (`reporting/tables/*` still stubs) and the driver generate/judge task-loop +
   ops entry points (Stage 8) have no unit tests, so they are built and validated
   by the local smoke test rather than by pytest.
+- **Stage 8 — ops entry points + driver loop (2026-07-09).** `experiments/engine/driver.py`
+  gained the generate loop: `build_retrievers`, a spec-only reasoner for the parse
+  pre-pass (warm retrieval + render caches, unload retrievers, free GPU, then load
+  the reasoner), `generate()` running cells through the orchestrator via `run_cells`
+  (ok rows cached by run_cell, failures written as status rows by `_failed_result_row`),
+  reasoner freed between specs. Entry points at `ops/` root: `generate.py` (task +
+  reasoner-spec + quantization + visual-resolution + limit), `judge.py`, `build.py`
+  (loads results, groups by cell). Validated at import level; 150/150 still green.
+  The smoke test is its runtime acceptance.

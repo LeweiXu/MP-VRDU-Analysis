@@ -98,3 +98,122 @@ def merge_failed_only(existing: Sequence[Any], reruns: Sequence[Any]) -> list[An
         else:
             merged.append(row)
     return merged
+
+
+# -- the generate/judge run loop --------------------------------------------
+
+import logging  # noqa: E402
+
+log = logging.getLogger("mpvrdu.driver")
+
+
+def build_retrievers(config):
+    """The text + vision retrievers a run may need, memoized and lazily loaded."""
+
+    from experiments.tasks.base import Retrievers
+    from retrievers import MemoizedRetriever
+    from retrievers.text import Bm25Retriever
+    from retrievers.vision import ColQwen25Retriever
+
+    return Retrievers(
+        text=MemoizedRetriever(Bm25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)),
+        vision=MemoizedRetriever(ColQwen25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)),
+    )
+
+
+def _failed_result_row(orchestrator, cell, exc, machine):
+    """Build a status row for a cell that raised, so it is data, not a hole."""
+
+    from pipeline.representation import get_representation
+    from schema import ResultRow
+
+    rep = get_representation(cell.representation) if isinstance(cell.representation, str) else cell.representation
+    status, reason = classify_failure(exc)
+    try:
+        page_set = cell.conditioner.condition(cell.question, orchestrator.page_count(cell.question))
+        pages, provenance, note = page_set.page_indices, page_set.provenance, page_set.note
+    except Exception:
+        pages, provenance, note = (), "", ""
+    prediction_key, result_key = orchestrator._keys(cell.question, cell.conditioner, rep.modality, pages)
+    q = cell.question
+    return ResultRow(
+        result_key=result_key, prediction_key=prediction_key, question_id=q.id, doc_id=q.doc_id,
+        doc_type=q.doc_type, bin_label=q.bin_label, scan_label=q.scan_label, hop=q.hop,
+        is_unanswerable=q.is_unanswerable, evidence_sources=q.evidence_sources,
+        condition=cell.conditioner.name, provenance=provenance, page_indices=pages,
+        representation=rep.modality, model_spec=orchestrator.reasoner.spec, judge_spec=orchestrator.judge.spec,
+        machine=machine, status=status, skipped_reason=reason, oom_occurred=(status == "oom"),
+        answer="", score=0.0, correct=False, abstained=False, total_text_tokens=0, total_visual_tokens=0,
+        text_tokens_fed=0, output_tokens=0, tokens_dropped=0, truncation_occurred=False,
+        latency_s=0.0, prefill_latency_s=0.0, decode_latency_s=0.0, peak_vram_bytes=0, note=note, metadata={},
+    )
+
+
+def generate(config, task, questions, *, limit=None, machine=None):
+    """Run one task's cells to a scored row each, then its side work.
+
+    A parse pre-pass warms the retrieval and render caches with the reasoner not
+    yet loaded, then the retriever weights are freed before the reasoner loads, so
+    parser/retriever/reasoner never share the GPU. Every cell writes exactly one
+    row (ok, or a status row on failure) via `run_cells`.
+    """
+
+    from config import max_pixels_for_resolution
+    from experiments.engine.paths import experiment_paths, free_gpu
+    from models import get_reasoner
+    from pipeline.judge import StubJudge, get_judge
+    from pipeline.orchestrator import Orchestrator, PredictionCache, ResultCache, current_machine
+    from pipeline.reasoner import Reasoner
+
+    machine = machine or current_machine()
+    paths = experiment_paths(config, task.name)
+    result_cache = ResultCache(paths.results)
+    prediction_cache = PredictionCache(paths.predictions)
+    retrievers = build_retrievers(config)
+    task_questions = list(task.resolve_questions(config, questions))
+    if limit is not None:
+        task_questions = task_questions[:limit]
+    specs = task.model_specs(config)
+    log.info("generate %s | %d questions | specs=%s", task.name, len(task_questions), list(specs) or "(side-only)")
+
+    class _SpecOnly(Reasoner):
+        def __init__(self, spec):
+            self.spec = spec
+
+        def answer(self, question, model_input):
+            raise RuntimeError("spec-only reasoner must not run inference")
+
+    for spec in specs:
+        cells = task.generation_cells(config, task_questions, retrievers=retrievers)
+        prewarm = Orchestrator(config, reasoner=_SpecOnly(spec), judge=StubJudge("prewarm"),
+                               cache=result_cache, prediction_cache=prediction_cache)
+        for cell in cells:
+            try:
+                prewarm.prewarm_cell(cell.question, cell.conditioner, cell.representation)
+            except Exception as exc:  # noqa: BLE001 - warming is best effort
+                log.warning("prewarm failed q=%s: %s", cell.question.id, exc)
+        retrievers.text.unload()
+        retrievers.vision.unload()
+        free_gpu()
+
+        reasoner = get_reasoner(spec, max_pixels=max_pixels_for_resolution(config), max_new_tokens=config.max_tokens)
+        orchestrator = Orchestrator(config, reasoner=reasoner, judge=get_judge(config.judge_spec),
+                                    cache=result_cache, prediction_cache=prediction_cache, machine=machine)
+
+        def run_one(cell):
+            return orchestrator.run_cell(cell.question, cell.conditioner, cell.representation)
+
+        def on_failure(cell, exc):
+            row = _failed_result_row(orchestrator, cell, exc, machine)
+            result_cache.put(row)
+            log.error("cell FAILED q=%s rep=%s: %s", cell.question.id, cell.representation, row.skipped_reason)
+            return row
+
+        run_cells(cells, run_one, on_failure=on_failure)
+        if hasattr(reasoner, "free"):
+            reasoner.free()
+        free_gpu()
+
+    log.info("generate %s: side work", task.name)
+    task.run_side(config, task_questions, paths.side_dir)
+    free_gpu()
