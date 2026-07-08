@@ -110,7 +110,7 @@ class QwenBinClassifier(BinClassifier):
         dpi: int = 96,
         reasoner: Reasoner | None = None,
         reasoner_spec: str = CLASSIFIER_REASONER_SPEC,
-        representation: str = "TLV",
+        representation: str = "V",
         max_pages: int = 2,
         max_pixels: int | None = None,
     ) -> None:

@@ -409,3 +409,15 @@ _One line per real judgement call: what, why, what it affected._
   reasoner-spec + quantization + visual-resolution + limit), `judge.py`, `build.py`
   (loads results, groups by cell). Validated at import level; 150/150 still green.
   The smoke test is its runtime acceptance.
+- **Local smoke test PASSED (2026-07-09).** Ran all four gen tasks locally on
+  `envs/mpvrdu-local-gpu` (torch 2.8.0+cu128, RTX 5070) with qwen3vl-2b-local-4bit,
+  `visual_resolution=min`, stub judge, 2 questions/task. Every task wrote
+  well-formed `results.jsonl` cells, one row per cell: G1 T/V `ok` (real answers +
+  populated tokens/prefill/decode/peak_vram), G1/G2/G3 TL/TLV `error` with
+  `skipped_reason` (parser cache cold, proving the disk-boundary + failure-row
+  path); G2 `retrieval.jsonl` scored P/R/F1 (ColQwen2.5 hit the gold page); G3 drew
+  from the unanswerable pool; G4 `classifier.jsonl` priced a doc via image-only V.
+  Canary `tokens_dropped=0` on every cell. Marker: `results/phase4_smoke_done.txt`.
+  **Deliberate choice:** `QwenBinClassifier` representation set to `V` (image-only)
+  so modality classification does not depend on the parser cache. **All 8 stages +
+  smoke complete; the pytest suite is 150/150 green.**
