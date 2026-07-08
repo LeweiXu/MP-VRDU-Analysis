@@ -88,3 +88,105 @@ is not a frozen interface; the checkpoint is noted in `AGENT_GUIDE.md`.
 - All planned refactor phases (A-E) are done; none remain outstanding.
 - After job `1012121` finishes: `kaya.kaya pull`, then judge/build as above, then run
   the F1 frontier gate (`python -m gates frontier --full --run-tag yaml-g1-g2-g5-rerun`).
+
+---
+
+# Addendum - second parallel session (2026-07-08): pre-pass fix + G2/G5 rerun
+
+This ran in parallel with the refactor session above. It was a bug-fix session
+(the parse pre-pass delay, plus the G2/G5 rerun failures), not a refactor. The
+notes below **add to** the handoff and, where noted, supersede the cluster-job
+status in the first section.
+
+> Git note: both sessions share one working tree and `.git`. By the time of this
+> addendum the shared tree (both sessions' edits) had been committed to `main` as
+> `60791f7 "update docs"`, so the first section's "nothing is committed" is no
+> longer true. My fixes below are inside that commit; anything I edited *after* it
+> shows as fresh working-tree changes.
+
+## Cluster job update (supersedes "Cluster job" above)
+
+- Job **`1012121` was cancelled** this session. It had been stuck ~2.5h in the G1
+  parse pre-pass with no `predictions.jsonl` (the symptom in
+  `docs/PREPASS_INFERENCE_DELAY_ISSUE.md`).
+- Resubmitted as **`1012581`** with the identical resources (`gpu:v100:2`, 4 CPU,
+  64G, 24h) and the same spec/run tag (`specs/g1_g5_rerun.yaml`,
+  `yaml-g1-g2-g5-rerun`). Unlike the refactor session, **this session DID push to
+  Kaya** (the `kaya.kaya submit` pre-run rsync), so the remote now runs the fixed
+  code. `results/` is excluded from the rsync, so the warm render/Marker/OCR
+  caches were preserved.
+- `1012581` finished **FAILED** (~5.5h). **G1 succeeded** (all 1232 cells cached).
+  **G2_family OOM'd** on cell 54/1232 (InternVL3-8B, a `TL` text cell on
+  `2024.ug.eprospectus.pdf`), and **G5 never ran** because the driver aborted the
+  whole task loop on the first task failure. Both of those are fixed below.
+
+## Root causes + fixes (all in the working tree / committed in 60791f7)
+
+1. **Pre-pass delay** (`docs/PREPASS_INFERENCE_DELAY_ISSUE.md`):
+   - RC1: the reasoner was constructed *before* the parse pre-pass. Reordered
+     `experiments/driver.py::generate` so the pre-pass runs with a spec-only
+     reasoner (`_SpecOnlyReasoner`, no weights) and `reasoner_for` is called after.
+     (Caveat: reasoner weight-loading is lazy, so the original doc overstated the
+     VRAM harm; it was still a real code/doc-order mismatch.)
+   - RC2: the PaddleOCR engine was rebuilt on every `ocr()` call (per scanned page
+     on a cold cache). Added a process-local shared engine + `reset_ocr_engine()`
+     in `tools/text.py`, and wired the reset into the driver right after the
+     pre-pass. Verified on a local 2B run: engine built **exactly once** across a
+     cold pre-pass over 4 scanned docs.
+2. **G2 OOM:** `models/__init__.py`'s InternVL branch dropped `max_input_tokens`,
+   and `models/internvl.py` had **no input truncation at all**, so a long `TL`/text
+   context OOMs the V100 O(seq^2) attention. Forwarded `max_input_tokens` and added
+   `_truncate_context` mirroring the Qwen backend (keeps image placeholders, trims
+   text from the tail). This is *not* the >10-evidence-page filter, which is global
+   and already reaches G2.
+3. **Cross-task isolation:** `run_generate` / `run_generate_tasks` now always record
+   a failed task and continue to the next (a G2 OOM no longer drops G5); cell-level
+   skipping still rides `--continue-on-error`. `cli/generate.py` exits non-zero if
+   any task failed, so a partial failure still surfaces as SLURM `FAILED`.
+
+## Docs
+
+- Rewrote the README "generation tasks" section (pre-pass ordering, per-rung
+  preprocessing, disk caches). Fixed two stale claims: retrieval and the classifier
+  render at `config.dpi` (144), not "dpi 96".
+
+## Known validity caveat (OPEN - decide before trusting TL/TLV numbers)
+
+Input truncation is not free. Measured on the real run's cached pages with the
+Qwen3-VL-8B tokenizer, joining each oracle question to its evidence pages:
+
+- **T: 1%** of cells truncated, **TL: 29%**, **TLV: 34%** (median ~56% of
+  text+layout tokens dropped among truncated cells).
+- The verbose bbox **layout** JSON is the bloat and, because it's serialized after
+  the text, it's the first thing dropped. So truncation preferentially degrades the
+  exact channel the T->TL contrast measures, and could bias the frontier toward
+  vision.
+
+Options discussed, none actioned: (1) recompute the sufficiency frontier on the
+non-truncated subset as a robustness check; (2) compact the layout serialization so
+`L` fits (root-cause fix, needs a fresh run); (3) A100 + FlashAttention to raise or
+drop the cap for the main tables.
+
+## Tests
+
+Full suite green: **102 passed, 1 skipped** (`envs/mpvrdu/bin/python -m pytest`).
+New tests: pre-pass ordering regression, PaddleOCR engine reuse, InternVL
+truncation + registry forwarding, and cross-task isolation.
+
+## New / changed files this session
+
+- New: `specs/smoke_prepass_fix.yaml` (local 2B smoke that reproduced + verified the
+  pre-pass fix).
+- Edited: `tools/text.py`, `experiments/driver.py`, `models/internvl.py`,
+  `models/__init__.py`, `cli/generate.py`, `README.md`, and the two test files
+  (`tests/test_experiments.py`, `tests/test_reasoner.py`).
+
+## Next steps (this session)
+
+- To finish the rerun: resubmit `specs/g1_g5_rerun.yaml` with the same run tag. G1
+  is all cache hits, G2 reruns with truncation (pre-OOM cells are cache hits), and
+  G5 finally runs. Resubmit command:
+  `envs/mpvrdu/bin/python -m kaya.kaya submit --job-name g1g2g5-full --gres gpu:v100:2 --cpus-per-task 4 --mem 64G --time 1-00:00:00 --no-wait cli/generate.py -- --spec specs/g1_g5_rerun.yaml`
+- Then the judge/build/gate steps from the first section's next-steps still apply.
+- Resolve the truncation validity caveat above before reporting TL/TLV frontier
+  results.

@@ -1,0 +1,16 @@
+# Minimal environment for the document annotation helper only.
+#
+# Use this instead of the full experiment requirements when you only need:
+#   python -m scripts.annotate_docs sheet
+#   python -m scripts.annotate_docs annotate
+#   python -m scripts.annotate_docs score
+#
+# `gdown` is included for the guide's Google Drive download command.
+gdown>=5.2.0,<6.0.0
+
+# MMLongBench metadata is stored as parquet and loaded through pandas.
+pandas==2.3.1
+pyarrow>=16.0.0
+
+# PyMuPDF provides the `fitz` module used to inspect PDF text layers.
+PyMuPDF==1.26.3

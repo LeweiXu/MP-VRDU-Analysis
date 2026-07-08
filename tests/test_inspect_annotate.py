@@ -165,9 +165,9 @@ def test_classify_scanned_labels_digital_and_scanned(tmp_path: Path) -> None:
 
 
 def test_row_is_annotated_and_invalid_values() -> None:
-    full = {"bin_label": "text_heavy", "scan_label": "digital", "dominant_visual": "tables", "multi_column": "single"}
+    full = {"bin_label": "text_heavy", "scan_label": "digital", "dominant_visual": "tables"}
     assert row_is_annotated(full)
-    assert not row_is_annotated({**full, "multi_column": ""})
+    assert not row_is_annotated({**full, "dominant_visual": ""})
 
     bad = [{"doc_id": "d.pdf", "bin_label": "text_heavy", "scan_label": "nope"}]
     problems = invalid_values(bad)
@@ -177,11 +177,11 @@ def test_row_is_annotated_and_invalid_values() -> None:
 def test_score_sheet_reports_bin_and_scan_agreement() -> None:
     rows = [
         {"doc_id": "a", "doc_type": "Academic paper", "auto_bin": "text_heavy", "bin_label": "text_heavy",
-         "auto_scan": "digital", "scan_label": "digital", "dominant_visual": "tables;charts", "multi_column": "single"},
+         "auto_scan": "digital", "scan_label": "digital", "dominant_visual": "tables;charts"},
         {"doc_id": "b", "doc_type": "Brochure", "auto_bin": "visual_heavy", "bin_label": "in_between",
-         "auto_scan": "scanned", "scan_label": "scanned", "dominant_visual": "photos", "multi_column": "multi"},
+         "auto_scan": "scanned", "scan_label": "scanned", "dominant_visual": "photos"},
         {"doc_id": "c", "doc_type": "Brochure", "auto_bin": "visual_heavy", "bin_label": "",
-         "auto_scan": "digital", "scan_label": "", "dominant_visual": "", "multi_column": ""},
+         "auto_scan": "digital", "scan_label": "", "dominant_visual": ""},
     ]
     summary = score_sheet(rows)
 
@@ -193,7 +193,6 @@ def test_score_sheet_reports_bin_and_scan_agreement() -> None:
     assert summary["scan_agree"] == 2
     # multi-value dominant_visual: each token counted separately
     assert summary["dominant_visual"] == {"tables": 1, "charts": 1, "photos": 1}
-    assert summary["multi_column"] == {"single": 1, "multi": 1}
 
 
 def test_dominant_visual_accepts_multiple_values() -> None:

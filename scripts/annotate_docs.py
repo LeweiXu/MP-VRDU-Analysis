@@ -6,13 +6,17 @@ Purpose:
     is an assumption. This builds a per-document sheet so a human can look at each
     doc and record what it actually is, then scores the hand labels against the
     doc_type-derived bin to see whether the assumption holds. Two axes are the
-    point (text/visual bin, scanned vs digital-born); two more are captured while
-    we are in there (dominant visual element, multi-column layout). The sheet is
-    seeded with auto-guesses so a human edits rather than starts blank.
+    point (text/visual bin, scanned vs digital-born); one more is captured while
+    we are in there (dominant visual element). The sheet is seeded with
+    auto-guesses so a human edits rather than starts blank.
 
 Pipeline role:
-    A standalone research utility that reads only the dataset (parquet + PDFs) and
-    writes a committable CSV under `annotations/`. Not part of the run pipeline.
+    A standalone research utility. It reads the parquet for the doc_id/doc_type
+    list and opens each PDF from the per-doc_type split tree built by
+    `scripts/split_docs_by_type.py` (`.data/mmlongbench_docs_split/`), then writes
+    a committable CSV under `annotations/`. Not part of the run pipeline. Run
+    `split_docs_by_type.py` first so the split tree exists; that same tree is what
+    you hand to other annotators (see `scripts/ANNOTATION_GUIDE.md`).
 
 Arguments:
     Subcommands `annotate` (interactive, resumable), `sheet` (build the blank
@@ -39,15 +43,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import ROOT  # noqa: E402
+from config import DEFAULT_PATHS, ROOT  # noqa: E402
 from data.binning import doc_type_bin  # noqa: E402
-from data.loader import load_raw_mmlongbench, resolve_pdf  # noqa: E402
+from data.loader import load_raw_mmlongbench  # noqa: E402
 from data.render import classify_scanned  # noqa: E402
+from scripts.split_docs_by_type import SPLIT_DIRNAME, safe_dirname  # noqa: E402
 
 DEFAULT_SHEET = ROOT / "annotations" / "doc_labels.csv"
 
 # Column order. auto_* are machine-seeded priors; the *_label / dominant_visual /
-# multi_column / notes columns are for the human.
+# notes columns are for the human.
 COLUMNS = [
     "doc_id",
     "pdf_path",
@@ -59,7 +64,6 @@ COLUMNS = [
     "bin_label",
     "scan_label",
     "dominant_visual",
-    "multi_column",
     "notes",
 ]
 
@@ -70,7 +74,6 @@ CHOICE_FIELDS: list[tuple[str, list[str], str | None]] = [
     ("bin_label", ["text_heavy", "in_between", "visual_heavy"], "auto_bin"),
     ("scan_label", ["scanned", "digital"], "auto_scan"),
     ("dominant_visual", ["tables", "charts", "figures", "photos", "none"], None),
-    ("multi_column", ["single", "multi"], None),
 ]
 
 # Fields that accept more than one value; stored as a ";"-joined string.
@@ -99,15 +102,37 @@ def unique_docs() -> dict[str, str]:
     return doc_types
 
 
+def resolve_split_pdf(doc_id: str, doc_type: str) -> Path:
+    """Find a document's PDF inside the per-doc_type split tree.
+
+    `scripts/split_docs_by_type.py` mirrors the corpus into
+    `.data/mmlongbench_docs_split/<doc_type>/<file>.pdf`, keeping the original
+    filename. That tree is the one handed to annotators, so the sheet points at
+    it rather than at the flat `documents/` dir.
+    """
+
+    folder = DEFAULT_PATHS.data_dir / SPLIT_DIRNAME / safe_dirname(doc_type)
+    names = [doc_id]
+    if not doc_id.lower().endswith(".pdf"):
+        names.append(f"{doc_id}.pdf")
+    for name in names:
+        candidate = folder / name
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"no PDF for {doc_id!r} under {folder}; run scripts/split_docs_by_type.py first"
+    )
+
+
 def build_rows() -> list[dict[str, str]]:
     """Build the seeded annotation rows, one per document."""
 
     rows: list[dict[str, str]] = []
     for doc_id, doc_type in sorted(unique_docs().items()):
         try:
-            pdf = resolve_pdf(doc_id)
+            pdf = resolve_split_pdf(doc_id, doc_type)
         except FileNotFoundError:
-            print(f"  ! no PDF for {doc_id}, skipping")
+            print(f"  ! no split PDF for {doc_id}, skipping")
             continue
         scan = classify_scanned(pdf)
         rows.append(
@@ -122,7 +147,6 @@ def build_rows() -> list[dict[str, str]]:
                 "bin_label": "",
                 "scan_label": "",
                 "dominant_visual": "",
-                "multi_column": "",
                 "notes": "",
             }
         )
@@ -132,7 +156,10 @@ def build_rows() -> list[dict[str, str]]:
 def write_sheet(rows: list[dict[str, str]], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=COLUMNS)
+        # extrasaction="ignore" so a sheet still carrying a retired column (e.g. the
+        # old multi_column) rewrites cleanly instead of raising; the stale column is
+        # dropped on the next write.
+        writer = csv.DictWriter(handle, fieldnames=COLUMNS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -149,7 +176,7 @@ def cmd_sheet(args: argparse.Namespace) -> int:
     rows = build_rows()
     write_sheet(rows, args.output)
     print(f"wrote {len(rows)} document rows: {args.output}")
-    print("fill bin_label / scan_label / dominant_visual / multi_column, then run: annotate_docs score")
+    print("fill bin_label / scan_label / dominant_visual, then run: annotate_docs score")
     return 0
 
 
@@ -208,7 +235,6 @@ def score_sheet(rows: list[dict[str, str]]) -> dict:
         "human_scanned": sum(1 for r in scan_labelled if r["scan_label"].strip() == "scanned"),
         "scan_agree": sum(1 for r in scan_labelled if r["scan_label"].strip() == r["auto_scan"].strip()),
         "dominant_visual": dict(Counter(token for r in rows for token in split_multi(r.get("dominant_visual") or ""))),
-        "multi_column": dict(Counter((r.get("multi_column") or "").strip() for r in rows if (r.get("multi_column") or "").strip())),
     }
 
 
@@ -235,7 +261,7 @@ def cmd_score(args: argparse.Namespace) -> int:
         print(f"human scanned fraction: {s['human_scanned']}/{s['scan_labelled']} ({_pct(s['human_scanned'], s['scan_labelled'])})")
         print(f"human vs auto scan agreement: {s['scan_agree']}/{s['scan_labelled']} ({_pct(s['scan_agree'], s['scan_labelled'])})")
 
-    for column in ("dominant_visual", "multi_column"):
+    for column in ("dominant_visual",):
         if s[column]:
             print(f"\n{column}: " + ", ".join(f"{k}={v}" for k, v in sorted(s[column].items())))
     return 0

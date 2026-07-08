@@ -220,21 +220,53 @@ blocks. InternVL (`models/internvl.py`, the second model family) consumes the sa
 
 ## 7. Sequence budget and the V100 constraints
 
-Kaya's V100s are Volta (sm_70): no FlashAttention-2, so PyTorch can fall back to
-the math attention kernel that materializes the full `[heads, seq, seq]` score
-matrix. A long multi-page sequence then tries to allocate tens of GiB and OOMs
-even after the weights are quantized. Three mechanisms keep cells inside 16 GB:
+Kaya's V100s are Volta (sm_70): no FlashAttention-2. The Qwen backend does request
+PyTorch's memory-efficient (cutlass) SDPA kernel, but probe 1004834 found it does
+not reliably engage for these VLMs, so attention effectively runs the O(seq^2) math
+kernel that materializes the full `[heads, seq, seq]` score matrix (InternVL's
+`chat()` path never requests the efficient kernel at all). A long multi-page
+sequence then tries to allocate tens of GiB and OOMs even after the weights are
+quantized (the score matrix is an activation, so 4-bit weights don't help). So the
+thing that actually keeps a cell inside 16 GB is **bounding the input length**.
 
-- **Efficient attention kernel.** The backend forces the memory-efficient
-  (cutlass) SDPA kernel, which tiles attention at O(seq) memory and runs on Volta.
-- **Input-token cap.** Each model size has a `max_input_tokens` cap on the
-  text+vision sequence. When a cell exceeds it, `_truncate_context` trims the
-  *free text* (the layout JSON dump is the usual culprit) while keeping every
-  image placeholder, and puts the images first, then the trimmed text. Images are
-  never dropped by truncation.
-- **Many-page guards.** Questions whose gold evidence spans more than 10 pages are
-  dropped up front (`experiments/corpus.py`), and any cell that still OOMs is
-  logged and skipped rather than aborting the run (`--continue-on-error`).
+**Input-token cap.** Each reasoner has a `max_input_tokens` cap on the combined
+text + vision sequence (`config.py`, `MAX_INPUT_TOKENS_BY_SIZE`). It is size-aware,
+because a bigger model holds more resident weight and leaves less room for the
+score matrix:
+
+| reasoner | cap (tokens) |
+| --- | --- |
+| 2B / 4B | 8192 |
+| 8B (Qwen3-VL **and** InternVL) | 4096 |
+| 32B | 3072 |
+
+At 4096 tokens the 8B score matrix is ~2 GiB (`32 heads x 4096^2 x 4 B`); a raw
+~30k-token `TL` layout dump would be ~100 GiB and OOM any single GPU. Sharding
+across 2x V100 does not help, because attention runs per-GPU (the weights split,
+the score matrix does not).
+
+**Truncation.** When a cell's context exceeds the cap, both backends'
+`_truncate_context` (in `models/local_vlm.py` and `models/internvl.py`) trims the
+*free text* to the budget left after reserving for the images (`n_images x
+per_image_tokens`) and a small template reserve. It keeps every image placeholder
+and puts the images first, then the trimmed text, so **images are never dropped**.
+Because the payload is serialized text, then layout, then images, the tail that
+gets cut is the **layout** channel first (its bbox JSON is the token-heavy part),
+and text only if it still overflows.
+
+This is not free, and it is worth knowing before reading the frontier. Measured on
+the full-run cache with the 8B tokenizer, the share of oracle cells that hit
+truncation is roughly **T ~1%, TL ~29%, TLV ~34%** (`TLV` truncates most because
+its page images eat into the text budget). The dropped content is almost all
+layout, so the "does layout help" (`T` vs `TL`) contrast is the most affected. On
+A100-class hardware with FlashAttention the cap could be raised or removed; on the
+V100s it is load-bearing. Treat a heavily-truncated `TL`/`TLV` cell as a partial
+view of that rung.
+
+**Many-page guards.** Questions whose gold evidence spans more than 10 pages are
+dropped up front (`experiments/corpus.py::MAX_EVIDENCE_PAGES`), and any cell that
+still OOMs is logged and skipped rather than aborting the run
+(`--continue-on-error`).
 
 ## 8. Models and decoding
 
