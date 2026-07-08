@@ -57,9 +57,14 @@ memory disagree with an older doc, this file wins for the autonomous run.
    required, not forbidden.)
 5. **Broken harness.** If pytest itself errors at collection or the env is broken,
    STOP and flag here; do not keep firing edits.
-6. **Completion.** When all tests pass, run the local smoke test below exactly
-   once, guarded by the marker `results/phase4_smoke_done.txt`. On success write
-   the marker, append a summary here + in DECISIONS.md, commit
+6. **Completion.** When all tests pass, first build **Stage 8** if it is missing
+   (`ops/generate.py`, `ops/judge.py`, `ops/build.py` entry points + the driver
+   generate/judge task-loop with the parse pre-pass, reasoner load/free, and
+   systemic-abort; the reporting table builders as needed). Stage 8 and the driver
+   loop have NO unit tests, so the smoke test is their acceptance: commit Stage 8
+   as `git commit -m "stage 8"` once it is written. Then run the local smoke test
+   below exactly once, guarded by the marker `results/phase4_smoke_done.txt`. On
+   success write the marker, append a summary here + in DECISIONS.md, commit
    (`git commit -m "smoke test"`), then `CronList` + `CronDelete` this job and stop
    permanently.
 7. **Budget.** After the reset it is fine to spend budget finishing stages and the

@@ -1,10 +1,23 @@
-"""Cell-level run primitives: run every cell to exactly one row regardless of
-outcome, select the failed rows, and merge a failed-only re-run in place."""
+"""Cell-level run primitives: read cell rows, run every cell to exactly one row
+regardless of outcome, select the failed rows, and merge a failed-only re-run in
+place."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import json
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from pathlib import Path
 from typing import Any
+
+
+def read_rows(path: str | Path) -> Iterator[dict[str, Any]]:
+    """Yield each jsonl row of a predictions/results file as a dict."""
+
+    with Path(path).open() as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
 
 
 def _field(item: Any, name: str, default: Any = None) -> Any:

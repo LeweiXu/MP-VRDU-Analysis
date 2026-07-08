@@ -387,3 +387,16 @@ _One line per real judgement call: what, why, what it affected._
   **Deferrals:** the driver generate/judge task-loop (engine lifecycle) still
   pending, needed for the smoke test; G3's 3-prompt-condition sweep needs a
   reasoner prompt-mode interface (flagged, not guessed). Suite now 2 red / 148 green.
+- **Stage 7 — scoring + reporting (2026-07-09).** `experiments/engine/driver.py`
+  gained `read_rows` (jsonl reader). Scoring ported from `metrics/` + the
+  surviving `gates/` math: `scoring/accuracy.py` (doc-level bootstrap CI),
+  `scoring/cost.py` (v4 token names + prefill/decode/peak-VRAM aggregation),
+  `scoring/frontier.py` (sufficiency rule), `scoring/retrieval.py` (page P/R/F1,
+  `bin_label` added), `scoring/agreement.py` (`cohen_kappa` + threshold, dropped
+  the F1/F2/F3 gate scaffolding). `reporting/build.py` gets `group_rows`
+  (prediction-identity grouping), `load_result_rows`, and an explicit
+  `TASK_TO_TABLES` routing map. Greens `test_io_fixtures` (2). **All 150 tests
+  green.** **Deferred to the smoke step:** the content-named table builders
+  (`reporting/tables/*` still stubs) and the driver generate/judge task-loop +
+  ops entry points (Stage 8) have no unit tests, so they are built and validated
+  by the local smoke test rather than by pytest.
