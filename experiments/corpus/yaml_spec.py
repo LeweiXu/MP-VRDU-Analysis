@@ -1,1 +1,100 @@
 """Turns a YAML spec into dynamic tasks, including corpus scope."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+# A spec declares only what a run varies. There is deliberately no `machine`
+# concept: the two-machine reality is the failed-only retry, not a spec field.
+ALLOWED_KEYS = {
+    "task",
+    "representations",
+    "corpus",
+    "reasoner_spec",
+    "conditions",
+    "parser",
+    "quantization",
+    "visual_resolution",
+    "k_values",
+    "judge_spec",
+    "run_tag",
+}
+
+
+class SpecError(ValueError):
+    """A malformed generation spec."""
+
+
+@dataclass(frozen=True)
+class Spec:
+    """A parsed generation spec: which task runs, over what grid and corpus."""
+
+    task: str
+    representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
+    corpus: Mapping[str, Any] = field(default_factory=lambda: {"sampling": "full"})
+    reasoner_spec: str | None = None
+    conditions: tuple[str, ...] = ()
+    parser: str | None = None
+    quantization: str | None = None
+    visual_resolution: str | None = None
+    k_values: tuple[int, ...] = ()
+    judge_spec: str | None = None
+    run_tag: str | None = None
+
+
+def parse_spec(raw: Mapping[str, Any]) -> Spec:
+    """Parse a mapping into a `Spec`, rejecting a `machine` field outright."""
+
+    if not isinstance(raw, Mapping):
+        raise SpecError(f"spec must be a mapping, got {type(raw).__name__}")
+    if "machine" in raw:
+        raise SpecError("specs must not declare a machine field; the split is the failed-only retry")
+    unknown = set(raw) - ALLOWED_KEYS
+    if unknown:
+        raise SpecError(f"unknown spec keys: {sorted(unknown)}")
+    task = str(raw.get("task") or "").strip()
+    if not task:
+        raise SpecError("spec must name a task")
+    return Spec(
+        task=task,
+        representations=tuple(raw.get("representations") or ("T", "TL", "TLV", "V")),
+        corpus=dict(raw.get("corpus") or {"sampling": "full"}),
+        reasoner_spec=raw.get("reasoner_spec"),
+        conditions=tuple(raw.get("conditions") or ()),
+        parser=raw.get("parser"),
+        quantization=raw.get("quantization"),
+        visual_resolution=raw.get("visual_resolution"),
+        k_values=tuple(raw.get("k_values") or ()),
+        judge_spec=raw.get("judge_spec"),
+        run_tag=raw.get("run_tag"),
+    )
+
+
+def load_yaml_spec(path: Path) -> Spec:
+    """Read a YAML spec file and parse it into a `Spec`."""
+
+    import yaml
+
+    with Path(path).open() as handle:
+        raw = yaml.safe_load(handle)
+    return parse_spec(raw)
+
+
+def config_from_spec(spec: Spec, *, smoke: bool = False):
+    """Build an `ExperimentConfig` from a spec's run knobs."""
+
+    from config import DEFAULT_REASONER_SPEC, DEPLOYMENT_RESOLUTION, ExperimentConfig
+
+    return ExperimentConfig(
+        smoke=smoke,
+        reasoner_spec=spec.reasoner_spec or DEFAULT_REASONER_SPEC,
+        representations=spec.representations,
+        judge_spec=spec.judge_spec or "stub",
+        quantization=spec.quantization,
+        visual_resolution=spec.visual_resolution or DEPLOYMENT_RESOLUTION,
+        k_values=spec.k_values or (1, 3, 5, 7, 10),
+        run_tag=spec.run_tag,
+    )

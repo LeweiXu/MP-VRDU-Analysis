@@ -373,3 +373,17 @@ _One line per real judgement call: what, why, what it affected._
   (engine lifecycle) needs the GenerationTask ABC, so it lands with Stage 6; the
   orchestrator (single-cell machinery) + prewarm are done here. No direct tests;
   validated at import level, no regression (6 red / 144 green).
+- **Stage 6 — tasks + registry + yaml (2026-07-09).** `experiments/tasks/base.py`
+  lifted (retriever import + task-bound `resolve_questions` via `pool_for_task`);
+  four tasks: `G1OracleLadder` (oracle ladder), `G2Retrieval` (matched/cross
+  k-sweep + retrieval side artifact), `G3Hallucination` (unanswerable x similarity
+  pages x TLV), `G4ClassifierPricing` (side-only). `experiments/registry.py`
+  exposes `TASKS` + `get_task` (exactly the four G-tasks, no legacy names).
+  `experiments/engine/side_artifacts.py` ported (v4 retrievers, classifier emits
+  bin_label gold; scoring imports stay lazy). `experiments/corpus/yaml_spec.py`
+  rewritten: `parse_spec` returns a `Spec` (task/representations/corpus), rejects
+  a `machine` field and unknown keys; `config_from_spec` builds an
+  ExperimentConfig. Greens `test_imports_registry` (2) + `test_yaml_spec` (2).
+  **Deferrals:** the driver generate/judge task-loop (engine lifecycle) still
+  pending, needed for the smoke test; G3's 3-prompt-condition sweep needs a
+  reasoner prompt-mode interface (flagged, not guessed). Suite now 2 red / 148 green.
