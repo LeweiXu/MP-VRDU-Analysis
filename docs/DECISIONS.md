@@ -326,3 +326,30 @@ _One line per real judgement call: what, why, what it affected._
   upgrades rows in place). The model-lifecycle half of the driver (parse pre-pass,
   reasoner load/free, systemic-abort threshold) is deferred to Stage 5. Greens
   `test_keying` (3) + `test_engine_robustness` (3). Suite now 12 red / 138 green.
+- **Stage 3 — data + corpus (2026-07-08).** `experiments/corpus/resolve.py` gets
+  `sample_per_bin` (doc-coherent draw, groups by `bin_label` not doc_type),
+  `resolve_corpus` (full / per_bin / limit / ids modes), `pool_for_task`
+  (G3 -> unanswerable, else answerable) + `filter_by_pool`. Dropped the v3
+  oversized-evidence exclusion (the retry handles overflow now, no exclusion
+  list). Data layer: `data/render.py` + `data/loader.py` lifted clean (loader
+  gains `split_answerable`); `data/annotations.py` is a new 3-label reader
+  (bin/scan/dominant_visual, validates, tolerates a missing sheet);
+  `data/binning.py` rewritten to stamp `bin_label`/`scan_label` from the
+  annotation table. **Blocker:** `annotations/doc_labels.csv` does not exist yet
+  (needs the manual labelling pass), so real runs get blank bins until then;
+  tests pass because they fabricate their own labelled corpora. Greens
+  `test_corpus_scope` (5). Suite now 7 red / 143 green.
+- **Stage 4 — tools + retrievers + representation (2026-07-08).** `tools/text.py`
+  trimmed to `embedded_text` (T channel); `tools/visual.py` lifted (dropped
+  region_crop, added `tokens_for_pixel_cap`); `tools/parser.py` is a new
+  disk-cache interface (`parser_markdown` reads warmed markdown, `warm_parser_cache`
+  is GPU-deferred with a lazy backend, so the read path never loads a model, no
+  bounding boxes). `pipeline/representation.py` rewritten to the four cost-ordered
+  rungs (T=embedded, TL/TLV=parser markdown, V=image), imports no model backend.
+  Retrievers: base ABC + helpers + memoization in `retrievers/__init__.py`;
+  `retrievers/text.py` (BM25 / BGE-M3 / Qwen3-Embedding, dense loads lazy with
+  BM25 fallback); `retrievers/vision.py` (ColModernVBERT / ColQwen2.5 / ColQwen3,
+  lazy ColPali-family load with a deterministic fallback; exact per-repo
+  model/processor class for ColModernVBERT + ColQwen3 confirmed at GPU bring-up);
+  `retrievers/joint.py` (order-preserving dedup union). Greens `test_representation`.
+  Suite now 6 red / 144 green.
