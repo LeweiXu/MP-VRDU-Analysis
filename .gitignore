@@ -226,6 +226,8 @@ results/
 envs/
 .data/
 *.jsonl
+# but keep the v3 structural fixtures (Phase 0 capture; shape-only, values not comparable to v4)
+!tests/fixtures/v3_results/**/*.jsonl
 # model weights / caches
 *.safetensors
 *.bin

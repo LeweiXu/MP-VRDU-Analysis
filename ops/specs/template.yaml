@@ -1,0 +1,62 @@
+version: 1
+name: full-generation-template
+run_tag: yaml-full
+mode: full
+dataset: mmlongbench
+
+config:
+  reasoner_spec: qwen3vl-8b-local
+  max_tokens: 256
+  visual_resolution: low
+  per_bin_sample: 100
+  sample_seed: 0
+  k_values: [1, 3, 5, 7, 9]
+  representations: [T, L, V, TL, TV, LV, TLV]
+
+runs:
+  - name: G1_sufficiency
+    questions: {}
+    models: [qwen3vl-8b-local]
+    cells:
+      conditions:
+        - type: oracle
+      representations: [T, L, V, TL, TV, LV, TLV]
+
+  - name: G2_family
+    questions: {}
+    models: [internvl3-8b-local]
+    cells:
+      conditions:
+        - type: oracle
+      representations: [T, L, V, TL, TV, LV, TLV]
+
+  - name: G3_dataset
+    questions:
+      preset: table4_replication
+    models: [qwen3vl-8b-local]
+    cells:
+      conditions:
+        - type: oracle
+      representations: [T, L, V, TL, TV, LV, TLV]
+
+  - name: G5_retrieval
+    questions: {}
+    models: [qwen3vl-8b-local]
+    cells:
+      conditions:
+        - type: retrieved
+          retriever: vision
+          k: [1, 3, 5, 7, 9]
+          name: retrieved_vision_k{k}
+        - type: retrieved
+          retriever: text
+          k: [1, 3, 5, 7, 9]
+          name: retrieved_text_k{k}
+      representations: [TLV]
+    side_artifacts:
+      retrieval_eval: true
+
+  - name: G6_classifier
+    questions: {}
+    side_artifacts:
+      classifier: true

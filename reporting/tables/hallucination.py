@@ -1,0 +1,1 @@
+"""Abstention by prompt condition."""

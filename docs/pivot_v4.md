@@ -169,7 +169,8 @@ answerable/unanswerable split (§3.3) governs which questions feed which RQ.
 - **New: parser comparison** (§1.3) — swap the `TL`/`TLV` parser, hold everything
   else. One table.
 - **New: image-resolution sweep** — vary the per-page vision-token budget at
-  `TLV`/`V`. One table. (Supervisor hardware — see §5.)
+  `TLV`/`V`. One table. This is the *scientific* resolution sweep of §5.2, distinct
+  from the operational probe that fixes the deployment resolution.
 - Replications retained: model **family** (InternVL) and **dataset** (held-out
   MMLongBench subset).
 - Total RQ1 tables: **3 core** (headline, parser, resolution) + replications.
@@ -184,8 +185,10 @@ answerable/unanswerable split (§3.3) governs which questions feed which RQ.
   matches "the representation you'd actually deploy."
 - **Top-k sweep** with retrieval methods framed as **cost rungs** (§4). Tests
   whether larger k helps or hurts, at k ∈ {1,3,5,7,10} for single-method
-  retrieval. Runs on supervisor hardware (no cap pressure → a high-k accuracy
-  drop is a real distractor effect, not a truncation artifact).
+  retrieval. With the input cap removed (§5.1) there is no truncation, so a high-k
+  accuracy drop is unambiguously a real distractor effect, not an artifact. High-k
+  cells that exceed V100 memory are completed on the supervisor via the ordinary
+  retry (§5.3).
 - **Retrieval-accuracy benchmark** (page precision/recall/F1 vs gold, **per
   bin**), covering all retrieval methods incl. ones never fed to the reasoner.
   This is a **by-product of the same retrieval pass** (§5.2), not a separate GPU
@@ -207,8 +210,10 @@ answerable/unanswerable split (§3.3) governs which questions feed which RQ.
 - **New: cost sweeps** — quantization (4/8/16-bit) and model size
   (2B/4B/8B/32B). Framed as **cost-frontier** studies (accuracy-per-VRAM,
   accuracy-per-latency), not accuracy studies — the telemetry *is* the point.
-  Placement (main vs appendix) decided post-hoc by significance. Supervisor
-  hardware for the size/quant/resolution sweeps.
+  Placement (main vs appendix) decided post-hoc by significance. The larger
+  configurations (notably 32B, which does not fit a V100) run on the supervisor
+  via the ordinary retry (§5.3) — they simply OOM on Kaya and get completed on the
+  H100, no special routing.
 
 ### 3.3 The answerable / unanswerable split
 
@@ -257,39 +262,99 @@ not be free).
 
 ---
 
-## 5. Hardware split and the evidence-page partition
+## 5. Hardware: the machine split dissolves into the retry mechanism
 
-### 5.1 Two machines, marked per run
+There is **no separate machine-split implementation** in v4. The two-machine
+reality (Kaya for what fits, supervisor for the overflow) falls out entirely of
+the cell-failure isolation + retry mechanism (§5.3). This section records the
+decisions that make that possible.
 
-We run on **Kaya** (2× V100 16 GB, 32 GB RAM, sm_70, **no FlashAttention-2**).
-The supervisor has **A100 / H100** access. Some experiments **cannot** run on
-Kaya and must be marked as supervisor-only:
+### 5.1 The input-token cap is removed entirely
 
-- Model-size sweep (esp. 32B), quantization sweep, image-resolution sweep — all
-  need headroom Kaya lacks.
-- The RQ2 k-sweep (up to k=10) runs on the supervisor so token caps never bite.
+The old per-size input-token cap (`max_input_tokens`, 8B 4096 / 32B 3072) existed
+for **one** reason: V100 OOM avoidance on the O(seq²) math-attention fallback. It
+was never a scientific parameter — it is the thing that *caused* text truncation,
+and that truncation contaminated the exact ladder comparison the paper is about
+(a trimmed `T`/`TL`/`TLV` cell measures "the representation after amputation to
+fit Volta," not the representation). **The cap is removed. Experiments run at full
+input sequence.**
 
-**Every YAML run carries its target machine** (`machine: kaya | supervisor`), and
-the machine is recorded in the run manifest (and denormalised per-cell for
-audit). Implementation must therefore express the machine in the YAML itself.
+This is safe because three facts each independently bound or shrink the sequence:
 
-### 5.2 The evidence-page partition (exploiting the data)
+1. **Page count is bounded.** Excluding the <10 questions with >10 evidence pages,
+   no cell feeds more than ~10 pages.
+2. **The T/TL rework slashes text size.** Dropping bbox-JSON (the previous main
+   truncation offender) and using parser markdown removes the token-heavy channel.
+   The scientific redefinition (§1) *also* removes the hardware pressure.
+3. **The uncapped remainder fits an H100.** Anything that still OOMs on a V100 at
+   full sequence fits on the supervisor's 80 GB — reached via the same retry
+   (§5.3), no cap needed anywhere.
 
-Per `dataset_stats.md`, the vast majority of MMLongBench questions have **0–2
-evidence pages**; only ~50 questions across the corpus have >2. We exploit this:
+The >10-evidence-page questions (~7 on the full corpus) need **no special
+handling**: the retry catches them if they fit the H100; if they still OOM they
+remain error rows, which scoring already skips. No exclusion list required.
 
-- **Kaya** runs questions with **≤ 2 evidence pages**. Because these are short,
-  the input-token **cap can be raised**, reducing text truncation.
-- **Supervisor** runs the **> 2 evidence-page** remainder (~50 questions per
-  experiment) at the same agreed cap (its GPUs fit that cap where Kaya's do not).
+### 5.2 Image resolution is the one cross-machine invariant
 
-**No confound.** The token cap is a **fixed experimental constant**; it is the
-same number on both machines. Kaya simply cannot *fit* that cap on some questions
-without OOM, while the supervisor can. Machine is just the executor, not a
-different condition. To keep the pooled full-corpus numbers auditable, each cell
-records `machine` and `cap_used`, and each run's manifest records its
-`evidence_page_filter` (`≤2` / `>2` / `all`). Tables that report a full-corpus
-number pool the two slices at build time.
+With the text cap gone, the binding VRAM constraint on Kaya becomes **vision-token
+volume = resolution × page count**, governed by `max_pixels`/resolution, not the
+(removed) text cap. Resolution is therefore the one representation parameter that
+**must be identical across both machines**: unlike a text cap, resolution changes
+*what the model sees* (a lower-res image is a genuinely lossier, different input),
+so Kaya-low-res vs supervisor-high-res would make pooled `TLV`/`V` numbers compare
+different representations. **One fixed resolution preset is chosen once and used
+everywhere, on both machines.**
+
+Two distinct uses of the resolution knob, kept separate so they are not conflated:
+
+- **Resolution probe (operational, Kaya).** A pre-step that sweeps presets on Kaya
+  at the worst case (~10 pages, `TLV`) and reports the **highest preset that fits
+  16 GB without OOM**. That preset becomes the single fixed study resolution for
+  all other tables. Through the deployment lens this is not a compromise — "the
+  best resolution achievable on a modest 16 GB target" *is* the story. Lives at
+  `ops/scripts/resolution_probe.py`; re-run if the parser choice changes the
+  sequence profile. The supervisor reuses the same preset (its spare VRAM goes to
+  fitting overflow cells, not a nicer image).
+- **Resolution sweep (scientific, RQ1 table).** A standalone experiment that
+  deliberately varies resolution across presets to characterise sensitivity per
+  bin. Run where it has headroom. This sweep **characterises** sensitivity; it
+  does **not** set the deployment resolution — the probe does.
+
+### 5.3 One mechanism: run everything, retry only failed cells
+
+The complete workflow, with **zero machine-specific code**:
+
+1. **Kaya runs every generation task** over the full cell set at full sequence and
+   the fixed resolution. Cells either succeed or OOM/error.
+2. Every cell writes **exactly one row** regardless of outcome (§5.4). OOM/error
+   cells are recorded as failed rows, **not omitted** — so the failed-row set *is*
+   the supervisor's work queue, defined dynamically at runtime (it also catches
+   OOMs from causes an up-front evidence-page tag would mispredict: long parser
+   text, high-k retrieval).
+3. The code is on GitHub and the cached `results/` is handed to the supervisor
+   directly. **No sync tooling is built** — it is a manual folder handoff outside
+   the codebase.
+4. The supervisor runs the identical task in **`--failed-only`** mode: read a run's
+   rows, select `status != ok`, re-run just those on the H100, upgrade them in
+   place in the same jsonl. The completed cache comes back for local judge/build.
+
+**Hard invariant that makes this correct: cell keying and corpus resolution are
+machine-independent.** Same seed, same per-bin sample, same filtered question set,
+same SHA-256 cache key — on both machines. Nothing machine-dependent (device
+count, a `torch.cuda` property, hostname, and — now that the cap is gone — not even
+a cap value) may enter the cell key or the resolved cell list. Then a supervisor
+re-run completes the *same* file rather than producing a parallel one; pooling is a
+file copy, not a merge.
+
+### 5.4 The evidence-page distribution (explanation, not implementation)
+
+Per `dataset_stats.md`, the vast majority of questions have 0–2 evidence pages;
+only ~50 across the corpus have >2. This is why only a small remainder ever lands
+on the supervisor — but it is now an **observation that explains the workload
+size**, not a partition the code implements. There is no `evidence_page_filter`,
+no `machine:` YAML field, no static supervisor tagging, and no build-time merge of
+two machines' outputs. `machine` is still *recorded* per cell as provenance
+telemetry (which box completed a row), but it drives nothing.
 
 ---
 
@@ -303,19 +368,25 @@ stamp constant environment fields on every cell.
 **Identity & config** (mostly existing): `prediction_key`, `question_id`,
 `doc_id`, `condition`, `representation`, `model_spec`, `page_indices`,
 `provenance`, `note`. New: `bin_label`, `scan_label` (stamped so tables need no
-join to the annotation CSV); `machine`, `cap_used` (per-run in nature,
-denormalised per-cell for pooling audit).
+join to the annotation CSV); `machine`, `status` (`ok` / `oom` / `error`, §5.3),
+`skipped_reason`. `machine` is provenance only (which box completed the row); it
+drives nothing.
 
-**Tokens** (the truncation story, simplified — vision is guaranteed fed, only
-text is trimmed):
-- `total_text_tokens` — text tokens before any truncation.
-- `total_visual_tokens` — vision tokens (always fed in full).
-- `text_tokens_fed` — text tokens actually fed to the reasoner
-  (`= total_text_tokens` when no truncation).
+**Tokens** (vision is always fed in full; with the cap removed, text is no longer
+trimmed):
+- `total_text_tokens` — text tokens (all fed; no cap).
+- `total_visual_tokens` — vision tokens (all fed).
+- `text_tokens_fed` — text tokens actually fed. **With the cap removed this must
+  equal `total_text_tokens`.**
 - `output_tokens`.
-- Derived (free): `tokens_dropped = total_text_tokens − text_tokens_fed`;
-  `truncation_occurred = tokens_dropped > 0`; truncation severity =
-  `tokens_dropped / total_text_tokens`.
+- Derived: `tokens_dropped = total_text_tokens − text_tokens_fed`;
+  `truncation_occurred = tokens_dropped > 0`.
+
+**Truncation telemetry is now a canary, not an analysis field.** Since §5.1
+removes the cap, `tokens_dropped` should read **zero** on every cell. It is kept
+deliberately so a nonzero value is a **bug signal** ("why did anything truncate if
+there is no cap?"), not because the analysis needs it. Do not remove these fields
+as dead code — they are an intentional invariant check.
 
 **Latency** (deployment's primary metric):
 - `latency_s` — end-to-end wall clock, batch=1 (headline, existing).
@@ -340,10 +411,11 @@ text is trimmed):
 ### 6.2 Per-run (once, in `experiment_manifest.json`)
 
 `gpu_model`, `gpu_count`, `cuda_version`, `torch_version`, `driver_version`;
-`quantization`, `visual_resolution_preset`, `max_input_tokens`, `max_pixels`,
-`dpi`; `parser_tool`, `retriever_text`, `retriever_vision` (which are active this
-run); `git_commit`, `run_tag`, `mode`, `sample_seed`, `per_bin_sample`;
-`machine`; `evidence_page_filter` (`≤2` / `>2` / `all`).
+`quantization`, `visual_resolution_preset` (the fixed study preset, §5.2),
+`max_pixels`, `dpi`; `parser_tool`, `retriever_text`, `retriever_vision` (which
+are active this run); `git_commit`, `run_tag`, `mode`, `sample_seed`,
+`per_bin_sample`; `machine` (provenance). No `max_input_tokens` (cap removed,
+§5.1) and no `evidence_page_filter` (machine split dissolved, §5.4).
 
 ### 6.3 Retrieval side-artifact (one row per question × method × k)
 
@@ -361,23 +433,33 @@ the reasoner.
 
 Consolidated from six (G1–G6) to **four**, per the "few tasks" mandate. The big
 reduction is that the parser, resolution, family, dataset, quantization, and
-model-size "experiments" are **YAML runs over G1**, not separate tasks. Each run
-is tagged with its machine (§5.1). Every task collects the full §6 telemetry.
+model-size "experiments" are **YAML runs over `G1_oracle_ladder`**, not separate
+tasks. No run carries a machine tag — every task runs on Kaya, and overflow cells
+are completed on the supervisor via the retry (§5.3). Every task collects the full
+§6 telemetry.
+
+Task files keep the `G[num]_[name]` convention (`G1_oracle_ladder`,
+`G2_retrieval`, `G3_hallucination`, `G4_classifier_pricing`): the number is a
+stable handle, the name states the mechanism — neither encodes an RQ or table
+number, which the framing (§3) may still move.
 
 ### G1 — Oracle ladder (reasoning core + all its sweeps)
 
-- **Cells:** oracle pages × {T, TL, TLV, V}, answerable-only, primary 8B reasoner.
+- **Cells:** oracle pages × {T, TL, TLV, V}, answerable-only, primary 8B reasoner,
+  full input sequence (no cap), fixed study resolution (§5.2).
 - **Feeds:** Table 1 (cost-ordered headline) and the per-bin frontier.
 - **Reused by these YAML runs (one field changed each; not new tasks):**
   - parser comparison — vary parser at `TL`/`TLV`.
-  - resolution sweep — vary `--visual-resolution` at `TLV`/`V` (supervisor).
+  - resolution sweep — vary resolution preset at `TLV`/`V` (the scientific sweep,
+    §5.2; distinct from the deployment-resolution probe).
   - family replication — reasoner → InternVL3-8B.
   - dataset replication — corpus → held-out MMLongBench subset.
-  - quantization sweep — reasoner spec → `-4bit`/`-8bit`/bf16 (supervisor).
-  - model-size sweep — reasoner → 2B/4B/8B/32B (supervisor; 32B A100-only).
-- Split by evidence pages into two runs (≤2 Kaya, >2 supervisor), **pooled at
-  build time** using per-cell `machine`/`cap_used` and per-run
-  `evidence_page_filter`.
+  - quantization sweep — reasoner spec → `-4bit`/`-8bit`/bf16.
+  - model-size sweep — reasoner → 2B/4B/8B/32B (32B completes on the supervisor via
+    retry, as it OOMs on a V100).
+- One run over the full cell set; overflow cells complete on the supervisor via
+  `--failed-only` (§5.3), upgrading rows in place. No evidence-page split, no
+  build-time machine merge.
 
 ### G2 — Retrieval (inference + accuracy benchmark, one pass, two scorers)
 
@@ -402,12 +484,16 @@ is tagged with its machine (§5.1). Every task collects the full §6 telemetry.
 - Correct = abstention. No oracle arm (zero gold pages by construction).
 - **Feeds:** hallucination table + prompting comparison (together).
 
-### G4 — Routing / classifier (deployment)
+### G4 — Classifier pricing (deployment; routing is build-time)
 
-- The doc-type classifier pricing (the old G6) + routing-policy assembly. Routing
-  accuracy reuses G1's rows; G4 adds only the classifier's own cost. Unchanged in
-  spirit.
-- **Feeds:** routing table.
+- `G4_classifier_pricing` is a **side-only** task (no reasoner cells): it prices
+  the doc-type/bin classifier (first-two-pages, small model) — its latency/VRAM.
+- **Routing itself is not a generation task.** Routing accuracy is assembled at
+  **build time** by reusing G1's ladder rows; the routing table adds only the
+  classifier's own price from G4. So the honest structure is *three reasoner tasks
+  (G1–G3) + one classifier side-job (G4) + build-time routing assembly*, not four
+  peer reasoner tasks.
+- **Feeds:** routing table (with G1).
 
 ### 7.1 Task → result map
 
@@ -415,16 +501,16 @@ is tagged with its machine (§5.1). Every task collects the full §6 telemetry.
 |---|---|---|
 | Cost-ordered headline (Table 1) | G1 | base run |
 | Parser comparison | G1 | parser-varied run |
-| Resolution sweep | G1 | resolution-varied run (supervisor) |
+| Resolution sweep (scientific) | G1 | resolution-varied run |
 | Family replication | G1 | InternVL run |
 | Dataset replication | G1 | held-out corpus run |
-| Quantization sweep | G1 | quant-varied run (supervisor) |
-| Model-size sweep | G1 | size-varied run (supervisor) |
+| Quantization sweep | G1 | quant-varied run |
+| Model-size sweep | G1 | size-varied run (32B completes via supervisor retry) |
 | Matched vs cross (3 bins) | G2 | inference scorer |
 | k-depth sweep | G2 | inference scorer |
 | Retrieval-accuracy benchmark (per bin) | G2 | side-artifact scorer |
 | Hallucination + prompting | G3 | |
-| Routing | G4 | + reuses G1 |
+| Routing | build-time | reuses G1 rows + G4 classifier price |
 
 ---
 

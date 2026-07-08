@@ -1,51 +1,48 @@
-"""Test repository-wide module documentation requirements.
-
-Purpose:
-    Enforces the implementation-plan rule that every Python file starts with a
-    useful module docstring documenting purpose and arguments.
-
-Test role:
-    Catches new files whose top-level documentation is missing or too terse
-    before they become part of later staged work.
-
-Arguments:
-    None. Run with `python -m pytest tests/test_docstrings.py`.
-"""
+"""Every spine/ops module has a concise, present-tense docstring with no plan-talk
+(no roadmap, "will change", legacy/v4/pivot, or RQ/table numbers)."""
 
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
+import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-SKIP_PARTS = {".git", ".cache", ".data", "envs", "results", "logs"}
+from conftest import ROOT
+
+SPINE_DIRS = [
+    "data", "tools", "retrievers", "models", "pipeline", "scoring",
+    "experiments", "reporting",
+]
+# ops entry points are v4-authored; ops/scripts and ops/kaya are copied tooling
+# reworked in Phase 4, so they are not held to the docstring rule yet.
+ROOT_FILES = ["config.py", "schema.py",
+              "ops/__init__.py", "ops/generate.py", "ops/judge.py", "ops/build.py"]
+
+# Plan-talk the docstring rule forbids.
+FORBIDDEN = re.compile(
+    r"\bv4\b|\bv3\b|\blegacy\b|\bpivot\b|\broadmap\b|will change|should update|"
+    r"\bRQ\d|\bTable\s*\d|\bT[1-9]\b",
+    re.IGNORECASE,
+)
 
 
-def repo_python_files() -> list[Path]:
-    """Return importable/source Python files, excluding generated artifact trees."""
+def _modules() -> list[Path]:
+    paths: list[Path] = []
+    for name in ROOT_FILES:
+        paths.append(ROOT / name)
+    for d in SPINE_DIRS:
+        paths.extend(p for p in (ROOT / d).rglob("*.py") if "__pycache__" not in p.parts)
+    return sorted(paths)
 
-    return sorted(
-        path
-        for path in ROOT.rglob("*.py")
-        if not any(part in SKIP_PARTS for part in path.relative_to(ROOT).parts)
-    )
 
-
-def test_python_files_have_comprehensive_module_docstrings() -> None:
-    missing: list[str] = []
-    incomplete: list[str] = []
-
-    for path in repo_python_files():
-        module = ast.parse(path.read_text())
-        docstring = ast.get_docstring(module) or ""
-        rel = str(path.relative_to(ROOT))
-        if not docstring:
-            missing.append(rel)
-            continue
-        required_sections = ("Purpose:", "Arguments:")
-        if any(section not in docstring for section in required_sections) or len(docstring.split()) < 25:
-            incomplete.append(rel)
-
-    assert not missing
-    assert not incomplete
+@pytest.mark.parametrize("path", _modules(), ids=lambda p: str(p.relative_to(ROOT)))
+def test_module_has_clean_docstring(path: Path) -> None:
+    doc = ast.get_docstring(ast.parse(path.read_text())) or ""
+    rel = path.relative_to(ROOT)
+    assert doc.strip(), f"{rel}: missing module docstring"
+    bad = FORBIDDEN.search(doc)
+    assert not bad, f"{rel}: docstring contains plan-talk: {bad.group(0)!r}"
+    # Concise: 1-3 sentences.
+    assert len(doc.split()) <= 60, f"{rel}: docstring too long ({len(doc.split())} words)"
