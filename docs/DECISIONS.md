@@ -172,7 +172,7 @@ core reasoner and each parser (parsers cross only via the disk cache):
 
 | Env | Framework | Requirements | Model |
 |---|---|---|---|
-| `core` | torch (no vLLM) | `ops/requirements/core.txt` | Qwen3-VL + InternVL + retrievers + judges + PyMuPDF |
+| `core` | torch (no vLLM) | `docs/requirements/core.txt` | Qwen3-VL + InternVL + retrievers + judges + PyMuPDF |
 | `parse-paddleocrvl` | **PaddlePaddle** | `parse-paddleocrvl.txt` | `PaddlePaddle/PaddleOCR-VL` |
 | `parse-mineru` | torch | `parse-mineru.txt` | `opendatalab/MinerU2.5-2509-1.2B` |
 | `parse-unlimited` | torch | `parse-unlimited.txt` | `baidu/Unlimited-OCR` |
@@ -189,7 +189,7 @@ Key findings that shaped this:
   so it can't share the core env's torch — hence its own env.
 
 **Three machine configurations** live as a matrix in `setup_env.py` (CUDA index +
-framework versions per machine) plus `ops/requirements/README.md`; the dependency
+framework versions per machine) plus `docs/requirements/README.md`; the dependency
 files are shared across machines. Chose a shared-deps + machine-matrix layout over
 three duplicated file trees to avoid drift; only torch/paddle build differs by
 machine.
@@ -202,7 +202,7 @@ machine.
   tools are gone). Per-parser-env aux-model warmup + v4 tool smoke deferred to
   Phase 4 (needs `tools/parser.py`).
 - Old root `requirements.txt` + `requirements-local-rtx5070.txt` removed;
-  `requirements-annotate.txt` -> `ops/requirements/annotate.txt`.
+  `requirements-annotate.txt` -> `docs/requirements/annotate.txt`.
 - `config.json`: `paths.env` -> `envs/core`; added `parsers`.
 
 **Not removed yet:** `envs/mpvrdu` (local + Kaya) — Kaya's is in use by the running
@@ -237,6 +237,92 @@ doc pass (the driver is now `python -m ops.kaya.kaya`, core env `envs/core`).
 
 ---
 
+## Containment paradigm — confirmed and enforced (2026-07-08)
+
+Confirmed the v3 paradigm survives into v4: **everything (envs, model + parser
+weights, datasets, all caches) lives under the project root, gitignored and
+rsync-excluded**, so each machine keeps its own heavy dirs and nothing lands in
+`$HOME` or a shared system path.
+
+Already held: `envs/`, HF weights (`HF_HOME=.cache`), datasets (`.data`), and
+paddle/torch/pip caches are pointed in-project by
+`ops/kaya/kaya.py::artifact_exports`, applied by `remote_prelude` for every
+`run`/`submit`. `.gitignore` + `rsync_excludes` cover `envs/ .cache/ .data/
+results/ logs/`.
+
+Gaps found and closed (they had leaked ~2.2 GB into Kaya `$HOME` during the env
+builds):
+- **conda package cache** — no `CONDA_PKGS_DIRS`, so `conda create` wrote to
+  `~/.conda/pkgs` (1 GB). Added `CONDA_PKGS_DIRS=.cache/conda-pkgs`.
+- **pip cache** — 1.2 GB in `~/.cache/pip`. `PIP_CACHE_DIR` was already set but
+  some invocations escaped; added `XDG_CACHE_HOME=.cache/xdg` as a catch-all.
+- **MinerU/ModelScope** — would download aux models to `~/.cache/modelscope`.
+  Added `MODELSCOPE_CACHE=.cache/modelscope` + `MINERU_MODEL_SOURCE=huggingface`.
+- Added `TRITON_CACHE_DIR` / `TORCHINDUCTOR_CACHE_DIR` for GPU-run compile caches.
+- Dropped the now-unused `DOCLING_CACHE_DIR`.
+- `prestage.py::prepare_hf_cache_env` sets the same vars so `--local` is contained.
+
+The leaked `~/.conda/pkgs` and `~/.cache/pip` on Kaya were cleaned (`conda clean
+-ay` + `rm`); the four envs still import (hardlinks intact). `artifact_exports`
+runs locally to build the remote prelude, so the fix is live for the next
+`run`/`submit` without a code push.
+
+**Requirements moved to `docs/requirements/`** (from `ops/requirements/`) at the
+user's request; `setup_env.py::REQUIREMENTS` updated. (Deviation from the impl
+plan's "docs/ = authored prose only"; done on explicit instruction.)
+
+---
+
 ## Deviation & decision log (Phase 4+)
 
 _One line per real judgement call: what, why, what it affected._
+
+- **Stage 0 — cache namespace bump (2026-07-08).** Added `config.CACHE_VERSION =
+  "v4"` and nested `ProjectPaths.cache_dir` under `results/cache/v4/`, so v3 and
+  v4 cached cells can never co-mingle. Affects every cache path; wired further in
+  Stage 2 (`experiments/engine/paths.py`).
+- **Stage 0 — retriever catalog swapped to the v4 set (2026-07-08).** Updated
+  `ops/kaya/config.json::retrieval_models` to text = {BGE-M3, Qwen3-Embedding-4B}
+  (BM25 needs no weights), vision = {ColModernVBERT, ColQwen2.5-v0.2 kept,
+  ColQwen3-4B}. **Not re-staged yet** — deferred until the retriever code lands
+  (Stage 4) and the ids are locked. `ColQwen3-4B` id is **tentative**: there is no
+  canonical `vidore/colqwen3` repo; using `OpenSearch-AI/Ops-Colqwen3-4B`
+  (Qwen3-VL-4B, ColPali-style) as the best-available candidate, to confirm before
+  staging. `ColModernVBERT` = `ModernVBERT/colmodernvbert` (confirmed).
+- **Stage 1 — cap removed, resolution presets kept (2026-07-08).** `config.py`
+  dropped `max_input_tokens` / `MAX_INPUT_TOKENS_BY_SIZE` /
+  `max_input_tokens_for_spec` and the size-aware `MAX_PIXELS_BY_SIZE` (resolution
+  is now one fixed preset, not size-aware). Kept `VISUAL_RESOLUTION_PRESETS`
+  (min/low/med/high/full). Also updated defaults to v4: bins renamed to
+  text-dominant/mixed-modality/visual-dominant, conditions dropped `buried` and
+  added `similarity`, `k_values` = {1,3,5,7,10}. Greens `test_config_cap_removed`.
+- **Stage 1 — DEPLOYMENT_RESOLUTION = "med" is a PLACEHOLDER (2026-07-08).** Set so
+  the pipeline has a concrete preset to run at; **not final**. The operational
+  resolution probe (job 1017226) decides the real value; its verdict replaces this
+  constant. Re-check if the parser path shifts the sequence profile.
+- **Stage 1 — ResultRow moved to `schema.py` + telemetry added (2026-07-08).** v3
+  kept `ResultRow` in `pipeline/orchestrator.py`; v4 moves it to `schema.py` (the
+  telemetry contract imports it from `schema`) and extends it additively with the
+  §6 per-cell telemetry (`status`, `skipped_reason`, `bin_label`, `scan_label`,
+  `machine`, `total_*`/`text_tokens_fed`/`tokens_dropped` tokens, prefill/decode
+  latency split, `peak_vram_bytes`). Truncation fields are a zero-canary
+  (`schema.tokens_dropped` / `truncation_occurred`). `Question` gained `bin_label`
+  / `scan_label`. Greens `test_schema_telemetry`. This touches a frozen contract
+  (ResultRow shape) — recorded here per the frozen-interface rule; the change is
+  additive (new fields + a relocation), not a reshape.
+- **Stage 0 follow-up — v4 retrievers staged (2026-07-08).** Re-ran `prestage.py`
+  after the catalog swap; all five v4 retrieval models staged clean on Kaya,
+  including the tentative `OpenSearch-AI/Ops-Colqwen3-4B` (valid snapshot, so the
+  id is downloadable; whether it is the right "ColQwen3-4B" for the science is
+  still open). The v3 leftovers (bge-small, colpali, colqwen2) remain on disk as
+  dead weight, prunable later.
+- **Stage 2 — engine keying + robustness (2026-07-08).** `experiments/engine/paths.py`
+  gets machine-independent `prediction_key` / `result_key` (SHA-256 over identity
+  only, no dpi/hostname/cuda; resolution preset is a manifest field) plus the
+  lifted `experiment_paths` / `free_gpu` / `mode` / `configure_logging` /
+  `write_phase_status`. `experiments/engine/driver.py` gets the pure primitives
+  `run_cells` (one row per cell; failures classified oom vs error with a
+  `skipped_reason`), `select_failed`, and `merge_failed_only` (failed-only re-run
+  upgrades rows in place). The model-lifecycle half of the driver (parse pre-pass,
+  reasoner load/free, systemic-abort threshold) is deferred to Stage 5. Greens
+  `test_keying` (3) + `test_engine_robustness` (3). Suite now 12 red / 138 green.

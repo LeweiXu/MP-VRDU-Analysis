@@ -50,3 +50,26 @@ python -m ops.kaya.kaya run ops/scripts/setup_env.py -- --machine kaya --env all
 `setup_env.py` creates the conda prefix, installs the framework from the right
 index, installs the env's requirements, and runs `pip check`. Model and dataset
 downloads are **not** here: they live in `prestage.py`.
+
+## Everything lives in the project directory
+
+Nothing installs to `$HOME` or a shared system location. Every heavy artifact is
+kept under the project root, gitignored, and rsync-excluded from Kaya so each
+machine keeps its own copy:
+
+| Artifact | Location | How |
+|---|---|---|
+| conda environments | `envs/<name>/` | `conda create -p envs/<name>` |
+| model + parser weights | `.cache/` (HF hub layout) | `HF_HOME`/`HF_HUB_CACHE` |
+| MinerU aux models | `.cache/modelscope/` | `MODELSCOPE_CACHE`, `MINERU_MODEL_SOURCE=huggingface` |
+| PaddleOCR-VL models | `.cache/paddle*` (from HF) | `PADDLE_PDX_MODEL_SOURCE=huggingface` |
+| datasets | `.data/` | prestage staging |
+| conda pkg cache | `.cache/conda-pkgs/` | `CONDA_PKGS_DIRS` |
+| pip wheel cache | `.cache/pip/` | `PIP_CACHE_DIR` |
+| torch/triton/inductor | `.cache/{torch,triton,inductor}/` | matching env vars |
+| anything XDG | `.cache/xdg/` | `XDG_CACHE_HOME` |
+
+The Kaya run wrapper (`ops/kaya/kaya.py::artifact_exports`) exports all of these
+before any remote command, so `setup_env.py` and `prestage.py` inherit them.
+`.gitignore` and `rsync_excludes` both cover `envs/`, `.cache/`, `.data/`,
+`results/`, `logs/`, so none of it is committed or synced.

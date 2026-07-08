@@ -292,19 +292,30 @@ def artifact_exports(config: KayaConfig, *, offline: bool) -> list[str]:
     cache = config.remote_path("cache")
     values = {
         "PYTHONPATH": config.remote_root,
+        # HF weights/datasets
         "HF_HOME": cache,
         "HF_HUB_CACHE": cache,
         "HF_DATASETS_CACHE": f"{cache}/datasets",
         "HF_XET_CACHE": f"{cache}/xet",
         "TORCH_HOME": f"{cache}/torch",
+        # package caches: keep conda pkgs and pip wheels in-project, not in $HOME
+        "CONDA_PKGS_DIRS": f"{cache}/conda-pkgs",
         "PIP_CACHE_DIR": f"{cache}/pip",
         "MODEL_CACHE_DIR": f"{cache}/datalab/models",
+        # PaddleOCR-VL: pull from HF (contained) rather than the Paddle model hub
         "PADDLE_HOME": f"{cache}/paddle",
         "PADDLEOCR_HOME": f"{cache}/paddleocr",
         "PADDLE_PDX_CACHE_HOME": f"{cache}/paddlex",
         "PADDLE_PDX_MODEL_SOURCE": "huggingface",
-        "DOCLING_CACHE_DIR": f"{cache}/docling",
+        # MinerU aux models: pull from HF and cache ModelScope in-project
+        "MINERU_MODEL_SOURCE": "huggingface",
+        "MODELSCOPE_CACHE": f"{cache}/modelscope",
+        # torch compile / triton kernel caches (else they write to $HOME)
+        "TRITON_CACHE_DIR": f"{cache}/triton",
+        "TORCHINDUCTOR_CACHE_DIR": f"{cache}/inductor",
         "MPLCONFIGDIR": f"{cache}/matplotlib",
+        # catch-all: redirect any XDG-cache-respecting tool into the project
+        "XDG_CACHE_HOME": f"{cache}/xdg",
     }
     if offline:
         values.update(

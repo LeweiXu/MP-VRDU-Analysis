@@ -90,11 +90,20 @@ def smoke_retrieval_models(raw: dict) -> list[str]:
 
 
 def prepare_hf_cache_env(cache_dir: Path) -> None:
-    """Point the HF cache at the configured path so snapshots land where jobs read."""
+    """Point every download cache into the project so nothing lands in $HOME.
+
+    On Kaya these are already exported by the run wrapper; setting them here keeps
+    the --local path (and any direct invocation) equally contained.
+    """
     (cache_dir / "xet").mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(cache_dir)
     os.environ["HF_HUB_CACHE"] = str(cache_dir)
     os.environ["HF_XET_CACHE"] = str(cache_dir / "xet")
+    # MinerU pulls aux models from HF (contained); cache ModelScope in-project too.
+    os.environ["MINERU_MODEL_SOURCE"] = "huggingface"
+    os.environ["MODELSCOPE_CACHE"] = str(cache_dir / "modelscope")
+    os.environ["PADDLE_PDX_MODEL_SOURCE"] = "huggingface"
+    os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir / "xdg"))
     os.environ.pop("TRANSFORMERS_CACHE", None)
 
 

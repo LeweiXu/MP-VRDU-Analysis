@@ -3,7 +3,7 @@
 Creates the isolated env partition (core reasoning env + one env per parser) at
 `<root>/envs/<name>`, installs the framework build (torch or PaddlePaddle) from
 the machine's CUDA wheel index, installs the env's requirements from
-`ops/requirements/`, and runs `pip check`. Model and dataset downloads are not
+`docs/requirements/`, and runs `pip check`. Model and dataset downloads are not
 here; they live in `prestage.py`.
 
 Run one env or all four:
@@ -24,7 +24,7 @@ from pathlib import Path
 from ops.kaya.kaya import load_config
 
 ROOT = Path(__file__).resolve().parents[2]
-REQUIREMENTS = ROOT / "ops" / "requirements"
+REQUIREMENTS = ROOT / "docs" / "requirements"
 
 TORCH_INDEX = "https://download.pytorch.org/whl/{cuda}"
 PADDLE_INDEX = "https://www.paddlepaddle.org.cn/packages/stable/{cuda}/"

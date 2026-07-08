@@ -56,12 +56,13 @@
   ],
   "retrieval_models": {
     "text": [
-      "BAAI/bge-small-en-v1.5"
+      "BAAI/bge-m3",
+      "Qwen/Qwen3-Embedding-4B"
     ],
     "vision": [
-      "vidore/colpali-v1.3",
-      "vidore/colqwen2-v1.0",
-      "vidore/colqwen2.5-v0.2"
+      "ModernVBERT/colmodernvbert",
+      "vidore/colqwen2.5-v0.2",
+      "OpenSearch-AI/Ops-Colqwen3-4B"
     ]
   },
   "parsers": {
