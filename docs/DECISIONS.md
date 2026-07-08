@@ -162,6 +162,81 @@ regenerated in Phase 4). The `CLAUDE.md` module-docstring rule was added.
 
 ---
 
+## Environment partition (pre-Phase-4, 2026-07-08)
+
+Built the v4 env partition. **Target Kaya (V100, sm_70, cu126) now**; local
+(sm_120) and supervisor (sm_90) are specified but not built yet.
+
+**Four isolated conda envs** (`envs/<name>`), one framework boundary between the
+core reasoner and each parser (parsers cross only via the disk cache):
+
+| Env | Framework | Requirements | Model |
+|---|---|---|---|
+| `core` | torch (no vLLM) | `ops/requirements/core.txt` | Qwen3-VL + InternVL + retrievers + judges + PyMuPDF |
+| `parse-paddleocrvl` | **PaddlePaddle** | `parse-paddleocrvl.txt` | `PaddlePaddle/PaddleOCR-VL` |
+| `parse-mineru` | torch | `parse-mineru.txt` | `opendatalab/MinerU2.5-2509-1.2B` |
+| `parse-unlimited` | torch | `parse-unlimited.txt` | `baidu/Unlimited-OCR` |
+
+Key findings that shaped this:
+
+- **vLLM dropped** (already decided §1b): core env is HF transformers only.
+- **PaddleOCR-VL page-level parsing needs PaddlePaddle**, not just transformers
+  (the transformers path is element-level only). So its env is Paddle-native
+  (`paddleocr[doc-parser]` + `paddlepaddle-gpu` from Paddle's index), zero torch.
+- **MinerU** uses `mineru[vlm]==3.4.3` (transformers VLM backend, no vLLM/gradio),
+  torch >=2.6.
+- **Unlimited-OCR** pins transformers==4.57.1 + torch==2.10.0 (upstream-tested),
+  so it can't share the core env's torch — hence its own env.
+
+**Three machine configurations** live as a matrix in `setup_env.py` (CUDA index +
+framework versions per machine) plus `ops/requirements/README.md`; the dependency
+files are shared across machines. Chose a shared-deps + machine-matrix layout over
+three duplicated file trees to avoid drift; only torch/paddle build differs by
+machine.
+
+**Script reorg:**
+- `setup_env.py` rewritten: `--machine {kaya,local,supervisor} --env {core,parse-*,all}`,
+  per-(machine,env) framework install + `pip check`. Import fixed to `ops.kaya.kaya`.
+- `prestage.py` rewritten to own **all** downloads incl. the three parser models
+  (`config.parsers`); dropped the v3 marker/docling/paddleocr tool-warmup (those
+  tools are gone). Per-parser-env aux-model warmup + v4 tool smoke deferred to
+  Phase 4 (needs `tools/parser.py`).
+- Old root `requirements.txt` + `requirements-local-rtx5070.txt` removed;
+  `requirements-annotate.txt` -> `ops/requirements/annotate.txt`.
+- `config.json`: `paths.env` -> `envs/core`; added `parsers`.
+
+**Not removed yet:** `envs/mpvrdu` (local + Kaya) — Kaya's is in use by the running
+`g1g2g5-full` job; local removal was descoped ("don't worry about local"). Removed
+once the new envs are validated and jobs finish.
+
+**Build result (Kaya, verified `pip check` clean on all four):**
+
+| Env | Framework | Notes |
+|---|---|---|
+| `core` | torch 2.7.0+cu126 | transformers 4.57.6, no vLLM |
+| `parse-mineru` | torch 2.7.0+cu126 | mineru 3.4.3 |
+| `parse-unlimited` | torch 2.10.0+cu126 | transformers 4.57.1 |
+| `parse-paddleocrvl` | paddlepaddle-gpu 3.0.0 | paddleocr 3.7.0 |
+
+`setup_env.py` fix: its post-install framework-version check imported the
+framework, but `paddlepaddle-gpu` needs `libcuda.so.1` which is absent on the
+GPU-less login node (torch loads CUDA lazily and is fine; paddle hard-fails). The
+check now falls back to package metadata on import failure, so a paddle env is no
+longer a false build failure. The env itself was already valid (pip check clean);
+the paddle binary loads on a GPU node.
+
+Still open: a GPU smoke (load each parser model + a reasoner on a V100) needs the
+weights (`prestage.py`, not yet run) and a GPU slot; that is the next validation
+beyond "deps resolve." `config.retrieval_models` still lists the v3 retriever ids;
+the v4 retriever catalog (BGE-M3 / Qwen3-Embedding-4B / ColModernVBERT / ColQwen3)
+is set in Phase 4.
+
+**Doc debt (Phase 4):** the Kaya guides / README / AGENT_GUIDE and the `.bashrc`
+`kaya` alias still say `kaya.kaya` and `envs/mpvrdu`; reconciled during the Phase-4
+doc pass (the driver is now `python -m ops.kaya.kaya`, core env `envs/core`).
+
+---
+
 ## Deviation & decision log (Phase 4+)
 
 _One line per real judgement call: what, why, what it affected._

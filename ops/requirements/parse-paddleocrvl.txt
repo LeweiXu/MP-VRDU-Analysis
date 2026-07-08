@@ -1,0 +1,14 @@
+# PaddleOCR-VL parser environment (envs/parse-paddleocrvl).
+#
+# PaddleOCR-VL-0.9B end-to-end page parsing needs the PaddleOCR pipeline (the
+# transformers path is element-level only), so this env is PaddlePaddle-native,
+# NOT torch. paddlepaddle-gpu is installed separately by setup_env.py from
+# Paddle's own wheel index (do NOT pin paddlepaddle here). Isolated from every
+# torch env. Model weights are fetched by prestage.py.
+
+paddleocr[doc-parser]>=3.4.0
+PyMuPDF==1.26.3
+pillow==10.4.0
+huggingface_hub==0.34.4
+hf_xet>=1.1.5,<2.0.0
+numpy

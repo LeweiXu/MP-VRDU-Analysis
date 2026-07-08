@@ -1,0 +1,43 @@
+# Core reasoning environment (envs/core).
+#
+# The reasoners (Qwen3-VL + InternVL), quantization, the T-rung cheap text
+# (PyMuPDF), every retriever, the judge SDKs, and data/util libs. No vLLM: the
+# reasoner path is batch-1 HF transformers generate, so vLLM buys nothing and its
+# pins (openai<=1.90, exact torch) are dropped.
+#
+# torch/torchvision are installed separately by setup_env.py from the machine's
+# CUDA wheel index (do NOT pin torch here).
+
+# reasoners
+transformers==4.57.6
+accelerate==1.8.1
+qwen-vl-utils==0.0.11
+timm==1.0.20
+# quantized reasoner (4-bit/8-bit) so the 8B fits a single 16GB V100
+bitsandbytes==0.49.2
+
+# T-rung cheap embedded text
+PyMuPDF==1.26.3
+
+# retrievers (cost rungs): BM25 / BGE-M3 / Qwen3-Embedding, ColModernVBERT / ColQwen*
+rank-bm25==0.2.2
+FlagEmbedding==1.3.5
+sentence-transformers>=3.0,<6
+colpali-engine>=0.3.13
+
+# judges (login-node / online). openai freed from the old vLLM <=1.90 cap.
+openai>=1.100,<2
+google-genai==1.75.0
+
+# data / util
+datasets==3.6.0
+huggingface_hub==0.34.4
+hf_xet>=1.1.5,<2.0.0
+pillow==10.4.0
+numpy==2.2.6
+scipy==1.15.3
+pandas==2.3.1
+PyYAML==6.0.2
+requests>=2.32
+chardet==5.2.0
+pytest==8.4.1

@@ -1,0 +1,21 @@
+# Unlimited OCR parser environment (envs/parse-unlimited).
+#
+# Baidu Unlimited-OCR (3B MoE, R-SWA, MIT). Runs through HF transformers. Pins
+# follow the upstream tested set (transformers 4.57.1, torch 2.10.0). Isolated
+# because the torch pin differs from the core env. Model weights (baidu/
+# Unlimited-OCR) are fetched by prestage.py.
+#
+# torch==2.10.0 / torchvision==0.25.0 are installed by setup_env.py from the
+# machine CUDA index (do NOT pin torch here).
+
+transformers==4.57.1
+pillow==12.1.1
+matplotlib==3.10.8
+einops==0.8.2
+addict==2.4.0
+easydict==1.13
+pymupdf==1.27.2.2
+psutil==7.2.2
+huggingface_hub==0.34.4
+hf_xet>=1.1.5,<2.0.0
+numpy

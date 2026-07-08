@@ -1,20 +1,14 @@
-"""Build or update the MP-VRDU conda environment on Kaya.
+"""Build the MP-VRDU conda environments for one target machine.
 
-Purpose:
-    Runs on the Kaya login node outside the project environment to create the
-    configured conda prefix and install `requirements.txt` using the configured
-    PyTorch/CUDA wheel index.
+Creates the isolated env partition (core reasoning env + one env per parser) at
+`<root>/envs/<name>`, installs the framework build (torch or PaddlePaddle) from
+the machine's CUDA wheel index, installs the env's requirements from
+`ops/requirements/`, and runs `pip check`. Model and dataset downloads are not
+here; they live in `prestage.py`.
 
-Pipeline role:
-    Must be run after source sync and before prestaging or GPU jobs whenever
-    requirements change. It leaves the environment at `<remote_root>/envs/mpvrdu`
-    and prints the installed torch/CUDA versions.
-
-CLI:
-    `python -m kaya.kaya run scripts/setup_env.py -- [--skip-pip-check]`
-
-Arguments:
-    --skip-pip-check: do not run `python -m pip check` after installation.
+Run one env or all four:
+    python -m ops.kaya.kaya run ops/scripts/setup_env.py -- --machine kaya --env core
+    python -m ops.kaya.kaya run ops/scripts/setup_env.py -- --machine kaya --env all
 """
 
 # kaya: target=login
@@ -27,62 +21,105 @@ import argparse
 import subprocess
 from pathlib import Path
 
-from kaya.kaya import load_config
+from ops.kaya.kaya import load_config
 
+ROOT = Path(__file__).resolve().parents[2]
+REQUIREMENTS = ROOT / "ops" / "requirements"
 
-ROOT = Path(__file__).resolve().parents[1]
+TORCH_INDEX = "https://download.pytorch.org/whl/{cuda}"
+PADDLE_INDEX = "https://www.paddlepaddle.org.cn/packages/stable/{cuda}/"
+
+# Per-env framework build + requirements file. torch/torchvision default here and
+# may be overridden per machine (below); the parser envs pin their own stacks.
+ENVS: dict[str, dict] = {
+    "core": {"req": "core.txt", "framework": "torch", "torch": "2.7.0", "torchvision": "0.22.0"},
+    "parse-mineru": {"req": "parse-mineru.txt", "framework": "torch", "torch": "2.7.0", "torchvision": "0.22.0"},
+    "parse-unlimited": {"req": "parse-unlimited.txt", "framework": "torch", "torch": "2.10.0", "torchvision": "0.25.0"},
+    "parse-paddleocrvl": {"req": "parse-paddleocrvl.txt", "framework": "paddle", "paddle": "3.0.0"},
+}
+
+# The three machine configurations. Only the CUDA wheel index and a few
+# framework versions differ; the requirements files are shared.
+MACHINES: dict[str, dict] = {
+    "kaya": {"cuda": "cu126", "flash_attn": False, "torch_overrides": {}},
+    "local": {"cuda": "cu128", "flash_attn": False,
+              "torch_overrides": {"core": ("2.8.0", "0.23.0"), "parse-mineru": ("2.8.0", "0.23.0")}},
+    "supervisor": {"cuda": "cu126", "flash_attn": True, "torch_overrides": {}},
+}
 
 
 def run(command: list[str]) -> None:
-    """Run one setup command with streaming output."""
-
     print("[setup_env]", " ".join(command), flush=True)
     subprocess.run(command, check=True)
 
 
+def env_prefix(config, name: str) -> Path:
+    return Path(config.remote_root) / "envs" / name
+
+
+def install_framework(python: list[str], machine_cfg: dict, env_name: str, env_cfg: dict) -> None:
+    """Install torch (from the PyTorch index) or paddlepaddle (from Paddle's)."""
+    cuda = machine_cfg["cuda"]
+    if env_cfg["framework"] == "paddle":
+        run([*python, "-m", "pip", "install", "-i", PADDLE_INDEX.format(cuda=cuda),
+             f"paddlepaddle-gpu=={env_cfg['paddle']}"])
+        return
+    torch_v, tv_v = machine_cfg["torch_overrides"].get(
+        env_name, (env_cfg["torch"], env_cfg["torchvision"]))
+    run([*python, "-m", "pip", "install", "--index-url", TORCH_INDEX.format(cuda=cuda),
+         f"torch=={torch_v}", f"torchvision=={tv_v}"])
+
+
+def build_env(config, machine: str, env_name: str, python_version: str, *, skip_pip_check: bool) -> None:
+    machine_cfg = MACHINES[machine]
+    env_cfg = ENVS[env_name]
+    prefix = env_prefix(config, env_name)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n[setup_env] ==== {env_name} on {machine} ({machine_cfg['cuda']}) ====", flush=True)
+    if not (prefix / "conda-meta").is_dir():
+        run(["conda", "create", "-p", str(prefix), f"python={python_version}", "-y"])
+    python = ["conda", "run", "--no-capture-output", "-p", str(prefix), "python"]
+
+    run([*python, "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"])
+    install_framework(python, machine_cfg, env_name, env_cfg)
+    run([*python, "-m", "pip", "install", "-r", str(REQUIREMENTS / env_cfg["req"])])
+    if machine_cfg["flash_attn"] and env_cfg["framework"] == "torch":
+        # H100 (sm_90) has FlashAttention-2; V100/Blackwell-local do not build it.
+        run([*python, "-m", "pip", "install", "flash-attn", "--no-build-isolation"])
+    if not skip_pip_check:
+        run([*python, "-m", "pip", "check"])
+    # Report the framework version. Runs on the GPU-less login node, where paddle
+    # (and any GPU C-extension) can't fully import for lack of libcuda.so.1, so
+    # fall back to installed-package metadata rather than failing the build.
+    pkg = "paddlepaddle-gpu" if env_cfg["framework"] == "paddle" else "torch"
+    run([*python, "-c",
+         "import importlib.metadata as M\n"
+         "try:\n"
+         f"    import {'paddle' if pkg=='paddlepaddle-gpu' else 'torch'} as fw; "
+         "    print(fw.__name__, fw.__version__)\n"
+         "except Exception as e:\n"
+         f"    print('{pkg}', M.version('{pkg}'), '(binary load deferred to GPU node:', type(e).__name__, ')')\n"])
+    print(f"[setup_env] {env_name} ready at {prefix}", flush=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--skip-pip-check", action="store_true", help="skip `python -m pip check`")
+    parser.add_argument("--machine", choices=sorted(MACHINES), default="kaya")
+    parser.add_argument("--env", choices=[*sorted(ENVS), "all"], default="all")
+    parser.add_argument("--python", help="python version for new envs (default from config)")
+    parser.add_argument("--skip-pip-check", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config = load_config(ROOT / "kaya/config.json")
-    env = Path(config.remote_path("env"))
-    env_parent = env.parent
-    cache = Path(config.remote_path("cache"))
-    requirements = Path(config.remote_root) / "requirements.txt"
-
-    env_parent.mkdir(parents=True, exist_ok=True)
-    cache.mkdir(parents=True, exist_ok=True)
-
-    if not (env / "conda-meta").is_dir():
-        run(["conda", "create", "-p", str(env), f"python={config.raw['python_version']}", "-y"])
-
-    python = ["conda", "run", "-p", str(env), "python"]
-    run([*python, "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"])
-    run(
-        [
-            *python,
-            "-m",
-            "pip",
-            "install",
-            "--extra-index-url",
-            config.raw["pip"]["torch_index_url"],
-            "-r",
-            str(requirements),
-        ]
-    )
-    if not args.skip_pip_check:
-        run([*python, "-m", "pip", "check"])
-    run(
-        [
-            *python,
-            "-c",
-            "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)",
-        ]
-    )
+    config = load_config(ROOT / "ops" / "kaya" / "config.json")
+    python_version = args.python or str(config.raw.get("python_version", "3.11"))
+    names = list(ENVS) if args.env == "all" else [args.env]
+    for name in names:
+        build_env(config, args.machine, name, python_version, skip_pip_check=args.skip_pip_check)
+    print(f"\n[setup_env] done: {', '.join(names)} on {args.machine}", flush=True)
     return 0
 
 

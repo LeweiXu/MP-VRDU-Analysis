@@ -13,7 +13,7 @@ Why V-rung image-only: with the input-token cap gone, vision-token volume
 the honest floor and does not depend on the parser text path.
 
 Run on Kaya:
-    envs/mpvrdu/bin/python -m kaya.kaya run --target gpu \
+    python -m ops.kaya.kaya run --target gpu \
         --gres gpu:v100:2 --time 00:30:00 ops/scripts/resolution_probe.py
 
 The 8B primary reasoner needs 2 V100s (bf16 weights ~16GB), so request 2 GPUs;

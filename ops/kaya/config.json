@@ -10,7 +10,7 @@
   "paths": {
     "cache": ".cache",
     "data": ".data",
-    "env": "envs/mpvrdu",
+    "env": "envs/core",
     "results": "results",
     "logs": "logs"
   },
@@ -64,10 +64,10 @@
       "vidore/colqwen2.5-v0.2"
     ]
   },
-  "tool_caches": {
-    "marker": true,
-    "paddleocr": true,
-    "docling": true
+  "parsers": {
+    "paddleocrvl": "PaddlePaddle/PaddleOCR-VL",
+    "mineru": "opendatalab/MinerU2.5-2509-1.2B",
+    "unlimited": "baidu/Unlimited-OCR"
   },
   "datasets": {
     "mmlongbench": "yubo2333/MMLongBench-Doc",

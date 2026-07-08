@@ -1,0 +1,11 @@
+# MinerU 2.5 parser environment (envs/parse-mineru).
+#
+# Isolated because MinerU pins its own transformers/torch stack that will not
+# co-exist with the core reasoner env. Runs as the transformers VLM backend
+# (mineru[vlm]) so no vLLM/SGLang. Model weights (MinerU2.5-*-1.2B + the layout/
+# formula aux models) are fetched by prestage.py, not here.
+#
+# torch/torchvision come from setup_env.py (machine CUDA index); mineru requires
+# torch >=2.6,<3.
+
+mineru[vlm]==3.4.3
