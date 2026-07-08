@@ -7,9 +7,15 @@ implementation reference for models/data/tools/evaluation. It absorbed the forme
 
 Where to look for what:
 
-- `README.md` - how the pipeline is actually built (the cell, the ladder, the
-  tasks, the repo map). The mechanism ground truth.
-- `docs/PROJECT_SPEC.md` - what the paper claims and why (thesis, RQs, gates).
+- `docs/pivot_v4.md` - the v4 decision record: what changes and why (the
+  cost-ordered ladder, manual binning, reworked RQs, four tasks, telemetry
+  schema, hardware split). The newest intent; the "Fixed decisions" below are
+  reconciled to it.
+- `README.md` - how the pipeline is actually built **today** (the cell, the
+  ladder, the tasks, the repo map). The mechanism ground truth for the current
+  code, which still implements the v3 mechanisms; the v4 code migration is
+  pending.
+- `docs/PROJECT_SPEC.md` - what the paper claims and why (thesis, RQs, gates), v4.
 - `docs/USER_GUIDE.md` - the same thesis plus the local runbook.
 - `kaya/KAYA_AGENT_GUIDE.md` - Kaya operations, SLURM hazards, offline-cache setup.
 - **this file** - fixed decisions and the implementation reference.
@@ -18,45 +24,92 @@ Treat the fixed decisions and frozen interfaces as binding; changing one is a
 checkpoint recorded here, not a silent edit. You may edit this file directly to
 record implementation-relevant decisions and deviations.
 
-## Fixed decisions (v3)
+## v4 pivot: adopted, code migration pending
+
+`docs/pivot_v4.md` is the current intent and supersedes the v3 spec on five areas.
+The decisions below are reconciled to it, but **the code still runs the v3
+mechanisms** (README is the ground truth for what executes today). The deltas the
+coding agent still has to land:
+
+- **Ladder (cost-ordered, not cumulative).** `T` becomes **PyMuPDF embedded text**
+  (digital-born only); `TL` becomes **parser-derived markdown** that *replaces*
+  `T`'s text; **bounding-box JSON is dropped entirely**. `TLV` = parser text +
+  image; `V` unchanged. `T ⊄ TL`. Names kept; "L" is now vestigial.
+- **Parser comparison** at `TL`/`TLV`: PyMuPDF floor, PaddleOCR-VL, MinerU 2.5,
+  Unlimited OCR, scored by downstream QA accuracy. Marker dropped from the set.
+  Each parser is an isolated env, pre-warmed to the parser cache in the pre-pass.
+- **Binning by manual annotation** (`bin_label` = text-dominant / mixed-modality /
+  visual-dominant; `scan_label`; exploratory `dominant_visual`), not native
+  `doc_type`. Stamped per-cell so tables need no join.
+- **Tasks consolidate 6 -> 4:** G1 (oracle ladder + all sweeps as YAML runs), G2
+  (retrieval, two scorers), G3 (hallucination/prompting), G4 (routing/classifier).
+- **Telemetry schema fixed** (`pivot_v4.md` §6): per-cell (bin/scan labels, machine,
+  cap_used, text/visual token split, prefill/decode latency, peak VRAM,
+  oom/skip reason), per-run manifest, retrieval side-artifact. Collected every run.
+- **Hardware split marked per run** (`machine: kaya | supervisor`) with the
+  evidence-page partition (Kaya <=2 pages, supervisor >2), pooled at build time.
+- **Answerable/unanswerable split:** ~250 unanswerable pulled out of RQ1/RQ2,
+  used only in the RQ3 hallucination study.
+
+Kept from v3: the thesis, the deployable/analytical axes, doc-level bootstrap CIs,
+the 3-point margin, the judge-family-≠-reasoner κ gate, the frozen pipeline shape,
+the two-layer cache, the YAML/judge/build role split, and the `T/TL/TLV/V` names.
+
+## Fixed decisions (reconciled to v4)
 
 The study is one EACL thesis: **the representation an MP-VRDU system needs is a
-function of document type.**
+function of document type**, sharpened toward a deployment / practical-use framing.
 
 - **Dataset:** MMLongBench-Doc primary (only source with doc type, evidence-modality
   labels, gold pages, and the unanswerable signal). Table 4 is a held-out
   MMLongBench document subset (not LongDocURL, which is kept as a possible future
   replication).
-- **Hardware scope (this team):** the only GPUs we can reach are Kaya V100 16GB (1
-  or 2 per node). **The 32B is out of scope for us** - it does not fit our V100s;
-  run the one 32B scale-sanity row (Table 8) on the supervisor's A100 when needed.
-  The 8B primary runs on 2xV100 (bf16, `device_map="auto"` shards it) or on 1xV100
-  via 4-bit quantization.
-- **Reasoner:** Qwen3-VL-8B primary; 2B/32B appendix scale sanity (2B is also the
-  smoke model); InternVL3-8B replicates the RQ1 headline only. All behind one
-  `Reasoner` ABC. Closed models are for comparison/judging, not the deployment
-  recommendation.
-- **Ladder:** `T` (document-selected text), `TL` (text + serialized bbox JSON),
-  `TLV` (text + layout + page image), `V` (page image). Text channel routes per
-  document: digital-born -> Marker text, scanned -> PaddleOCR, from
-  `annotations/doc_labels.csv` (`scan_label` if filled, else `auto_scan`, else the
-  embedded-text heuristic). Marker stays primary for digital text/layout;
-  PyMuPDF/Docling/PP-Structure are the appendix parser-swap. Only `TLV`/`V` attach
-  images (modality boundary, enforced in `Payload`).
-- **Binning (Option A, semantic domain), single source of truth in
-  `data/binning.py`:** text_heavy = Administration/Industry file + Academic paper +
-  Research report/Introduction (578 Q / **70 docs**); in_between = Financial report
-  + Guidebook + Tutorial/Workshop (412 Q / 50 docs); visual_heavy = Brochure (101 Q
-  / 15 docs). Native doc counts are 10+26+34 = 70 (the old plan's "54" was a typo).
-  Option B (data-driven) is the swap behind the same signature.
-- **Metrics:** cost = latency@batch1 on one A100 (primary), text/vision tokens
-  (secondary); sufficiency margin 3 points (sensitivity {2,3,5}); **document-level**
-  bootstrap 95% CIs (1000 resamples over docs, not questions).
+- **Hardware split (v4, marked per run):** two machines, **Kaya** (2xV100 16GB,
+  sm_70, no FlashAttention-2) and the supervisor's **A100 / H100**. Every YAML run
+  carries `machine: kaya | supervisor`. The size sweep (esp. 32B), quantization
+  sweep, resolution sweep, and the RQ2 k-sweep (to k=10) are supervisor-only. The
+  evidence-page partition sends <=2 evidence-page questions to Kaya (cap can be
+  raised) and the >2 remainder (~50 q) to the supervisor at the same fixed cap,
+  pooled at build time via per-cell `machine`/`cap_used` and per-run
+  `evidence_page_filter`. The 8B primary runs on 2xV100 (bf16, `device_map="auto"`
+  shards it) or on 1xV100 via 4-bit quantization.
+- **Reasoner:** Qwen3-VL-8B primary; InternVL3-8B replicates the RQ1 headline only;
+  2B is also the smoke model. The size sweep (2B/4B/8B/32B) and quantization sweep
+  (4/8/16-bit) are **cost-frontier** studies on supervisor hardware (accuracy-per-
+  VRAM, accuracy-per-latency), placement decided post-hoc. All behind one `Reasoner`
+  ABC. Closed models are for comparison/judging, not the deployment recommendation.
+- **Ladder (v4, cost-ordered):** `T` (PyMuPDF embedded text, digital-born only),
+  `TL` (parser-derived markdown that *replaces* `T`'s text; **no bbox JSON**),
+  `TLV` (parser text + page image), `V` (page image). `T ⊄ TL`; ordered by compute
+  cost. The parser at `TL`/`TLV` is under comparison (PyMuPDF floor, PaddleOCR-VL,
+  MinerU 2.5, Unlimited OCR; Marker dropped), each an isolated env pre-warmed to the
+  parser cache. Only `TLV`/`V` attach images (modality boundary, enforced in
+  `Payload`). *Current code still runs the v3 ladder (Marker text + serialized bbox
+  JSON, PaddleOCR for scanned); see README section 4. Migration pending.*
+- **Binning (v4, manual annotation)** in `annotations/doc_labels.csv`: `bin_label`
+  = **text-dominant / mixed-modality / visual-dominant** (document-level dominant
+  modality, not scan status, not page count), `scan_label` = digital / scanned, and
+  exploratory `dominant_visual`. Native `doc_type` encodes domain, not modality, so
+  it is not the bin axis. *Current `data/binning.py` still exposes the v3 Option-A
+  domain bins (text_heavy = Administration/Industry file + Academic paper + Research
+  report/Introduction, 578 Q / 70 docs; in_between = Financial report + Guidebook +
+  Tutorial/Workshop, 412 Q / 50 docs; visual_heavy = Brochure, 101 Q / 15 docs);
+  the manual-annotation bins are the pending swap behind the same signature.*
+- **Metrics:** cost = latency@batch1 (primary), with **prefill/decode split**;
+  text/vision tokens, peak VRAM, truncation (secondary); sufficiency margin 3 points
+  (sensitivity {2,3,5}); **document-level** bootstrap 95% CIs (1000 resamples over
+  docs, not questions). The full telemetry schema (`pivot_v4.md` §6) is collected on
+  every run.
 - **Judge:** a *different family* from the reasoner, gated by Cohen's kappa >= 0.75
-  vs 200 hand labels. `GeminiJudge` (gemini-2.5-flash, default, free tier) and
-  `GPT4oMiniJudge` (OpenAI, paid); `StubJudge` is offline plumbing.
-- **Retrievers:** BM25 + BGE (`BAAI/bge-small-en-v1.5`) text; ColQwen
-  (`vidore/colqwen2.5-v0.2`) vision.
+  vs 200 hand labels **on the answerable-only set**. `GeminiJudge` (gemini-2.5-flash,
+  default, free tier) and `GPT4oMiniJudge` (OpenAI, paid); `StubJudge` is offline
+  plumbing.
+- **Retrievers (v4, cost rungs):** text = BM25 / BGE-M3 / Qwen3-Embedding-4B; vision
+  = ColModernVBERT / ColQwen2.5-v0.2 / ColQwen3-4B; plus free post-hoc joint unions
+  (matched-tier pairs, k in {1,3,5} per method). RQ2 inference runs at `TLV`/`V`
+  only; the k-sweep (to k=10) runs on the supervisor. *Current code ships BM25 + BGE
+  (`BAAI/bge-small-en-v1.5`) text and ColQwen (`vidore/colqwen2.5-v0.2`) vision only;
+  the extra rungs and joint unions are pending.*
 - **Paths:** root-relative; `.cache/ .data/ envs/ results/ logs/` under the repo
   root on both machines. Two-machine Kaya model (local edit + sync; login for
   staging; compute for offline GPU jobs); all Kaya source/config/docs in `kaya/`.

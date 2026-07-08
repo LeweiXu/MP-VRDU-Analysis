@@ -1,23 +1,30 @@
-# User guide: A Doc-Type Recipe for Multi-Page Document QA (v3)
+# User guide: A Doc-Type Recipe for Multi-Page Document QA (v4)
 
 > The user-facing guide: *what* the paper claims and *why* (below), plus *how to
-> run* the experiments (the Runbook at the end). `README.md` is the ground truth
-> for how the codebase is built, and `docs/AGENT_GUIDE.md` holds the
-> implementation decisions and reference. This guide mirrors the v3 experimental
-> plan and supersedes all earlier multi-topic / nine-RQ / three-topic specs.
-> Where an older doc disagrees, this file is current.
+> run* the experiments (the Runbook at the end). This guide reflects the **v4
+> pivot** (`docs/pivot_v4.md`) for the thesis half. `README.md` is the ground
+> truth for how the codebase is built *today*, and `docs/AGENT_GUIDE.md` holds the
+> implementation decisions and reference. The v4 mechanism and task changes
+> (PyMuPDF `T`, parser-derived `TL`, four generation tasks, the new telemetry
+> schema) are the adopted plan, but the code migration is still pending, so the
+> **Runbook below describes the current (pre-migration) commands and tasks**, which
+> still work as written.
 
 ---
 
 ## 1. One-line thesis
 
 **The representation an MP-VRDU system requires is a function of document type, not a single
-property of the model.** We measure this function on a controlled representation ladder, turn it
+property of the model.** We measure this function on a cost-ordered representation ladder, turn it
 into a deployment recipe indexed by document type, and explain the recipe through evidence
 composition.
 
 Venue target: **EACL long paper** (8 pages). Everything not serving the thesis is moved to the
-honours thesis or explicitly cut.
+honours thesis or explicitly cut. The whole plan follows two principles: **few tasks, full
+coverage** (the smallest number of runs collects all the data every table needs, so most
+"experiments" are YAML runs of one task with a single field changed) and **collect all cheap data,
+every run** (uniform telemetry on every run, so we select late what goes in the main paper vs the
+appendix).
 
 ## 2. Motivation
 
@@ -32,9 +39,11 @@ sent to a cloud API; they must be processed on-premise with a self-hosted open M
 - Without doc-type labels, is it worth classifying each document? Routing adds a classifier's own
   cost; if a uniform policy is nearly as good, routing is dead weight.
 
-The contribution is a **recipe indexed by document type**, plus the mechanism that explains it.
+The contribution is a **recipe indexed by document type**, plus the mechanism that explains it,
+plus honest cost-frontier readings across representation, parser, retriever, resolution,
+quantization, and model size.
 
-## 3. Central construct: the representation ladder
+## 3. Central construct: the cost-ordered representation ladder
 
 The cost knob is *how evidence is represented*. Holding gold pages fixed, page content is fed from
 cheapest to most expensive; we find the cheapest form that still works, separately per document
@@ -42,13 +51,21 @@ type.
 
 | Rung | Content | Role |
 |---|---|---|
-| `T` | document-selected text: Marker for digital-born, OCR for scanned | reference (cheap) |
-| `T+L` | document-selected text + serialized bbox layout (JSON) | cumulative |
-| `T+L+V` | text + layout + native-resolution page image | cumulative |
+| `T` | cheap embedded-text extraction (PyMuPDF); digital-born only | cheapest reference |
+| `TL` | parser-derived layout-rich text (markdown from a PDF parser) | mid |
+| `TLV` | parser text + native-resolution page image | expensive |
 | `V` | page image only | parser-independent reference |
 
-The ladder is cumulative on `T`/`T+L`/`T+L+V` (marginal value of each added modality); `V` is the
-parser-independent reference.
+Two v4 changes to state honestly: **bounding-box JSON is dropped everywhere** (it drove truncation
+and did not help the reasoner), so at `TL` the parser's markdown text *replaces* `T`'s cheap text
+rather than adding a layout channel; and the ladder is therefore **cost-ordered, not cumulative**
+(`T ⊄ TL`). The rungs go `T` (cheap extract) < `TL` (parser) < `TLV` (parser + image), with `V` the
+parser-independent image-only reference. The `T/TL/TLV/V` names stay for continuity, but "L" is now
+vestigial: "TL" means "parser-derived text."
+
+The parser at `TL`/`TLV` is itself under comparison (PyMuPDF floor, PaddleOCR-VL, MinerU 2.5,
+Unlimited OCR), scored by **downstream QA accuracy** rather than edit-distance. Marker is dropped
+from the comparison set.
 
 ## 4. Deployable vs analytical axes
 
@@ -59,117 +76,128 @@ parser-independent reference.
 
 ## 5. Research questions
 
-**RQ1 — Recipe by doc type (what to build).** Given the correct pages, what is the cheapest
+The RQ framing is not set in stone; what matters is that all data is collected correctly and
+uniformly. The answerable / unanswerable split (§9) governs which questions feed which RQ.
+
+**RQ1 - Recipe by doc type (what to build).** Given the correct pages, what is the cheapest
 representation that lets an 8B MLLM reason to an answer, and does that frontier depend on document
-type? *Deliverable:* a 3-row headline table (text-heavy / in-between / visual-heavy) × four
-representations, sufficiency frontier marked; replicated on a second model family and a held-out
-document set.
+type? *Deliverables:* the cost-ordered headline table (three bins × four representations, frontier
+marked, answerable-only); a **parser comparison** (swap the `TL`/`TLV` parser); an **image-
+resolution sweep** (supervisor hardware); plus family (InternVL) and dataset (held-out MMLongBench)
+replications.
 
-**RQ2 — Mechanism behind the recipe (why it looks that way).** What explains the doc-type effect,
-and does retrieval require the same modality as reasoning? *Deliverable:* (a) the doc-type effect
-re-expressed as an evidence-composition effect (the recipe is what it is because a text-heavy
-corpus is X% pure-text evidence); (b) matched vs cross (text-retrieval + vision-reasoning)
-pipelines, with cross wins explained via a locate–reason modality divergence — a page can be
-text-locatable but vision-reasoned.
+**RQ2 - Retrieval (mechanism + retrieval-side modality).** Does retrieval modality have to match
+reasoning modality? *Deliverables:* **matched vs cross across all three bins** at `TLV` (with `V` via
+YAML); a **top-k sweep** with retrieval methods framed as cost rungs, k ∈ {1,3,5,7,10} on supervisor
+hardware; and a **retrieval-accuracy benchmark** (page P/R/F1 per bin, every method), which is a
+by-product of the same retrieval pass. RQ2 inference runs at `TLV`/`V` only, since `TLV` is already
+the strongest reasoning rung and matches what you would deploy.
 
-**RQ3 — Routing under uncertainty (what to do without labels).** Without gold doc-type labels,
-does running a lightweight classifier and dispatching to the RQ1 recipe beat a uniform policy,
-once the classifier's own cost is counted? *Deliverable:* corpus-level accuracy and total cost of
-four policies — oracle routing, predicted routing, uniform-cheapest, uniform-strongest; classifier
-latency is added into predicted-routing cost, not hidden.
+**RQ3 - Deployment (routing + hallucination + prompting + cost sweeps).** *Deliverables:* **routing**,
+four policies (oracle, predicted, uniform-cheapest, uniform-strongest), predicted-routing counting
+the classifier's own cost; **hallucination × prompting** on the ~250 unanswerable questions
+(retrieval-fed 2–3 pages, three prompt conditions, correct = abstention, no oracle arm); and **cost
+sweeps** over quantization (4/8/16-bit) and model size (2B/4B/8B/32B), framed as cost-frontier
+studies on supervisor hardware.
 
-## 6. Pre-registered setup
+## 6. Retrieval methods as cost rungs
+
+Both retrieval axes are laid out cheapest → most expensive, mirroring the representation ladder.
+
+| Axis | Cheap | Mid | Expensive |
+|---|---|---|---|
+| **Text** | BM25 | BGE-M3 | Qwen3-Embedding-4B |
+| **Vision** | ColModernVBERT | ColQwen2.5-v0.2 | ColQwen3-4B |
+
+**Joint retrieval** is a free post-hoc deduplicated union of two already-computed page sets
+(matched-tier pairs only, k ∈ {1,3,5} per method so the union stays < 10 pages). It is its own
+condition family, not a point on the single-method k-axis.
+
+## 7. Pre-registered setup
 
 Every choice below is fixed before the main runs.
 
-- **Primary cost metric:** latency per question at batch=1 on a single A100 80GB. Text and vision
-  tokens reported separately as secondary. (Local deployment cares about response time; token
-  counts across modalities are not FLOPs-equivalent.)
+- **Primary cost metric:** latency per question at batch=1, with **prefill and decode split out**
+  (prefill isolates the cost of ingesting the representation). Tokens, peak VRAM, and truncation are
+  reported alongside. The full telemetry schema (`docs/pivot_v4.md` §6) is collected uniformly on
+  every run.
 - **Sufficiency margin:** accuracy drop ≤ 3 points relative to the strongest representation.
   Sensitivity for margin ∈ {2, 3, 5} in the Appendix.
-- **Doc-type binning (Option A, fixed):** MMLongBench-Doc native `doc_type` categories aggregated
-  by semantic domain into three bins:
-  - **Text-heavy** = Administration/Industry file + Academic paper + Research report/Introduction
-    (**578 Q / 70 docs**).
-  - **In-between** = Financial report + Guidebook + Tutorial/Workshop (**412 Q / 50 docs**).
-  - **Visual-heavy** = Brochure (**101 Q / 15 docs**).
-  Data-driven clustering by evidence-modality distribution is reported in the Appendix as
-  robustness (and is the fallback if the visual-heavy bin proves too thin; see §9). Semantic
-  aggregation is practitioner-interpretable; data-driven grouping would leak the effect being
-  studied, so it is validator, not primary.
-- **Ladder implementation:** `T` = document-selected text (Marker for digital-born PDFs, PaddleOCR
-  for scanned PDFs using `annotations/doc_labels.csv`); `T+L` = that text + serialized bbox JSON;
-  `T+L+V` = text + layout + native-resolution page image; `V` = page image only. Parser swap
-  (Marker vs PyMuPDF) in the Appendix.
-- **Reasoner:** Qwen3-VL-8B primary. InternVL3-8B replicates the RQ1 headline table only.
-  Qwen3-VL-2B / 32B for scale sanity in the Appendix.
-- **Retrieval:** BM25 + BGE (`bge-small-en-v1.5`) for text, ColQwen (`colqwen2.5-v0.2`) for vision,
-  swept over k in {1, 3, 5, 7, 9}. RQ2 compares *matched* (retrieval modality = reasoning modality)
-  vs *cross* (text retrieval + vision reasoning). Vision-retrieval + text-reasoning is not tested
-  (no practical rationale; inflates the comparison surface).
+- **Doc-type binning by manual annotation.** MMLongBench's native `doc_type` encodes *domain*, not
+  *dominant modality*, so we label the bin axis directly. A fast (<1 hr) manual pass over all **135
+  documents** produces `bin_label` (**text-dominant / mixed-modality / visual-dominant**),
+  `scan_label` (`digital` / `scanned`), and `dominant_visual` (exploratory). Bins describe which
+  modality dominates the document's information content, not scan status and not page count. A
+  second annotator labels a 20–30 doc subset and we report Cohen's κ (recommended, not blocking).
+- **Ladder implementation:** `T` = PyMuPDF embedded text (digital-born only); `TL` = parser-derived
+  markdown text (parser under comparison); `TLV` = that text + native-resolution page image; `V` =
+  page image only. No bounding-box channel.
+- **Reasoner:** Qwen3-VL-8B primary. InternVL3-8B replicates the RQ1 headline only. Quantization
+  (4/8/16-bit) and model size (2B/4B/8B/32B) are cost-frontier sweeps on supervisor hardware.
+- **Retrieval:** the cost rungs in §6, plus free joint unions. RQ2 inference runs at `TLV`/`V`; the
+  k-sweep runs on the supervisor.
 - **Judge:** a different family from the reasoner. Gemini 2.5 Flash is the default (free tier);
   GPT-4o-mini is the paid alternative. Judge-human agreement on 200 hand-labelled questions;
-  **Cohen's κ ≥ 0.75 required** before any main-run number is trusted.
-- **Confidence:** every headline number carries a **document-level** bootstrap 95% CI (1000
-  resamples over documents, because questions cluster within docs). A frontier claim requires the
-  cheaper representation's CI upper bound to reach within 3 points of the strongest
-  representation's point estimate.
+  **Cohen's κ ≥ 0.75 required** on the answerable-only set before any main-run number is trusted.
+- **Confidence:** every headline number carries a **document-level** bootstrap 95% CI (1000 resamples
+  over documents). A frontier claim requires the cheaper representation's CI upper bound to reach
+  within 3 points of the strongest representation's point estimate.
+- **Hardware split, marked per run.** We run on **Kaya** (2×V100 16 GB, sm_70, no FlashAttention-2)
+  and the supervisor's **A100 / H100**; every YAML run carries `machine: kaya | supervisor`. The
+  size/quant/resolution sweeps and the RQ2 k-sweep are supervisor-only.
 
-## 7. Experiments
+## 8. Experiments and the hardware / evidence-page partition
 
-- **Exp 1 · RQ1 — Recipe by document type.** Sweep the ladder on oracle pages with Qwen3-VL-8B;
-  fill the 3×4 headline table (Table 1), mark the frontier; re-slice by question type into the
-  analytical 3×4 (Table 2, not for deployment); replicate the headline on InternVL3-8B (Table 3)
-  and on a held-out MMLongBench document subset (Table 4).
-- **Exp 2 · RQ2 — Mechanism.** (a) Evidence-composition mediation: decompose each doc-type bin
-  into shares of text/table/chart/figure/layout evidence; show per-modality frontier + composition
-  predicts the doc-type frontier (Table 5). (b) Retrieval-side modality: on cells where RQ1 says
-  vision is needed, compare matched vs cross pipelines under real retrieval on accuracy and latency
-  (Table 6); cross wins explained by locate–reason divergence in one paragraph + one qualitative
-  figure.
-- **Exp 3 · RQ3 — Routing.** Four policies on the full corpus: oracle routing, predicted routing
-  (Qwen3-VL-2B few-shot classifies the first pages, then recipe), uniform-cheapest (`T`
-  everywhere), uniform-strongest (`T+L+V` everywhere). Predicted-routing total latency includes the
-  classifier's own latency (Table 7).
-- **Exp 4 · Appendix — Scale sanity.** Re-run the RQ1 headline on Qwen3-VL-2B and 32B (Table 8).
-  Main text cites one sentence: "the recipe is qualitatively stable across 2B–32B," or names the
-  bins where the frontier moves. No scaling headline is claimed.
+Four generation tasks, per "few tasks, full coverage." The parser, resolution, family, dataset,
+quantization, and model-size "experiments" are **YAML runs over G1**, not separate tasks.
 
-## 8. Go / no-go gates (Weeks 1–2)
+- **G1 - Oracle ladder.** Oracle pages × {T, TL, TLV, V}, answerable-only, 8B. Feeds the headline
+  and the per-bin frontier, plus the parser/resolution/family/dataset/quant/size runs.
+- **G2 - Retrieval.** One pass, two scorers: the retrieval-accuracy side-artifact (every method) and
+  the reasoner at `TLV`/`V` for matched-vs-cross and the k-sweep. Supervisor.
+- **G3 - Hallucination / prompting.** Unanswerable-only × retrieved 2–3 pages × three prompt
+  conditions, correct = abstention.
+- **G4 - Routing / classifier.** Classifier pricing + routing-policy assembly; routing accuracy
+  reuses G1's rows.
 
-- **Gate 1 · RQ1 frontier divergence.** Run Exp 1's headline table on 8B, oracle pages, full
-  MMLongBench-Doc. **Go** if ≥2 of 3 doc-type rows have different sufficiency frontiers. **No-go**
-  if all three land on the same rung → doc-type is not a useful axis; reframe around evidence
-  composition alone.
-- **Gate 2 · Judge–human agreement.** Hand-label 200 questions across doc-type × question-type
-  strata. **Go** if the judge (Gemini 2.5 Flash) reaches κ ≥ 0.75. **No-go** → iterate the judge
-  prompt or fall back to a stronger judge before any main run.
-- **Gate 3 · Classifier feasibility.** On a 100-doc pilot, run Qwen3-VL-2B few-shot doc-type
-  classification from the first two pages. **Go** if top-1 ≥ 70%. **No-go** → upgrade the
-  classifier or scope RQ3 to the oracle-routing upper bound only.
+**Hardware / evidence-page partition.** Most MMLongBench questions have 0–2 evidence pages; only
+~50 have >2. **Kaya** runs the ≤ 2 evidence-page questions (short, so the input cap can be raised);
+the **supervisor** runs the > 2 remainder at the same agreed cap. The cap is a fixed constant
+identical on both machines; machine is the executor, not a condition. Cells record `machine` /
+`cap_used`, runs record `evidence_page_filter`, and full-corpus tables pool the two slices at build
+time.
 
-## 9. Known risks fixed by data
+> Note: the current code still ships six tasks (G1/G2/G3/G5/G6, with G4_scale a stub) and the v3
+> mechanisms. The four-task consolidation above is the v4 plan; the Runbook below documents the
+> commands and tasks as they exist today.
 
-- **Visual-heavy bin is thin (101 Q / 15 docs).** It is the most likely Gate-1 casualty and will
-  carry the widest CIs. If it cannot be separated from the other bins at the 3-point margin, the
-  fallbacks, in order, are: (i) adopt the Appendix evidence-composition (data-driven) binning as
-  primary; (ii) collapse to a two-bin contrast (text-heavy vs rest); (iii) recruit a visual-heavy
-  dataset (SlideVQA) as the visual anchor. Recorded so the choice is pre-committed, not improvised.
-- **Sampling correlation.** Questions cluster within documents (135 docs, 1091 Q). Any subsetting
-  and all CIs are handled at the **document level** (draw documents, take their questions) so
-  precision is not overstated.
+## 9. The answerable / unanswerable split
+
+The ~250 unanswerable questions (of 1091) are **removed from RQ1 and RQ2** (so those accuracies are
+"accuracy on answerable questions") and used **only** in the RQ3 hallucination study, which is
+necessarily retrieval-fed (no oracle arm exists for zero-gold-page questions). The judge's
+abstention scoring and the κ ≥ 0.75 gate are confirmed on the answerable-only set.
+
+## 10. Known risks fixed by data
+
+- **Visual-dominant bin may be thin.** Most likely Gate-1 casualty, widest CIs. Fallbacks, in order:
+  (i) collapse to a two-bin contrast (text-dominant vs rest); (ii) recruit a visual-heavy dataset
+  (SlideVQA). The manual `bin_label` annotation is the insurance against a bad bin axis.
+- **Sampling correlation.** Questions cluster within documents (135 docs, 1091 Q). Any subsetting and
+  all CIs are handled at the **document level**.
 - **V100 hardware limits.** Kaya's V100s are Volta (sm_70): no FlashAttention-2, so attention can
   fall back to an O(seq²) kernel that OOMs long multi-page sequences, and the 8B does not fit one
-  V100 in bf16. Mitigations are baked in (efficient-attention kernel, per-size input-token and
-  vision-pixel caps, the >10-evidence-page drop, per-cell skip on OOM, 2×V100 sharding or 4-bit).
-  The 32B is out of scope on our hardware; it needs the supervisor's A100.
+  V100 in bf16. Mitigations are baked in (efficient kernel, per-size caps, per-cell skip on OOM,
+  2×V100 sharding or 4-bit). The size/quant/resolution sweeps and the k-sweep run on the supervisor.
+- **Parser environments.** The comparison parsers are heavy, separately-pinned VLM stacks that will
+  not co-exist with the reasoner env; each runs as an isolated env pre-warmed to the parser cache.
 
-## 10. What was cut (and where it went)
+## 11. What was cut (and where it went)
 
-Cut from the paper, retained for the honours thesis / future work: the full retrieval-sufficiency
-and distractor-burying sweep; scaling as a *story* (kept only as an Appendix sanity check);
-fail-safe abstention; the multi-dataset robustness suite beyond one replication. These are real but
-do not serve the single thesis at 8 pages.
+Cut from the paper, retained for the honours thesis / future work: the full distractor-burying sweep
+beyond the RQ2 k-depth study; scaling as a *story* (kept only as a cost-frontier sanity check); the
+multi-dataset robustness suite beyond one replication. These are real but do not serve the single
+thesis at 8 pages.
 
 ---
 
@@ -178,6 +206,11 @@ do not serve the single thesis at 8 pages.
 This is the local guide: the pipeline runs on your own machine here. To dispatch
 the GPU-heavy generation to a SLURM/HPC cluster instead, see
 `kaya/KAYA_USER_GUIDE.md` (the same commands, wrapped in push / submit / pull).
+
+> The commands, flags, and task names below describe the **current** implementation
+> (still the v3 mechanisms and the six-task layout). The v4 pivot's task
+> consolidation and mechanism changes are the adopted plan but not yet in the code,
+> so run against what is documented here until the migration lands.
 
 Commands assume the project environment is active (or prefix each with
 `envs/<your-env>/bin/`). Everything is root-relative and self-contained under the
@@ -322,8 +355,8 @@ results/cache/full/G1_sufficiency/results.jsonl   # predictions + REAL judge sco
 - **`results/tables/<mode>/tableN_*.csv`** are the final tables (e.g.
   `table1_headline.csv`, `table7_routing.csv`): one row per bin/policy with
   accuracy, document-level bootstrap CIs, latency, token splits, and the marked
-  frontier. `python -m cli.build` (re)builds these — plus a combined
-  `all_tables.md` — from cached judged rows without re-judging.
+  frontier. `python -m cli.build` (re)builds these, plus a combined
+  `all_tables.md`, from cached judged rows without re-judging.
 
 Judge API keys live only in the local `.env` (`GEMINI_API_KEY` /
 `OPENAI_API_KEY`), read from the environment, so export them (e.g.

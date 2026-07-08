@@ -9,6 +9,16 @@ The rest of this file explains how the document-understanding pipeline is
 actually built. If you just want to run it, see the quick start, then
 `docs/USER_GUIDE.md` (local) and `kaya/KAYA_USER_GUIDE.md` (cluster).
 
+> **v4 pivot note.** The project has adopted the **v4 plan** (`docs/pivot_v4.md`):
+> a cost-ordered ladder (`T` = PyMuPDF embedded text, `TL` = parser-derived
+> markdown that replaces `T`, **no bbox JSON**), a parser comparison, manual
+> `bin_label` binning, four generation tasks (G1-G4), a fixed telemetry schema, and
+> a Kaya/supervisor hardware split. **This README still describes the current code,
+> which implements the v3 mechanisms** (Marker text + bbox-JSON layout, six tasks
+> G1/G2/G3/G5/G6). The migration to v4 is pending. For the adopted intent see
+> `docs/pivot_v4.md`, `docs/PROJECT_SPEC.md`, and `docs/AGENT_GUIDE.md` ("v4 pivot:
+> adopted, code migration pending"); for what runs today, read on.
+
 ## Quick start
 
 ```bash
