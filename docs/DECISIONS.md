@@ -353,3 +353,23 @@ _One line per real judgement call: what, why, what it affected._
   model/processor class for ColModernVBERT + ColQwen3 confirmed at GPU bring-up);
   `retrievers/joint.py` (order-preserving dedup union). Greens `test_representation`.
   Suite now 6 red / 144 green.
+- **Stage 5 — models + pipeline + orchestrator (2026-07-09).** `models/payload.py`
+  + `pipeline/reasoner.py` lifted; `models/__init__.py` `get_reasoner` adapted
+  (dropped `max_input_tokens`, dispatches `qwen3vl`/`internvl3`). `models/qwen3vl.py`
+  (renamed from local_vlm) and `models/internvl.py`: dropped `_truncate_context`
+  (cap gone), populate the new split-token `Prediction` fields (`text_tokens_fed ==
+  total_text_tokens`, the zero-canary) and `peak_vram_bytes`; qwen3vl measures a
+  prefill/decode latency split (prefill via a timed forward, decode = generate -
+  prefill), internvl leaves the split at 0 because `chat()` hides the boundary.
+  `models/classifier.py` reworked to predict `bin_label` directly (three v4 bins,
+  gold from annotation) instead of the retired doc_type->bin map. `pipeline/judge.py`
+  lifted (abstention import repointed to `scoring.abstention`, which was pulled in
+  as a leaf). `pipeline/conditioner.py`: kept oracle/retrieved/full, added
+  `SimilarityTopK` (similarity provenance, for the hallucination study), dropped
+  BuriedOracle. `pipeline/orchestrator.py` rewritten: `ResultRow` from `schema`,
+  keys from `experiments.engine.paths` (page_indices, no dpi), two caches
+  (`CachedPrediction` carries the new telemetry), captures full per-cell telemetry
+  incl. the truncation canary. **Deferral:** the driver's generate/judge task-loop
+  (engine lifecycle) needs the GenerationTask ABC, so it lands with Stage 6; the
+  orchestrator (single-cell machinery) + prewarm are done here. No direct tests;
+  validated at import level, no regression (6 red / 144 green).
