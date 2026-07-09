@@ -182,7 +182,7 @@ and submits a GPU sbatch wrapper (same path as `submit`).
 Plus all [shared job options](#shared-job-options-run-and-submit).
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/dataset_stats.py
 envs/mpvrdu/bin/python -m kaya.kaya run --target gpu --time 00:05:00 scripts/gpu_test.py
 ```
 
@@ -293,10 +293,10 @@ silently ignored.
 
 ## Smoke Commands
 
-Login-node data probe:
+Login-node data check:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/dataset_stats.py
 ```
 
 GPU smoke:
@@ -305,11 +305,10 @@ GPU smoke:
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 ```
 
-Heavy Stage 1 probes:
+Deployment-resolution probe (GPU):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 scripts/run_probe.py -- model-family --run-heavy --json --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:30:00 scripts/run_probe.py -- retrieval --run-heavy --json
+envs/mpvrdu/bin/python -m kaya.kaya submit --target gpu --gres gpu:v100:2 --time 00:30:00 scripts/resolution_probe.py
 ```
 
 Single YAML smoke (cache a small G1/G5 2B run):

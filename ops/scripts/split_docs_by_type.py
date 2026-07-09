@@ -1,21 +1,19 @@
 """Split the MMLongBench documents into per-doc_type folders for eyeballing.
 
 Purpose:
-    The paper groups MMLongBench's seven native `doc_type` labels into three
-    "Option-A" bins (text_heavy / in_between / visual_heavy, see
-    `data/binning.py`). Before trusting that grouping we want to look at the PDFs
-    in each doc_type and judge whether the text/visual assignment holds up. This
-    script copies each document into `.data/mmlongbench_docs_split/<doc_type>/` so
-    you can open a folder and flip through the real docs. It only reads the staged
-    dataset and copies PDFs; it does not touch the parquet or any cache. Re-running
-    is safe (it overwrites the split dir).
+    Binning is now done by hand (see `data/annotations.py`), not derived from the
+    native `doc_type`. To make that hand-labelling pass easier, this script copies
+    each document into `.data/mmlongbench_docs_split/<doc_type>/` so you can open a
+    folder and flip through the real docs grouped by their native type. It only
+    reads the staged dataset and copies PDFs; it does not touch the parquet or any
+    cache. Re-running is safe (it overwrites the split dir).
 
 Pipeline role:
-    A standalone browsing utility, companion to `scripts/annotate_docs.py`. Not
+    A standalone browsing utility, companion to `ops/scripts/annotate_docs.py`. Not
     part of the run pipeline.
 
 Arguments:
-    None. Run with `envs/mpvrdu/bin/python scripts/split_docs_by_type.py`.
+    None. Run with `envs/mpvrdu/bin/python -m ops.scripts.split_docs_by_type`.
 """
 
 from __future__ import annotations
@@ -28,7 +26,6 @@ from pathlib import Path
 # Put the repo root on the path so `data.*` imports work when run directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data.binning import DOC_TYPE_TO_BIN  # noqa: E402
 from data.loader import (  # noqa: E402
     find_mmlongbench_root,
     load_raw_mmlongbench,
@@ -89,8 +86,7 @@ def main() -> None:
 
     print(f"\nwrote {sum(per_type.values())} docs to {out_root}")
     for doc_type in sorted(per_type):
-        assumed_bin = DOC_TYPE_TO_BIN.get(doc_type, "UNMAPPED")
-        print(f"  {per_type[doc_type]:>3}  {doc_type:<32} -> {assumed_bin}")
+        print(f"  {per_type[doc_type]:>3}  {doc_type}")
     if missing:
         print(f"\n{len(missing)} doc_ids had no PDF on disk:")
         for doc_id in missing:

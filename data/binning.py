@@ -30,14 +30,30 @@ def scan_for_doc(doc_id: str, table: Mapping[str, DocLabel] | None = None) -> st
     return label.scan_label if label else ""
 
 
-def stamp_bins(questions: Sequence[Question], table: Mapping[str, DocLabel] | None = None) -> list[Question]:
+def stamp_bins(
+    questions: Sequence[Question],
+    table: Mapping[str, DocLabel] | None = None,
+    *,
+    require_complete: bool = True,
+) -> list[Question]:
     """Return copies of the questions with bin_label/scan_label filled from the table.
 
-    A document missing from the table keeps blank labels, so an unlabelled corpus
-    still loads (the labels just do not drive any binning until filled).
+    `doc_type` is left untouched, so a cell keeps the native document type on top
+    of its manual bin. When the table is empty (no annotation sheet yet) every
+    question keeps blank labels, so an unlabelled corpus still loads while the
+    labelling pass is in progress. Once the sheet exists it is treated as
+    complete: with `require_complete`, any question whose document is not labelled
+    raises, so a partial sheet stops the run instead of silently binning blank.
     """
 
     labels = table if table is not None else load_annotations()
+    if labels and require_complete:
+        missing = sorted({q.doc_id for q in questions if q.doc_id not in labels})
+        if missing:
+            raise ValueError(
+                f"annotation table covers {len(labels)} docs but {len(missing)} corpus documents are "
+                f"unlabelled (e.g. {missing[:3]}); complete annotations/doc_labels.csv before running"
+            )
     stamped: list[Question] = []
     for question in questions:
         label = labels.get(question.doc_id)

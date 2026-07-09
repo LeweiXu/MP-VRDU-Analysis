@@ -109,9 +109,13 @@ verdict + partition, which are settled above.
 |---|---|---|
 | `kaya/{kaya.py,__init__.py,config.json,KAYA_*_GUIDE.md}` | `ops/kaya/` | copied-pending-rework (see below) |
 | `download_hf,gpu_test,kaya_status,setup_env,dataset_stats,profile_datasets,split_docs_by_type` | `ops/scripts/` | clean copy |
-| `dump_docstrings.py` | `ops/scripts/` | copied-pending-rework (stale SUMMARY_OVERRIDES) |
-| `annotate_docs,prestage,inspect_results,run_probe` | `ops/scripts/` | copied-pending-rework (per plan §Phase 2) |
-| `ANNOTATION_GUIDE.md` | `ops/scripts/` | clean copy |
+| `dump_docstrings.py` | `ops/scripts/` | reworked (2026-07-09): emptied stale SUMMARY_OVERRIDES so the map builds from live docstrings |
+| `annotate_docs.py` | `ops/scripts/` | reworked (2026-07-09): manual-bin vocab, optional dominant_visual, Cohen's kappa subset mode |
+| `inspect_results.py` | `ops/scripts/` | reworked (2026-07-09): inlined the retired `gates/viewer.py`, v4 ResultRow/paths |
+| `split_docs_by_type.py` | `ops/scripts/` | reworked (2026-07-09): dropped the retired `DOC_TYPE_TO_BIN` summary |
+| `prestage.py` | `ops/scripts/` | verified v4 (2026-07-09): stages the three parsers + text/vision retrieval rungs; no change needed |
+| `run_probe.py` | (removed) | deleted (2026-07-09): v3 Stage-1 probes (`boxes`, `doc-type`) abandoned in v4; superseded by `resolution_probe.py` |
+| `ANNOTATION_GUIDE.md` | `docs/` | reworked (2026-07-09): moved from `ops/scripts/` to `docs/`, updated to v4 bin vocab |
 | `specs/*.yaml` | `ops/specs/` | clean copy |
 
 **Deviations recorded:**
@@ -421,3 +425,31 @@ _One line per real judgement call: what, why, what it affected._
   **Deliberate choice:** `QwenBinClassifier` representation set to `V` (image-only)
   so modality classification does not depend on the parser cache. **All 8 stages +
   smoke complete; the pytest suite is 150/150 green.**
+- **Parser backend implemented (2026-07-09).** `tools/parser.py::warm_parser_cache`
+  is now a real subprocess-into-isolated-env runner (no longer a NotImplementedError
+  stub): it batches the uncached TL/TLV pages, resolves the parser env python
+  (`MPVRDU_PARSER_PYTHON_<TOOL>`, then `MPVRDU_PARSER_PYTHON`, then
+  `envs/parse-<tool>/bin/python`), and spawns `tools/parser_worker.py` which writes
+  each page's markdown to the same disk cache `parser_markdown` reads. The worker
+  imports nothing from the project so a minimal parser env can run it; backends load
+  lazily. `paddleocrvl` is verified locally (PaddleOCR det+rec floor; the PaddleOCR-VL
+  / PP-StructureV3 markdown paths are gated behind `MPVRDU_PADDLE_RICH`); `mineru` and
+  `unlimited` are written to a transformers VLM path and stay Kaya-env-verified (no
+  local env). Warming is wired into the driver pre-pass (`_warm_parser_cache`, one
+  batched load per run, before the reasoner loads, non-co-resident). Added
+  `config.ExperimentConfig.parser_tool` and threaded it through the orchestrator's
+  `get_representation` calls. A parser that cannot run raises `ParserUnavailable`,
+  logged (not fatal); TL/TLV then record a parser-miss row rather than fabricating text.
+- **Reporting table builders implemented (2026-07-09).** The ten content-named
+  builders in `reporting/tables/*` are no longer stubs. `_common.py` (Table container,
+  ok-row loading with per-cell collapse, bin/rung ordering, accuracy/cost/frontier
+  formatting) and `_markdown.py` (report rendering) back: `headline`, `parser`,
+  `resolution`, `scale`, `composition` (G1); `matched_cross`, `kdepth`,
+  `retrieval_accuracy` (G2 + retrieval side-artifact); `hallucination` (G3); and
+  `routing` (build-time assembly from G1 ladder rows + the G4 classifier price).
+  `reporting/build.py` gains `assemble_tables` (builds every table its inputs exist
+  for, one bad builder logged not fatal) and `write_tables` (CSV per table +
+  `all_tables.md`); `ops/build.py` now writes them under `results/tables/<partition>/`.
+  Scoring skips non-ok rows and blank bins bucket to `(unlabeled)`. Reruns the local
+  smoke with the parser on: all four tasks now `status=ok` (TL/TLV carry real
+  paddleocrvl markdown), and all ten tables build from those rows.

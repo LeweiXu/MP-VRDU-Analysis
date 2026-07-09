@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from config import G3_PROMPT_MODES
 from experiments.tasks.base import Cell, GenerationTask, Retrievers
 from pipeline.conditioner import SimilarityTopK
 
@@ -18,9 +19,14 @@ class G3Hallucination(GenerationTask):
         return (config.reasoner_spec,)
 
     def generation_cells(self, config, questions, *, retrievers: Retrievers) -> list[Cell]:
-        # Similarity pages from the text retriever at a fixed small k. The prompt
-        # sweep (no prompt / generic / hallucination-targeted) rides on a prompt
-        # variant that is threaded through the reasoner; that interface is added
-        # with the driver prompt-mode wiring.
-        conditioner = SimilarityTopK(retrievers.text, k=SIMILARITY_K)
-        return [Cell(question, conditioner, REPRESENTATION) for question in questions]
+        # Same similarity pages under each prompt condition (no guidance / generic /
+        # abstention-targeted). The prompt mode is baked into the conditioner name so
+        # each mode is its own cached cell, and rides on Cell.prompt_mode so the
+        # reasoner applies the matching instruction.
+        retriever_name = getattr(retrievers.text, "name", "text")
+        base = f"similarity_{retriever_name}_k{SIMILARITY_K}"
+        cells: list[Cell] = []
+        for mode in G3_PROMPT_MODES:
+            conditioner = SimilarityTopK(retrievers.text, k=SIMILARITY_K, name=f"{base}_prompt-{mode}")
+            cells += [Cell(question, conditioner, REPRESENTATION, prompt_mode=mode) for question in questions]
+        return cells

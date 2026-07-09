@@ -52,6 +52,22 @@ SMOKE_REASONER_SPEC = "qwen3vl-2b-local"
 DEFAULT_MAX_TOKENS = 256
 SMOKE_MAX_TOKENS = 64
 
+# Instruction preambles for the abstention/hallucination prompt sweep. The mode
+# rides on the cell's conditioner name (like the retrieval k does), so each mode
+# is its own cached cell, and the reasoner applies the matching instruction. The
+# targeted text is the one every answerable (G1/G2) cell uses.
+PROMPT_MODES: dict[str, str] = {
+    "none": "",
+    "generic": "Use only the provided document evidence and keep the answer concise.",
+    "targeted": (
+        "Use only the provided document evidence. If the evidence does not contain the answer, "
+        "answer exactly: Not answerable.\nKeep the answer concise."
+    ),
+}
+DEFAULT_PROMPT_MODE = "targeted"
+# The three conditions the hallucination task sweeps (no guidance / generic / abstention-targeted).
+G3_PROMPT_MODES: tuple[str, ...] = ("none", "generic", "targeted")
+
 
 # Named visual-resolution presets. Value = per-page pixel cap = tokens_per_page *
 # 28 * 28 (Qwen packs a 28x28 patch per vision token). One preset is fixed as the
@@ -106,6 +122,10 @@ class ExperimentConfig:
     # Representation ladder (cost-ordered; names historical, mechanism in tools/).
     representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
 
+    # PDF parser feeding the TL/TLV text channel. The parser comparison varies
+    # this per run (as its own run_tag); T and V never use it.
+    parser_tool: str = "paddleocrvl"
+
     bins: tuple[str, ...] = DEFAULT_BINS
     cost_metric: str = "latency_bs1"
 
@@ -148,6 +168,10 @@ class ExperimentConfig:
             if self.quantization not in ("4bit", "8bit"):
                 raise ValueError(f"quantization must be None, '4bit', or '8bit', got {self.quantization!r}")
             object.__setattr__(self, "reasoner_spec", f"{self.reasoner_spec}-{self.quantization}")
+        if self.parser_tool not in ("paddleocrvl", "mineru", "unlimited"):
+            raise ValueError(
+                f"parser_tool must be one of paddleocrvl/mineru/unlimited, got {self.parser_tool!r}"
+            )
         if self.visual_resolution not in VISUAL_RESOLUTION_PRESETS:
             raise ValueError(
                 f"visual_resolution must be one of {sorted(VISUAL_RESOLUTION_PRESETS)}, "

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -13,6 +16,25 @@ from schema import Page
 # per run; T and V never use it.
 DEFAULT_PARSER = "paddleocrvl"
 PARSERS = ("paddleocrvl", "mineru", "unlimited")
+
+# Hugging Face ids the isolated parser envs load. Passed to the worker so it does
+# not need to import the project config.
+PARSER_MODELS = {
+    "paddleocrvl": "PaddlePaddle/PaddleOCR-VL",
+    "mineru": "opendatalab/MinerU2.5-2509-1.2B",
+    "unlimited": "baidu/Unlimited-OCR",
+}
+
+_WORKER = Path(__file__).with_name("parser_worker.py")
+
+
+class ParserUnavailable(RuntimeError):
+    """Raised when a parser's isolated env or backend cannot produce markdown.
+
+    Distinct from `ParserCacheMiss`: a miss means nobody warmed the page yet,
+    while this means the warm pass tried and could not run the parser (no env, a
+    crashing backend). The driver logs it and TL/TLV cells then record a miss.
+    """
 
 
 class ParserCacheMiss(RuntimeError):
@@ -79,17 +101,68 @@ def parser_markdown(pages: Sequence[Page], parser_tool: str = DEFAULT_PARSER, dp
     return tuple(out)
 
 
+def parser_env_python(parser_tool: str) -> Path:
+    """Resolve the Python interpreter for a parser's isolated env.
+
+    Order: a per-parser override (`MPVRDU_PARSER_PYTHON_<TOOL>`), then a shared
+    override (`MPVRDU_PARSER_PYTHON`, handy when one local env serves every
+    parser), then the conventional layout `envs/parse-<tool>/bin/python`.
+    """
+
+    override = os.environ.get(f"MPVRDU_PARSER_PYTHON_{parser_tool.upper()}") or os.environ.get("MPVRDU_PARSER_PYTHON")
+    if override:
+        return Path(override)
+    return DEFAULT_PATHS.env_dir / f"parse-{parser_tool}" / "bin" / "python"
+
+
 def warm_parser_cache(pages: Sequence[Page], parser_tool: str = DEFAULT_PARSER, dpi: int = 144) -> None:
     """Run the parser over pages in its isolated env and write markdown to cache.
 
-    The parser VLM is heavy and pinned to its own env, so this loads the backend
-    lazily (never at import time) and is invoked only in the pre-pass, with no
-    reasoner resident. The per-parser backend wiring is exercised on a GPU node.
+    The parser VLM is heavy and pinned to its own env, so it runs in a subprocess
+    (never imported here) that writes each page's markdown to the same disk cache
+    `parser_markdown` reads. Pages already cached are skipped, so a run warms each
+    page once. Called only in the pre-pass with no reasoner resident, which is
+    what keeps parser and reasoner off the GPU together. Raises `ParserUnavailable`
+    if the env is missing or the worker fails to write some page.
     """
 
     if parser_tool not in PARSERS:
         raise ValueError(f"unknown parser {parser_tool!r}; expected one of {PARSERS}")
-    raise NotImplementedError(
-        f"parser backend for {parser_tool!r} runs in its isolated env on a GPU node; "
-        "the per-parser runner is wired during the GPU bring-up step"
+
+    missing = [page for page in pages if cached_markdown(page, parser_tool, dpi) is None]
+    if not missing:
+        return
+
+    python = parser_env_python(parser_tool)
+    if not Path(python).exists():
+        raise ParserUnavailable(
+            f"no parser env python for {parser_tool!r} at {python}; "
+            f"set MPVRDU_PARSER_PYTHON_{parser_tool.upper()} (or MPVRDU_PARSER_PYTHON)"
+        )
+
+    jobs = []
+    for page in missing:
+        out = _cache_file(page, parser_tool, dpi)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        jobs.append(
+            {
+                "pdf_path": str(page.pdf_path),
+                "index": int(page.index),
+                "doc_id": page.doc_id,
+                "image_path": str(page.image_path) if page.image_path else None,
+                "out_path": str(out),
+            }
+        )
+
+    payload = json.dumps(
+        {"parser_tool": parser_tool, "model_id": PARSER_MODELS[parser_tool], "dpi": int(dpi), "jobs": jobs}
     )
+    proc = subprocess.run([str(python), str(_WORKER)], input=payload, text=True, capture_output=True)
+
+    unwritten = [job["out_path"] for job in jobs if not Path(job["out_path"]).exists()]
+    if unwritten:
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-15:])
+        raise ParserUnavailable(
+            f"{parser_tool}: warmed {len(jobs) - len(unwritten)}/{len(jobs)} pages, "
+            f"{len(unwritten)} still missing (worker rc={proc.returncode}).\nstderr tail:\n{tail}"
+        )

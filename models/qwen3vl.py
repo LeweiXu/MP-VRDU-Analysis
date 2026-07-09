@@ -12,18 +12,13 @@ from pipeline.reasoner import Reasoner
 from schema import ImagePart, Prediction, Question
 
 
+from config import DEFAULT_PROMPT_MODE, PROMPT_MODES
+
 PROMPT_TEMPLATE_VERSION = "qwen3vl-v1"
-FROZEN_PROMPT_TEMPLATE = """You are answering a question about a document.
-Use only the provided document evidence. If the evidence does not contain the answer, answer exactly: Not answerable.
-Keep the answer concise.
-
-Question:
-{question}
-
-Document evidence:
-{context}
-
-Answer:"""
+PROMPT_HEADER = "You are answering a question about a document."
+PROMPT_BODY = "Question:\n{question}\n\nDocument evidence:\n{context}\n\nAnswer:"
+# The instruction used when a caller does not set one (the answerable-cell default).
+DEFAULT_INSTRUCTION = PROMPT_MODES[DEFAULT_PROMPT_MODE]
 
 
 MODEL_IDS: dict[str, str] = {
@@ -79,18 +74,21 @@ def hf_cache_dir_from_env() -> str | None:
     return None
 
 
-def render_prompt(question: Question, model_input: ModelInput) -> RenderedPrompt:
-    """Apply the frozen prompt template to one question/model input pair.
+def render_prompt(question: Question, model_input: ModelInput, instruction: str | None = None) -> RenderedPrompt:
+    """Apply the prompt template with a chosen instruction preamble.
 
     The full context is fed: there is no input-token cap, so nothing is trimmed.
+    `instruction` is the abstention/guidance preamble; None uses the default
+    (abstention-targeted) instruction, and an empty string gives no guidance.
     """
 
+    if instruction is None:
+        instruction = DEFAULT_INSTRUCTION
     context, images = model_input.to_local_prompt()
     context = context.strip() or "(no document evidence was provided)"
-    return RenderedPrompt(
-        text=FROZEN_PROMPT_TEMPLATE.format(question=question.question.strip(), context=context),
-        image_parts=images,
-    )
+    header = PROMPT_HEADER if not instruction.strip() else f"{PROMPT_HEADER}\n{instruction.strip()}"
+    text = f"{header}\n\n" + PROMPT_BODY.format(question=question.question.strip(), context=context)
+    return RenderedPrompt(text=text, image_parts=images)
 
 
 def _image_content(part: ImagePart, max_pixels: int | None = None) -> dict[str, Any]:
@@ -347,7 +345,7 @@ class Qwen3VLBackend(Reasoner):
 
     def answer(self, question: Question, model_input: ModelInput) -> Prediction:
         processor, model = self._load_components()
-        rendered = render_prompt(question, model_input)
+        rendered = render_prompt(question, model_input, self.prompt_instruction)
         messages = messages_from_rendered_prompt(rendered, self.max_pixels)
 
         chat_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)

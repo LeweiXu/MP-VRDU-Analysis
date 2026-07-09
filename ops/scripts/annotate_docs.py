@@ -1,39 +1,43 @@
-"""Hand-annotate the 135 MMLongBench documents, and score the result.
+"""Hand-annotate the 135 MMLongBench documents and check annotator agreement.
 
 Purpose:
-    The paper bins the seven native `doc_type` labels into three domains
-    (text_heavy / in_between / visual_heavy, see `data/binning.py`). That mapping
-    is an assumption. This builds a per-document sheet so a human can look at each
-    doc and record what it actually is, then scores the hand labels against the
-    doc_type-derived bin to see whether the assumption holds. Two axes are the
-    point (text/visual bin, scanned vs digital-born); one more is captured while
-    we are in there (dominant visual element). The sheet is seeded with
-    auto-guesses so a human edits rather than starts blank.
+    The bin axis (text-dominant / mixed-modality / visual-dominant) is the whole
+    thesis, so it is labelled by hand rather than derived from the native
+    `doc_type`. This builds a per-document sheet a human fills in: the dominant
+    modality bin, scan status (digital / scanned), and, optionally, the dominant
+    visual element. The sheet is seeded with an auto scan guess so a human edits
+    rather than starts blank. The vocab is the single source of truth in
+    `data/annotations.py`; this script just collects it.
+
+    Reliability: to report inter-annotator agreement (Cohen's kappa, same 0.75 bar
+    as the judge gate), draw a blind subset with `kappa-sheet`, have a second
+    annotator fill it, then run `kappa`. The subset sheet is stripped of the first
+    annotator's labels so the second pass is genuinely blind.
 
 Pipeline role:
     A standalone research utility. It reads the parquet for the doc_id/doc_type
     list and opens each PDF from the per-doc_type split tree built by
-    `scripts/split_docs_by_type.py` (`.data/mmlongbench_docs_split/`), then writes
-    a committable CSV under `annotations/`. Not part of the run pipeline. Run
-    `split_docs_by_type.py` first so the split tree exists; that same tree is what
-    you hand to other annotators (see `scripts/ANNOTATION_GUIDE.md`).
-
-Arguments:
-    Subcommands `annotate` (interactive, resumable), `sheet` (build the blank
-    auto-seeded CSV), and `score` (agreement report). See `--help` for each.
+    `ops/scripts/split_docs_by_type.py` (`.data/mmlongbench_docs_split/`), then
+    writes a committable CSV under `annotations/` that `data/annotations.py` reads.
+    Run `split_docs_by_type` first so the split tree exists.
 
 Workflow:
     # interactive: opens each PDF in turn and prompts a menu per field; writes
     # after every document, so it's resumable (re-run to pick up where you left off)
-    python -m scripts.annotate_docs annotate
-    # score the hand labels against the doc_type-derived bin
-    python -m scripts.annotate_docs score
+    python -m ops.scripts.annotate_docs annotate
+    # skip the exploratory dominant_visual question entirely:
+    python -m ops.scripts.annotate_docs annotate --no-dominant-visual
+    # inter-annotator agreement on a blind 25-doc subset:
+    python -m ops.scripts.annotate_docs kappa-sheet --n 25 --seed 0
+    python -m ops.scripts.annotate_docs annotate --sheet annotations/kappa_subset.csv
+    python -m ops.scripts.annotate_docs kappa
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import random
 import re
 import shutil
 import subprocess
@@ -41,23 +45,24 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from config import DEFAULT_PATHS, ROOT  # noqa: E402
-from data.binning import doc_type_bin  # noqa: E402
+from data.annotations import BIN_LABELS, SCAN_LABELS, VISUAL_KINDS  # noqa: E402
 from data.loader import load_raw_mmlongbench  # noqa: E402
 from data.render import classify_scanned  # noqa: E402
-from scripts.split_docs_by_type import SPLIT_DIRNAME, safe_dirname  # noqa: E402
+from ops.scripts.split_docs_by_type import SPLIT_DIRNAME, safe_dirname  # noqa: E402
 
 DEFAULT_SHEET = ROOT / "annotations" / "doc_labels.csv"
+DEFAULT_KAPPA_SHEET = ROOT / "annotations" / "kappa_subset.csv"
 
-# Column order. auto_* are machine-seeded priors; the *_label / dominant_visual /
-# notes columns are for the human.
+# Column order. auto_scan is a machine-seeded prior; the *_label / dominant_visual
+# / notes columns are for the human. doc_type is kept as context only (binning no
+# longer derives from it).
 COLUMNS = [
     "doc_id",
     "pdf_path",
     "doc_type",
-    "auto_bin",
     "auto_scan",
     "avg_chars_per_page",
     "page_count",
@@ -67,14 +72,18 @@ COLUMNS = [
     "notes",
 ]
 
-# The menu fields, in the order the interactive annotator prompts them. Each is
-# (column, options, auto-seed column). The auto column supplies the default when
-# the row hasn't been annotated yet.
-CHOICE_FIELDS: list[tuple[str, list[str], str | None]] = [
-    ("bin_label", ["text_heavy", "in_between", "visual_heavy"], "auto_bin"),
-    ("scan_label", ["scanned", "digital"], "auto_scan"),
-    ("dominant_visual", ["tables", "charts", "figures", "photos", "none"], None),
+# The menu fields, in prompt order. Each is (column, options, auto-seed column).
+# The auto column supplies the default when the row hasn't been annotated yet;
+# None means there is no machine prior (the human picks from scratch).
+CHOICE_FIELDS: list[tuple[str, tuple[str, ...], str | None]] = [
+    ("bin_label", BIN_LABELS, None),
+    ("scan_label", SCAN_LABELS, "auto_scan"),
+    ("dominant_visual", VISUAL_KINDS, None),
 ]
+
+# Fields that gate "is this row done". dominant_visual is exploratory (per the
+# pivot) so it never gates completion, and can be turned off entirely.
+REQUIRED_FIELDS = ("bin_label", "scan_label")
 
 # Fields that accept more than one value; stored as a ";"-joined string.
 MULTI_FIELDS = {"dominant_visual"}
@@ -105,7 +114,7 @@ def unique_docs() -> dict[str, str]:
 def resolve_split_pdf(doc_id: str, doc_type: str) -> Path:
     """Find a document's PDF inside the per-doc_type split tree.
 
-    `scripts/split_docs_by_type.py` mirrors the corpus into
+    `ops/scripts/split_docs_by_type.py` mirrors the corpus into
     `.data/mmlongbench_docs_split/<doc_type>/<file>.pdf`, keeping the original
     filename. That tree is the one handed to annotators, so the sheet points at
     it rather than at the flat `documents/` dir.
@@ -120,7 +129,7 @@ def resolve_split_pdf(doc_id: str, doc_type: str) -> Path:
         if candidate.is_file():
             return candidate
     raise FileNotFoundError(
-        f"no PDF for {doc_id!r} under {folder}; run scripts/split_docs_by_type.py first"
+        f"no PDF for {doc_id!r} under {folder}; run ops/scripts/split_docs_by_type.py first"
     )
 
 
@@ -140,7 +149,6 @@ def build_rows() -> list[dict[str, str]]:
                 "doc_id": doc_id,
                 "pdf_path": str(pdf.relative_to(ROOT)) if pdf.is_relative_to(ROOT) else str(pdf),
                 "doc_type": doc_type,
-                "auto_bin": doc_type_bin(doc_type),
                 "auto_scan": scan.label,
                 "avg_chars_per_page": str(scan.avg_chars_per_page),
                 "page_count": str(scan.page_count),
@@ -156,9 +164,8 @@ def build_rows() -> list[dict[str, str]]:
 def write_sheet(rows: list[dict[str, str]], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
-        # extrasaction="ignore" so a sheet still carrying a retired column (e.g. the
-        # old multi_column) rewrites cleanly instead of raising; the stale column is
-        # dropped on the next write.
+        # extrasaction="ignore" so a sheet still carrying a retired column rewrites
+        # cleanly instead of raising; the stale column is dropped on the next write.
         writer = csv.DictWriter(handle, fieldnames=COLUMNS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
@@ -176,7 +183,7 @@ def cmd_sheet(args: argparse.Namespace) -> int:
     rows = build_rows()
     write_sheet(rows, args.output)
     print(f"wrote {len(rows)} document rows: {args.output}")
-    print("fill bin_label / scan_label / dominant_visual, then run: annotate_docs score")
+    print("fill bin_label / scan_label (+ optional dominant_visual), then run: annotate_docs score")
     return 0
 
 
@@ -203,37 +210,22 @@ def invalid_values(rows: list[dict[str, str]]) -> list[str]:
 def score_sheet(rows: list[dict[str, str]]) -> dict:
     """Aggregate a filled annotation sheet into the numbers `score` prints.
 
-    Axis 1 (the point): agreement between the human `bin_label` and the
-    doc_type-derived `auto_bin`, overall + per doc_type, with the disagreements.
-    Axis 2: scanned fraction, hand vs the auto heuristic. Plus distributions of
-    the two extra axes.
+    Reports the label distributions plus, for scan status, how often the human
+    label matches the auto heuristic (the one machine prior we seed). There is no
+    doc_type-derived bin to compare against: bins are hand-labelled by design.
     """
 
     total = len(rows)
-    labelled = [r for r in rows if (r.get("bin_label") or "").strip()]
-    bin_agree = sum(1 for r in labelled if r["bin_label"].strip() == r["auto_bin"].strip())
-    per_type: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # doc_type -> [agree, total]
-    mismatches: list[dict[str, str]] = []
-    for r in labelled:
-        match = r["bin_label"].strip() == r["auto_bin"].strip()
-        per_type[r["doc_type"]][0] += int(match)
-        per_type[r["doc_type"]][1] += 1
-        if not match:
-            mismatches.append(
-                {"doc_id": r["doc_id"], "doc_type": r["doc_type"], "auto": r["auto_bin"], "human": r["bin_label"].strip()}
-            )
-
+    bin_labelled = [r for r in rows if (r.get("bin_label") or "").strip()]
     scan_labelled = [r for r in rows if (r.get("scan_label") or "").strip()]
     return {
         "total": total,
-        "bin_labelled": len(labelled),
-        "bin_agree": bin_agree,
-        "per_type": {k: tuple(v) for k, v in per_type.items()},
-        "mismatches": mismatches,
-        "auto_scanned": sum(1 for r in rows if r.get("auto_scan") == "scanned"),
+        "bin_labelled": len(bin_labelled),
+        "bin_dist": dict(Counter(r["bin_label"].strip() for r in bin_labelled)),
         "scan_labelled": len(scan_labelled),
+        "auto_scanned": sum(1 for r in rows if r.get("auto_scan") == "scanned"),
         "human_scanned": sum(1 for r in scan_labelled if r["scan_label"].strip() == "scanned"),
-        "scan_agree": sum(1 for r in scan_labelled if r["scan_label"].strip() == r["auto_scan"].strip()),
+        "scan_agree": sum(1 for r in scan_labelled if r["scan_label"].strip() == (r.get("auto_scan") or "").strip()),
         "dominant_visual": dict(Counter(token for r in rows for token in split_multi(r.get("dominant_visual") or ""))),
     }
 
@@ -245,39 +237,132 @@ def cmd_score(args: argparse.Namespace) -> int:
     s = score_sheet(rows)
 
     print(f"\nbin_label filled for {s['bin_labelled']}/{s['total']} docs")
-    if s["bin_labelled"]:
-        print(f"human bin vs doc_type-derived bin: {s['bin_agree']}/{s['bin_labelled']} agree ({_pct(s['bin_agree'], s['bin_labelled'])})")
-        print("  by doc_type:")
-        for doc_type in sorted(s["per_type"]):
-            agree_t, total_t = s["per_type"][doc_type]
-            print(f"    {doc_type:<32} {agree_t}/{total_t} agree ({_pct(agree_t, total_t)})")
-        if s["mismatches"]:
-            print("  disagreements (the assumption misses these):")
-            for m in s["mismatches"]:
-                print(f"    {m['doc_id']} ({m['doc_type']}): auto={m['auto']} human={m['human']}")
+    if s["bin_dist"]:
+        print("  bin distribution:")
+        for label in BIN_LABELS:
+            print(f"    {label:<16} {s['bin_dist'].get(label, 0)}")
 
-    print(f"\nauto scanned fraction: {s['auto_scanned']}/{s['total']} ({_pct(s['auto_scanned'], s['total'])})")
+    print(f"\nscan_label filled for {s['scan_labelled']}/{s['total']} docs")
+    print(f"auto scanned fraction: {s['auto_scanned']}/{s['total']} ({_pct(s['auto_scanned'], s['total'])})")
     if s["scan_labelled"]:
         print(f"human scanned fraction: {s['human_scanned']}/{s['scan_labelled']} ({_pct(s['human_scanned'], s['scan_labelled'])})")
         print(f"human vs auto scan agreement: {s['scan_agree']}/{s['scan_labelled']} ({_pct(s['scan_agree'], s['scan_labelled'])})")
 
-    for column in ("dominant_visual",):
-        if s[column]:
-            print(f"\n{column}: " + ", ".join(f"{k}={v}" for k, v in sorted(s[column].items())))
+    if s["dominant_visual"]:
+        print("\ndominant_visual: " + ", ".join(f"{k}={v}" for k, v in sorted(s["dominant_visual"].items())))
     return 0
 
 
-def row_is_annotated(row: dict[str, str]) -> bool:
-    """True once every menu field has a value (notes stays optional)."""
+def cohen_kappa(pairs: list[tuple[str, str]]) -> float:
+    """Cohen's kappa for two raters over single-label categorical judgements.
 
-    return all((row.get(field) or "").strip() for field, _, _ in CHOICE_FIELDS)
+    `pairs` is a list of (rater_a, rater_b) labels, one per shared item. Returns
+    the chance-corrected agreement. When chance agreement is 1 (both raters used a
+    single category throughout) kappa is 1.0 if they always agreed, else 0.0.
+    """
+
+    n = len(pairs)
+    if n == 0:
+        return float("nan")
+    observed = sum(1 for a, b in pairs if a == b)
+    p_o = observed / n
+    count_a = Counter(a for a, _ in pairs)
+    count_b = Counter(b for _, b in pairs)
+    categories = set(count_a) | set(count_b)
+    p_e = sum((count_a.get(c, 0) / n) * (count_b.get(c, 0) / n) for c in categories)
+    if p_e >= 1.0:
+        return 1.0 if p_o >= 1.0 else 0.0
+    return (p_o - p_e) / (1.0 - p_e)
+
+
+def cmd_kappa_sheet(args: argparse.Namespace) -> int:
+    """Build a blind subset sheet for a second annotator.
+
+    Samples N documents that the primary sheet has already labelled, and writes a
+    fresh sheet with the label columns blanked (only the auto_scan prior is kept),
+    so the second pass never sees the first annotator's answers.
+    """
+
+    if not args.primary.exists():
+        print(f"no primary sheet at {args.primary}; run `annotate` first.")
+        return 1
+    if args.output.exists() and not args.force:
+        print(f"{args.output} already exists; use --force to overwrite the blind subset.")
+        return 1
+
+    rows = read_sheet(args.primary)
+    labelled = [r for r in rows if all((r.get(f) or "").strip() for f in REQUIRED_FIELDS)]
+    if len(labelled) < args.n:
+        print(f"only {len(labelled)} fully-labelled docs in {args.primary}; need {args.n}. Annotate more first.")
+        return 1
+
+    chosen = random.Random(args.seed).sample(labelled, args.n)
+    blind: list[dict[str, str]] = []
+    for row in sorted(chosen, key=lambda r: r["doc_id"]):
+        blank = {col: row.get(col, "") for col in COLUMNS}
+        for field in ("bin_label", "scan_label", "dominant_visual", "notes"):
+            blank[field] = ""
+        blind.append(blank)
+    write_sheet(blind, args.output)
+    print(f"wrote a blind {args.n}-doc subset (seed={args.seed}): {args.output}")
+    print(f"have a second annotator run: annotate_docs annotate --sheet {args.output}")
+    print("then: annotate_docs kappa")
+    return 0
+
+
+def cmd_kappa(args: argparse.Namespace) -> int:
+    """Report Cohen's kappa between the primary sheet and a filled subset sheet."""
+
+    if not args.primary.exists():
+        print(f"no primary sheet at {args.primary}")
+        return 1
+    if not args.subset.exists():
+        print(f"no subset sheet at {args.subset}; build one with `kappa-sheet` and annotate it.")
+        return 1
+
+    primary = {r["doc_id"]: r for r in read_sheet(args.primary)}
+    subset = {r["doc_id"]: r for r in read_sheet(args.subset)}
+    shared = sorted(set(primary) & set(subset))
+    if not shared:
+        print("the two sheets share no doc_ids.")
+        return 1
+
+    print(f"comparing {len(shared)} shared documents\n")
+    exit_code = 0
+    for field in REQUIRED_FIELDS:
+        labelled = [
+            (d, (primary[d].get(field) or "").strip(), (subset[d].get(field) or "").strip())
+            for d in shared
+        ]
+        labelled = [(d, a, b) for d, a, b in labelled if a and b]
+        if not labelled:
+            print(f"{field}: not enough filled values in both sheets")
+            continue
+        pairs = [(a, b) for _, a, b in labelled]
+        agree = sum(1 for a, b in pairs if a == b)
+        kappa = cohen_kappa(pairs)
+        gate = "PASS" if kappa >= args.gate else "below gate"
+        print(f"{field}: kappa = {kappa:.3f}  ({gate}, gate>={args.gate})")
+        print(f"  raw agreement: {agree}/{len(pairs)} ({_pct(agree, len(pairs))})")
+        for doc_id, a, b in labelled:
+            if a != b:
+                print(f"    {doc_id}: primary={a} subset={b}")
+        if kappa < args.gate:
+            exit_code = 1
+    return exit_code
+
+
+def row_is_annotated(row: dict[str, str]) -> bool:
+    """True once every required field has a value (dominant_visual/notes optional)."""
+
+    return all((row.get(field) or "").strip() for field in REQUIRED_FIELDS)
 
 
 class _Quit(Exception):
     """Raised from a prompt when the user asks to save and exit."""
 
 
-def _prompt_choice(field: str, options: list[str], default: str | None) -> str | None:
+def _prompt_choice(field: str, options: tuple[str, ...], default: str | None) -> str | None:
     """Prompt one menu field. Return the chosen value, or None to leave it as-is."""
 
     print(f"\n{field}:")
@@ -297,7 +382,7 @@ def _prompt_choice(field: str, options: list[str], default: str | None) -> str |
         print("  invalid; enter one of the listed numbers")
 
 
-def _prompt_multi(field: str, options: list[str], default: str | None) -> str | None:
+def _prompt_multi(field: str, options: tuple[str, ...], default: str | None) -> str | None:
     """Prompt a multi-select field. Return a ";"-joined value, or None to skip."""
 
     current = split_multi(default or "")
@@ -347,13 +432,13 @@ def open_document(pdf_path: Path, open_cmd: str | None) -> None:
         print(f"  (could not open document: {exc}; open the path above manually)")
 
 
-def _annotate_row(row: dict[str, str], *, open_cmd: str | None, do_open: bool) -> None:
-    """Prompt every menu field for one document, updating `row` in place."""
+def _annotate_row(row: dict[str, str], *, open_cmd: str | None, do_open: bool, fields: list[tuple[str, tuple[str, ...], str | None]]) -> None:
+    """Prompt the given menu fields for one document, updating `row` in place."""
 
     print("\n" + "=" * 72)
     print(
         f"{row['doc_id']}  |  doc_type={row['doc_type']}  "
-        f"auto_bin={row['auto_bin']}  auto_scan={row['auto_scan']}  pages={row['page_count']}"
+        f"auto_scan={row['auto_scan']}  pages={row['page_count']}"
     )
     pdf_path = Path(row["pdf_path"])
     if not pdf_path.is_absolute():
@@ -361,7 +446,7 @@ def _annotate_row(row: dict[str, str], *, open_cmd: str | None, do_open: bool) -
     print(f"  {pdf_path}")
     if do_open:
         open_document(pdf_path, open_cmd)
-    for field, options, auto_col in CHOICE_FIELDS:
+    for field, options, auto_col in fields:
         current = (row.get(field) or "").strip()
         default = current or (row.get(auto_col, "") if auto_col else "") or None
         prompt = _prompt_multi if field in MULTI_FIELDS else _prompt_choice
@@ -378,15 +463,18 @@ def cmd_annotate(args: argparse.Namespace) -> int:
         print(f"seeded a new sheet: {path}")
     rows = read_sheet(path)
 
+    fields = [f for f in CHOICE_FIELDS if not (args.no_dominant_visual and f[0] == "dominant_visual")]
     pending = rows if args.redo_all else [row for row in rows if not row_is_annotated(row)]
     if not pending:
         print("every document is already annotated. Use --redo-all to revisit them.")
         return 0
 
+    if args.no_dominant_visual:
+        print("(dominant_visual prompt disabled)")
     print(f"{len(pending)} of {len(rows)} documents to annotate. Answers save after each doc; 'q' saves and exits.")
     try:
         for row in pending:
-            _annotate_row(row, open_cmd=args.open_cmd, do_open=args.open)
+            _annotate_row(row, open_cmd=args.open_cmd, do_open=args.open, fields=fields)
             write_sheet(rows, path)
     except (_Quit, KeyboardInterrupt):
         write_sheet(rows, path)
@@ -394,7 +482,7 @@ def cmd_annotate(args: argparse.Namespace) -> int:
         print(f"\nsaved {path}  ({done}/{len(rows)} done). Re-run to continue.")
         return 0
     write_sheet(rows, path)
-    print(f"\ndone; wrote {path}. Now: python -m scripts.annotate_docs score")
+    print(f"\ndone; wrote {path}. Now: python -m ops.scripts.annotate_docs score")
     return 0
 
 
@@ -405,6 +493,7 @@ def build_parser() -> argparse.ArgumentParser:
     annotate = sub.add_parser("annotate", help="interactively annotate each document (resumable)")
     annotate.add_argument("--sheet", type=Path, default=DEFAULT_SHEET)
     annotate.add_argument("--redo-all", action="store_true", help="revisit already-annotated docs too")
+    annotate.add_argument("--no-dominant-visual", action="store_true", help="skip the exploratory dominant_visual question")
     annotate.add_argument("--no-open", dest="open", action="store_false", help="do not auto-open the PDF viewer")
     annotate.add_argument("--open-cmd", help="viewer command to open each PDF (default: xdg-open/wslview/open)")
 
@@ -412,8 +501,20 @@ def build_parser() -> argparse.ArgumentParser:
     sheet.add_argument("--output", type=Path, default=DEFAULT_SHEET)
     sheet.add_argument("--force", action="store_true", help="overwrite an existing sheet (loses hand labels)")
 
-    score = sub.add_parser("score", help="score filled hand labels vs the doc_type-derived bin")
+    score = sub.add_parser("score", help="report label distributions and scan-vs-auto agreement")
     score.add_argument("--sheet", type=Path, default=DEFAULT_SHEET)
+
+    kappa_sheet = sub.add_parser("kappa-sheet", help="build a blind subset sheet for a second annotator")
+    kappa_sheet.add_argument("--primary", type=Path, default=DEFAULT_SHEET, help="the already-annotated sheet to sample from")
+    kappa_sheet.add_argument("--output", type=Path, default=DEFAULT_KAPPA_SHEET)
+    kappa_sheet.add_argument("--n", type=int, default=25, help="number of documents in the subset")
+    kappa_sheet.add_argument("--seed", type=int, default=0, help="sampling seed (record it for reproducibility)")
+    kappa_sheet.add_argument("--force", action="store_true", help="overwrite an existing subset sheet")
+
+    kappa = sub.add_parser("kappa", help="report Cohen's kappa between the primary and a filled subset sheet")
+    kappa.add_argument("--primary", type=Path, default=DEFAULT_SHEET)
+    kappa.add_argument("--subset", type=Path, default=DEFAULT_KAPPA_SHEET)
+    kappa.add_argument("--gate", type=float, default=0.75, help="agreement bar to flag against (default 0.75)")
     return parser
 
 
@@ -425,6 +526,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_sheet(args)
     if args.command == "score":
         return cmd_score(args)
+    if args.command == "kappa-sheet":
+        return cmd_kappa_sheet(args)
+    if args.command == "kappa":
+        return cmd_kappa(args)
     raise AssertionError(f"unhandled command {args.command!r}")
 
 

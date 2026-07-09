@@ -114,8 +114,7 @@ probe commands are separate runnable scripts:
 ```bash
 envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py
 envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-models
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/run_probe.py -- loader --json
+envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-retrieval-models --skip-parsers --model-id Qwen/Qwen3-VL-2B-Instruct
 envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --job-arg value
 ```

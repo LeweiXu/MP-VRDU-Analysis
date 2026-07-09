@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import ExperimentConfig
+from config import DEFAULT_PROMPT_MODE, ExperimentConfig
 from experiments.corpus.resolve import filter_by_pool, pool_for_task
 from pipeline.conditioner import InputConditioner, OracleConditioner, RetrievedTopK
 from retrievers import Retriever
@@ -16,11 +16,16 @@ from schema import Modality, Question
 
 @dataclass(frozen=True)
 class Cell:
-    """One unit of reasoner work: a question under a condition and a rung."""
+    """One unit of reasoner work: a question under a condition and a rung.
+
+    `prompt_mode` picks the reasoner's instruction preamble (the hallucination
+    task sweeps it); answerable tasks leave it at the default.
+    """
 
     question: Question
     conditioner: InputConditioner
     representation: Modality
+    prompt_mode: str = DEFAULT_PROMPT_MODE
 
 
 @dataclass(frozen=True)

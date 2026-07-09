@@ -593,8 +593,8 @@ Side artifacts are one record per unit, not per cell:
   (`viewer.py`); run as `python -m gates`.
 - `cli/` - the three experiment roles only: `generate` (GPU, YAML-first), `judge`, `build`.
 - `specs/` - YAML generation templates, including `full_generation.yaml`.
-- `scripts/` - standalone utilities: `run_probe` (feasibility probes),
-  `inspect_results` (view a cached inference cell), `annotate_docs` (per-document
-  manual labels), `split_docs_by_type`, staging.
+- `scripts/` - standalone utilities: `resolution_probe` (deployment-resolution
+  probe), `inspect_results` (view a cached inference cell), `annotate_docs`
+  (per-document manual labels), `split_docs_by_type`, staging.
 - `kaya/` - cluster sync/submit runner and setup scripts.
 - `docs/` - user guide, project spec, agent/implementation notes.

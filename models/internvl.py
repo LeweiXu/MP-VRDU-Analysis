@@ -16,18 +16,12 @@ MODEL_IDS: dict[str, str] = {
     "internvl3-8b-local": "OpenGVLab/InternVL3-8B",
 }
 
+from config import DEFAULT_PROMPT_MODE, PROMPT_MODES
+
 PROMPT_TEMPLATE_VERSION = "internvl3-v1"
-FROZEN_PROMPT_TEMPLATE = """You are answering a question about a document.
-Use only the provided document evidence. If the evidence does not contain the answer, answer exactly: Not answerable.
-Keep the answer concise.
-
-Question:
-{question}
-
-Document evidence:
-{context}
-
-Answer:"""
+PROMPT_HEADER = "You are answering a question about a document."
+PROMPT_BODY = "Question:\n{question}\n\nDocument evidence:\n{context}\n\nAnswer:"
+DEFAULT_INSTRUCTION = PROMPT_MODES[DEFAULT_PROMPT_MODE]
 
 # One 448px InternVL tile is (448 / 14) ** 2 = 1024 vision tokens; each page image
 # is a single tile.
@@ -53,12 +47,22 @@ def hf_cache_dir_from_env() -> str | None:
     return None
 
 
-def render_prompt(question: Question, model_input: ModelInput) -> tuple[str, tuple[ImagePart, ...]]:
-    """Render the frozen prompt and return ordered image parts (full context)."""
+def render_prompt(
+    question: Question, model_input: ModelInput, instruction: str | None = None
+) -> tuple[str, tuple[ImagePart, ...]]:
+    """Render the prompt with a chosen instruction preamble (full context).
 
+    `instruction` is the abstention/guidance preamble; None uses the default
+    (abstention-targeted) instruction, and an empty string gives no guidance.
+    """
+
+    if instruction is None:
+        instruction = DEFAULT_INSTRUCTION
     context, images = model_input.to_local_prompt()
     context = context.strip() or "(no document evidence was provided)"
-    return FROZEN_PROMPT_TEMPLATE.format(question=question.question.strip(), context=context), images
+    header = PROMPT_HEADER if not instruction.strip() else f"{PROMPT_HEADER}\n{instruction.strip()}"
+    text = f"{header}\n\n" + PROMPT_BODY.format(question=question.question.strip(), context=context)
+    return text, images
 
 
 def _count_text_tokens(tokenizer: Any, text: str) -> int:
@@ -167,7 +171,7 @@ class InternVLBackend(Reasoner):
 
     def answer(self, question: Question, model_input: ModelInput) -> Prediction:
         tokenizer, model = self._load_components()
-        prompt, images = render_prompt(question, model_input)
+        prompt, images = render_prompt(question, model_input, self.prompt_instruction)
         device = getattr(model, "device", None)
         pixel_values = _image_tensors(images, image_size=self.image_size, device=device)
         generation_config = {"max_new_tokens": self.max_new_tokens, "do_sample": False}

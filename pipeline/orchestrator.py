@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from config import ExperimentConfig
+from config import DEFAULT_PROMPT_MODE, PROMPT_MODES, ExperimentConfig
 from data.loader import resolve_pdf
 from data.render import pdf_page_count, render_pdf
 from experiments.engine.paths import prediction_key as make_prediction_key
@@ -221,7 +221,7 @@ class Orchestrator:
         """
 
         if isinstance(representation, str):
-            representation = get_representation(representation)  # type: ignore[arg-type]
+            representation = get_representation(representation, self.config.parser_tool)  # type: ignore[arg-type]
         page_set = conditioner.condition(question, self.page_count(question))
         if self.prediction_cache is not None:
             prediction_key, _ = self._keys(question, conditioner, representation.modality, page_set.page_indices)
@@ -234,11 +234,21 @@ class Orchestrator:
         question: Question,
         conditioner: InputConditioner,
         representation: Representation | str,
+        prompt_mode: str = DEFAULT_PROMPT_MODE,
     ) -> ResultRow:
-        """Run (or fetch from cache) one `(question, condition, representation)` cell."""
+        """Run (or fetch from cache) one `(question, condition, representation)` cell.
+
+        `prompt_mode` selects the reasoner's instruction preamble; the cell's
+        condition name already carries the mode, so the mode is part of the cache
+        key. Setting it here (per cell) is what makes the same page set produce a
+        distinct cell under each prompt in the hallucination sweep.
+        """
 
         if isinstance(representation, str):
-            representation = get_representation(representation)  # type: ignore[arg-type]
+            representation = get_representation(representation, self.config.parser_tool)  # type: ignore[arg-type]
+        if prompt_mode not in PROMPT_MODES:
+            raise ValueError(f"unknown prompt_mode {prompt_mode!r}; expected one of {sorted(PROMPT_MODES)}")
+        self.reasoner.prompt_instruction = PROMPT_MODES[prompt_mode]
 
         page_set = conditioner.condition(question, self.page_count(question))
         prediction_key, result_key = self._keys(

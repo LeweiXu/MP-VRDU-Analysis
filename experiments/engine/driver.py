@@ -121,6 +121,44 @@ def build_retrievers(config):
     )
 
 
+def _modality_of(cell) -> str:
+    """The ladder rung a cell targets, whether it holds a str or a composer."""
+
+    rep = cell.representation
+    return rep if isinstance(rep, str) else rep.modality
+
+
+def _warm_parser_cache(config, prewarm, cells) -> None:
+    """Warm parser markdown for every TL/TLV page in one isolated-env pass.
+
+    The parser runs in its own env and its output crosses to the reasoner only
+    through the disk cache, so this happens in the pre-pass with no reasoner
+    loaded. Pages are deduplicated so a document's page is parsed once per run.
+    A parser that cannot run is logged, not raised: its TL/TLV cells then record a
+    parser-miss row rather than sinking the whole task.
+    """
+
+    from tools.parser import warm_parser_cache
+
+    pages, seen = [], set()
+    for cell in cells:
+        if _modality_of(cell) not in ("TL", "TLV"):
+            continue
+        page_set = cell.conditioner.condition(cell.question, prewarm.page_count(cell.question))
+        for page in prewarm.render_pages(cell.question, page_set):
+            key = (str(page.pdf_path), page.index)
+            if key not in seen:
+                seen.add(key)
+                pages.append(page)
+    if not pages:
+        return
+    try:
+        warm_parser_cache(pages, parser_tool=config.parser_tool, dpi=config.dpi)
+        log.info("parser warm: %s over %d pages", config.parser_tool, len(pages))
+    except Exception as exc:  # noqa: BLE001 - a cold parser cache is a cell miss, not a task crash
+        log.warning("parser warm (%s) failed over %d pages: %s", config.parser_tool, len(pages), exc)
+
+
 def _failed_result_row(orchestrator, cell, exc, machine):
     """Build a status row for a cell that raised, so it is data, not a hole."""
 
@@ -192,6 +230,7 @@ def generate(config, task, questions, *, limit=None, machine=None):
                 prewarm.prewarm_cell(cell.question, cell.conditioner, cell.representation)
             except Exception as exc:  # noqa: BLE001 - warming is best effort
                 log.warning("prewarm failed q=%s: %s", cell.question.id, exc)
+        _warm_parser_cache(config, prewarm, cells)
         retrievers.text.unload()
         retrievers.vision.unload()
         free_gpu()
@@ -201,7 +240,7 @@ def generate(config, task, questions, *, limit=None, machine=None):
                                     cache=result_cache, prediction_cache=prediction_cache, machine=machine)
 
         def run_one(cell):
-            return orchestrator.run_cell(cell.question, cell.conditioner, cell.representation)
+            return orchestrator.run_cell(cell.question, cell.conditioner, cell.representation, cell.prompt_mode)
 
         def on_failure(cell, exc):
             row = _failed_result_row(orchestrator, cell, exc, machine)
