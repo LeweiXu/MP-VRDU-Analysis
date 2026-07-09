@@ -21,13 +21,6 @@ def project_root(start: Path | None = None) -> Path:
 
 ROOT = project_root()
 
-# Cache namespace. Every cached cell lives under `results/cache/<CACHE_VERSION>/`
-# so a cell from an earlier mechanism can never be read back as if it were a
-# current one. Bump this string whenever a change would make old cached rows
-# semantically wrong for a new run.
-CACHE_VERSION = "v4"
-
-
 @dataclass(frozen=True)
 class ProjectPaths:
     """Root-relative artifact paths shared by local and Kaya execution."""
@@ -36,7 +29,9 @@ class ProjectPaths:
     data_dir: Path = ROOT / ".data"
     hf_home: Path = ROOT / ".cache"
     results_dir: Path = ROOT / "results"
-    cache_dir: Path = ROOT / "results" / "cache" / CACHE_VERSION
+    # Cached cells live under `results/cache/<run_tag>/…`; a run_tag isolates one
+    # run's cells so an unrelated run can never read them back.
+    cache_dir: Path = ROOT / "results" / "cache"
     env_dir: Path = ROOT / "envs"
 
 

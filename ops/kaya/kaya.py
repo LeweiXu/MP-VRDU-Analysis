@@ -4,18 +4,18 @@ Purpose:
     Owns common Kaya mechanics only: source sync, remote directory setup,
     module/env activation, secret forwarding, login-node execution, generated
     sbatch submission, job watching, and pulling logs/results. Task-specific work
-    remains in separate runnable files under `kaya/`.
+    remains in separate runnable files under `ops/`.
 
 Pipeline role:
     Provides the local control plane for all Kaya operations. The core pipeline
-    never hard-codes cluster paths; this runner reads `kaya/config.json` and
+    never hard-codes cluster paths; this runner reads `ops/kaya/config.json` and
     exports root-relative artifact paths on the remote side.
 
 CLI:
-    `python -m kaya.kaya [--config PATH] COMMAND [command-options]`
+    `python -m ops.kaya.kaya [--config PATH] COMMAND [command-options]`
 
 Arguments:
-    --config PATH: alternate Kaya JSON config (default: `kaya/config.json`).
+    --config PATH: alternate Kaya JSON config (default: `ops/kaya/config.json`).
     COMMAND: one of `show-config`, `push`, `pull`, `run`, `submit`, `watch`,
         `cancel`.
 
@@ -64,7 +64,7 @@ BOOL_FALSE = {"0", "false", "no", "n", "off"}
 
 @dataclass(frozen=True)
 class KayaConfig:
-    """Resolved Kaya configuration from `kaya/config.json`."""
+    """Resolved Kaya configuration from `ops/kaya/config.json`."""
 
     raw: dict[str, Any]
     path: Path
@@ -1020,13 +1020,13 @@ def build_parser() -> argparse.ArgumentParser:
             program path, usually separated with --, is forwarded to the script.
 
             Examples:
-              python -m kaya.kaya show-config
-              python -m kaya.kaya push
-              python -m kaya.kaya run scripts/setup_env.py
-              python -m kaya.kaya run scripts/prestage.py -- --skip-models
-              python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
-              python -m kaya.kaya submit kaya/example.sbatch -- --script-arg value
-              python -m kaya.kaya watch
+              python -m ops.kaya.kaya show-config
+              python -m ops.kaya.kaya push
+              python -m ops.kaya.kaya run ops/scripts/setup_env.py
+              python -m ops.kaya.kaya run ops/scripts/prestage.py -- --skip-models
+              python -m ops.kaya.kaya submit --time 00:05:00 ops/scripts/gpu_test.py
+              python -m ops.kaya.kaya submit ops/kaya/example.sbatch -- --script-arg value
+              python -m ops.kaya.kaya watch
 
             Python files may declare defaults in header comments:
               # kaya: target=login|gpu
@@ -1061,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Everything after -- is forwarded to the Python script or sbatch file.\n"
-            "For .py files, omitted SLURM options come from kaya/config.json.\n"
+            "For .py files, omitted SLURM options come from ops/kaya/config.json.\n"
             "For .sbatch files, only explicitly supplied SLURM options are passed as overrides."
         ),
     )

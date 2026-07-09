@@ -116,6 +116,31 @@ def stage_all(model_ids: list[str], kind_label: str, revision, cache_dir, *, for
         print(f"[prestage] {kind_label[:-1] if kind_label.endswith('s') else kind_label} {model_id} -> {path}")
 
 
+def stage_paddleocrvl_pdx_cache(repo_id: str, cache_dir: Path, revision, workers: int) -> None:
+    """Mirror the staged PaddleOCR-VL snapshot into paddlex's own model cache.
+
+    paddlex loads this model from `$PADDLE_PDX_CACHE_HOME/official_models/<name>`
+    (that env points at `cache_dir/paddlex`) and fills it by downloading on first
+    use. That first use is inside the offline generate job, which can't finish the
+    ~1.9GB weight download, so copy the snapshot there now while we're on the
+    online login node. The small layout model downloads fine on the compute node,
+    so only the VL model needs this.
+    """
+    import shutil
+
+    snap = Path(snapshot(repo_id, "model", revision, cache_dir,
+                         force_download=False, max_workers=workers))
+    dest = cache_dir / "paddlex" / "official_models" / repo_id.split("/")[-1]
+    src_key, dst_key = snap / "model.safetensors", dest / "model.safetensors"
+    if dst_key.exists() and src_key.exists() and dst_key.stat().st_size == src_key.stat().st_size:
+        print(f"[prestage] paddleocrvl pipeline cache already staged -> {dest}")
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    # symlinks=False dereferences the hub's blob symlinks so real files land here.
+    shutil.copytree(snap, dest, symlinks=False, dirs_exist_ok=True)
+    print(f"[prestage] paddleocrvl pipeline cache -> {dest}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config or ROOT / "ops" / "kaya" / "config.json")
@@ -155,9 +180,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.smoke:
             ids = ids[:1]
         stage_all(ids, "parser models", args.revision, cache_dir, force=args.force_download, workers=workers)
-        # MinerU's auxiliary layout/formula models and PaddleOCR-VL's pipeline
-        # models download on first use inside their own env; that per-env warmup
-        # runs in Phase 4 alongside tools/parser.py.
+        # PaddleOCR-VL loads its weights from paddlex's own model cache, not the HF
+        # hub cache, so mirror the snapshot there for offline compute nodes.
+        parsers = config.raw.get("parsers", {})
+        paddle_repo = parsers.get("paddleocrvl") if isinstance(parsers, dict) else None
+        if paddle_repo and paddle_repo in ids:
+            stage_paddleocrvl_pdx_cache(paddle_repo, cache_dir, args.revision, workers)
+        # MinerU's auxiliary layout/formula models still download on first use
+        # inside their own env, alongside tools/parser.py.
     else:
         print("[prestage] skipping parser models")
 

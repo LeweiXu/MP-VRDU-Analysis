@@ -97,7 +97,7 @@ k_values: [1, 3, 5, 7, 10]
 #   stub | gemini | gpt4o-mini
 judge_spec: stub
 
-# run_tag: a per-run cache namespace nested under results/cache/v4/<run_tag>/, so
+# run_tag: a per-run cache namespace nested under results/cache/<run_tag>/, so
 # two runs that select the same task never write the same files. The judge and
 # build steps must be given the same tag. Alphanumeric plus dash/underscore.
 run_tag: yaml-template

@@ -115,8 +115,8 @@ mpvrdu/
 
 Containment: everything heavy (envs, model weights, datasets, all caches) lives
 under the repo root, gitignored and rsync-excluded, so nothing lands in `$HOME`.
-Caches live under `results/cache/v4/` (the `v4` is `config.CACHE_VERSION`, bumped
-whenever a change would make old cached cells wrong).
+Caches live under `results/cache/<run_tag>/`, one namespace per run so cells from
+unrelated runs never collide.
 
 ---
 
@@ -142,6 +142,37 @@ judge) and a **result cache** keyed with it. Cell keys are a SHA-256 over the
 cell identity only (question, doc, condition, representation, model spec, page
 indices) and nothing machine-dependent, so a re-run on another box produces the
 same key and completes the same file.
+
+### What a run writes to disk
+
+Each task writes two jsonl files under `results/cache/<run_tag>/<mode>/<task>/`:
+
+- **`predictions.jsonl`** is the reasoner output, one row per cell: the model's
+  answer text, which pages it saw, and cost telemetry (text/visual tokens, output
+  tokens, the prefill/decode latency split, peak VRAM). It is keyed *without* the
+  judge, so `ops.judge` can re-score it with a different judge and never re-run the
+  model.
+- **`results.jsonl`** is the fully-scored row: everything in the prediction plus
+  the judge verdict (`score`, `correct`, `abstained`, `judge_spec`), the document
+  bin/identity fields, and `status`/`skipped_reason` (a failed cell still writes
+  one row, marked `oom` or `error`). This is the file `check_run` and the table
+  builders read.
+
+Both files share one schema across every task, so a G2 row looks like a G1 row.
+What changes per task is the cells plus the **side artifacts**: a benchmark file
+that never touches the reasoner, written *last*, after all reasoner cells. G2
+writes **`retrieval.jsonl`** (page precision/recall/F1 per question x retriever x
+k) and G4 writes `classifier.jsonl`. For G2 the retrieval *rankings* are computed
+once in a pre-pass and cached (`results/cache/<run_tag>/retrieval/`), then reused
+both to pick the reasoner's pages and to score `retrieval.jsonl`, so that file is
+a parallel output, not an input to the predictions.
+
+The **stub judge** (`judge_spec: stub`) is a cheap offline scorer, not a no-op: it
+counts a cell correct when the gold answer appears (case-insensitively) in the
+model's text and the model did not abstain, and for unanswerable questions when it
+*does* abstain. It runs through the same result-cache path as the real judges with
+no API call, so a stub run still produces a complete `results.jsonl` you can later
+re-judge with Gemini/GPT via `ops.judge`.
 
 ## 2. The representation ladder (cost-ordered, not cumulative)
 

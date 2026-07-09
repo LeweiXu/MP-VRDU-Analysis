@@ -160,9 +160,9 @@ class ExperimentPaths:
 def experiment_paths(config: ExperimentConfig, name: str) -> ExperimentPaths:
     """Resolve the cache/table paths for one generation task (by name).
 
-    `config.paths.cache_dir` already carries the cache version and any run tag,
-    so predictions/renders/side records isolate automatically. The table dir
-    lives under results_dir, so tag it here too.
+    `config.paths.cache_dir` already carries any run tag, so predictions/renders/
+    side records isolate automatically. The table dir lives under results_dir, so
+    tag it here too.
     """
 
     table_partition = mode(config) if config.run_tag is None else f"{mode(config)}-{config.run_tag}"
