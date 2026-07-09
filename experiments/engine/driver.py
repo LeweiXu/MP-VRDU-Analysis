@@ -180,11 +180,48 @@ def _failed_result_row(orchestrator, cell, exc, machine):
         machine=machine, status=status, skipped_reason=reason, oom_occurred=(status == "oom"),
         answer="", score=0.0, correct=False, abstained=False, total_text_tokens=0, total_visual_tokens=0,
         text_tokens_fed=0, output_tokens=0, tokens_dropped=0, truncation_occurred=False,
-        latency_s=0.0, prefill_latency_s=0.0, decode_latency_s=0.0, peak_vram_bytes=0, note=note, metadata={},
+        latency_s=0.0, prefill_latency_s=0.0, decode_latency_s=0.0, peak_vram_bytes=0,
+        visual_resolution=orchestrator.visual_resolution, note=note, metadata={},
     )
 
 
-def generate(config, task, questions, *, limit=None, machine=None):
+def _cell_identity(cell, spec, resolution) -> tuple:
+    """The (question, doc, condition, rung, model, resolution) a cell and its row share."""
+
+    q = cell.question
+    return (q.id, q.doc_id, cell.conditioner.name, _modality_of(cell), spec, resolution)
+
+
+def _prepare_failed_only(results_path) -> set[tuple]:
+    """Drop failed rows from a results file and return the cells to re-run.
+
+    Reads the existing rows, keeps the `ok` ones, rewrites the file with just
+    those, and returns the identity of each dropped (failed) cell. Removing the
+    failed rows is what lets the re-run recompute them: a cell whose error row is
+    still cached would otherwise read straight back as a cache hit.
+    """
+
+    path = Path(results_path)
+    if not path.exists():
+        return set()
+    ok_rows: list[dict] = []
+    failed: set[tuple] = set()
+    for row in read_rows(path):
+        if (row.get("status") or "ok") == "ok":
+            ok_rows.append(row)
+        else:
+            failed.add((row.get("question_id"), row.get("doc_id"), row.get("condition"),
+                        row.get("representation"), row.get("model_spec"),
+                        row.get("visual_resolution", "")))
+    if not failed:
+        return set()
+    with path.open("w") as handle:
+        for row in ok_rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    return failed
+
+
+def generate(config, task, questions, *, limit=None, machine=None, failed_only=False):
     """Run one task's cells to a scored row each, then its side work.
 
     A parse pre-pass warms the retrieval and render caches with the reasoner not
@@ -193,7 +230,7 @@ def generate(config, task, questions, *, limit=None, machine=None):
     row (ok, or a status row on failure) via `run_cells`.
     """
 
-    from config import max_pixels_for_resolution
+    from config import VISUAL_RESOLUTION_PRESETS
     from experiments.engine.paths import experiment_paths, free_gpu
     from models import get_reasoner
     from pipeline.judge import StubJudge, get_judge
@@ -202,6 +239,13 @@ def generate(config, task, questions, *, limit=None, machine=None):
 
     machine = machine or current_machine()
     paths = experiment_paths(config, task.name)
+    failed_ids: set[tuple] | None = None
+    if failed_only:
+        failed_ids = _prepare_failed_only(paths.results)
+        if not failed_ids:
+            log.info("failed-only %s: no failed cells, nothing to retry", task.name)
+            return
+        log.info("failed-only %s: retrying %d failed cells", task.name, len(failed_ids))
     result_cache = ResultCache(paths.results)
     prediction_cache = PredictionCache(paths.predictions)
     retrievers = build_retrievers(config)
@@ -209,7 +253,9 @@ def generate(config, task, questions, *, limit=None, machine=None):
     if limit is not None:
         task_questions = task_questions[:limit]
     specs = task.model_specs(config)
-    log.info("generate %s | %d questions | specs=%s", task.name, len(task_questions), list(specs) or "(side-only)")
+    resolutions = config.visual_resolutions or (config.visual_resolution,)
+    log.info("generate %s | %d questions | specs=%s | resolutions=%s",
+             task.name, len(task_questions), list(specs) or "(side-only)", list(resolutions))
 
     class _SpecOnly(Reasoner):
         def __init__(self, spec):
@@ -219,11 +265,21 @@ def generate(config, task, questions, *, limit=None, machine=None):
             raise RuntimeError("spec-only reasoner must not run inference")
 
     for spec in specs:
-        cells = task.generation_cells(config, task_questions, retrievers=retrievers)
+        base_cells = task.generation_cells(config, task_questions, retrievers=retrievers)
+        if failed_ids is not None:
+            base_cells = [c for c in base_cells
+                          if any(_cell_identity(c, spec, r) in failed_ids for r in resolutions)]
+            if not base_cells:
+                log.info("failed-only %s: spec %s has no failed cells, skipping", task.name, spec)
+                continue
+
+        # Pre-pass (resolution-independent): warm the render / retrieval / parser
+        # caches once, with no reasoner resident. Resolution is a reasoner-side
+        # downscale, so it does not change what gets rendered or parsed here.
         prewarm = Orchestrator(config, reasoner=_SpecOnly(spec), judge=StubJudge("prewarm"),
                                cache=result_cache, prediction_cache=prediction_cache)
         parser_pages, seen_pages = [], set()
-        for cell in cells:
+        for cell in base_cells:
             try:
                 page_set = prewarm.prewarm_cell(cell.question, cell.conditioner, cell.representation)
             except Exception as exc:  # noqa: BLE001 - warming is best effort
@@ -241,24 +297,42 @@ def generate(config, task, questions, *, limit=None, machine=None):
         retrievers.vision.unload()
         free_gpu()
 
-        reasoner = get_reasoner(spec, max_pixels=max_pixels_for_resolution(config), max_new_tokens=config.max_tokens)
-        orchestrator = Orchestrator(config, reasoner=reasoner, judge=get_judge(config.judge_spec),
-                                    cache=result_cache, prediction_cache=prediction_cache, machine=machine)
+        # Reasoner loads once per spec; each resolution just changes the per-page
+        # vision-token budget (a processor-side downscale), so we reuse the loaded
+        # weights across resolutions rather than reloading them.
+        reasoner = get_reasoner(spec, max_pixels=VISUAL_RESOLUTION_PRESETS[resolutions[0]],
+                                max_new_tokens=config.max_tokens)
+        for resolution in resolutions:
+            cells = base_cells
+            if failed_ids is not None:
+                cells = [c for c in base_cells if _cell_identity(c, spec, resolution) in failed_ids]
+                if not cells:
+                    continue
+            reasoner.max_pixels = VISUAL_RESOLUTION_PRESETS[resolution]
+            orchestrator = Orchestrator(config, reasoner=reasoner, judge=get_judge(config.judge_spec),
+                                        cache=result_cache, prediction_cache=prediction_cache,
+                                        machine=machine, visual_resolution=resolution)
 
-        def run_one(cell):
-            return orchestrator.run_cell(cell.question, cell.conditioner, cell.representation, cell.prompt_mode)
+            def run_one(cell, _orch=orchestrator):
+                return _orch.run_cell(cell.question, cell.conditioner, cell.representation, cell.prompt_mode)
 
-        def on_failure(cell, exc):
-            row = _failed_result_row(orchestrator, cell, exc, machine)
-            result_cache.put(row)
-            log.error("cell FAILED q=%s rep=%s: %s", cell.question.id, cell.representation, row.skipped_reason)
-            return row
+            def on_failure(cell, exc, _orch=orchestrator):
+                row = _failed_result_row(_orch, cell, exc, machine)
+                result_cache.put(row)
+                log.error("cell FAILED q=%s rep=%s res=%s: %s",
+                          cell.question.id, cell.representation, _orch.visual_resolution, row.skipped_reason)
+                return row
 
-        run_cells(cells, run_one, on_failure=on_failure)
+            run_cells(cells, run_one, on_failure=on_failure)
+
         if hasattr(reasoner, "free"):
             reasoner.free()
         free_gpu()
 
+    if failed_only:
+        # A failed-only re-run retries reasoner cells; side artifacts (which have
+        # no per-cell status) are regenerated wholesale on a normal run.
+        return
     log.info("generate %s: side work", task.name)
     task.run_side(config, task_questions, paths.side_dir)
     free_gpu()

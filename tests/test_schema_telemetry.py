@@ -19,6 +19,8 @@ REQUIRED_TELEMETRY = {
     "latency_s", "prefill_latency_s", "decode_latency_s",
     # memory
     "peak_vram_bytes",
+    # resolution (per-cell key axis)
+    "visual_resolution",
     # skips / canary
     "oom_occurred", "tokens_dropped",
 }

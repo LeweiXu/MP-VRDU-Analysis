@@ -17,8 +17,6 @@ from collections import Counter
 from pathlib import Path
 
 os.environ.setdefault("MPVRDU_MACHINE", "kaya")
-# Use the real PaddleOCR-VL model (not the det+rec floor) for the paddleocrvl parser.
-os.environ.setdefault("MPVRDU_PADDLE_RICH", "1")
 
 ROOT = Path(__file__).resolve().parents[2]
 os.chdir(ROOT)

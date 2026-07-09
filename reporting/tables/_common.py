@@ -22,8 +22,9 @@ BIN_ORDER: tuple[str, ...] = DEFAULT_BINS
 UNLABELED = "(unlabeled)"
 
 # Identity of one cell (a prediction without its judge); used to collapse re-runs
-# and multi-judge history to a single row per cell before aggregating.
-IDENTITY_FIELDS = ("question_id", "doc_id", "condition", "representation", "model_spec")
+# and multi-judge history to a single row per cell before aggregating. Resolution
+# is part of it: two resolutions of the same cell are different cells.
+IDENTITY_FIELDS = ("question_id", "doc_id", "condition", "representation", "model_spec", "visual_resolution")
 
 
 @dataclass

@@ -9,7 +9,7 @@ class G1OracleLadder(GenerationTask):
     name = "G1_oracle_ladder"
 
     def model_specs(self, config) -> tuple[str, ...]:
-        return (config.reasoner_spec,)
+        return self._reasoner_specs(config)
 
     def generation_cells(self, config, questions, *, retrievers: Retrievers) -> list[Cell]:
         return oracle_ladder_cells(config, questions)

@@ -27,6 +27,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=None,
+                        help="alternate kaya JSON config listing the models/parsers/dataset to stage "
+                             "(default: ops/kaya/config.json). Use a trimmed config to stage only what "
+                             "a given spec needs, e.g. ops/kaya/h100_main.json")
     parser.add_argument("--local", action="store_true",
                         help="use this checkout's .cache/.data instead of Kaya remote paths")
     parser.add_argument("--smoke", action="store_true",
@@ -95,14 +99,11 @@ def prepare_hf_cache_env(cache_dir: Path) -> None:
     On Kaya these are already exported by the run wrapper; setting them here keeps
     the --local path (and any direct invocation) equally contained.
     """
+    from config import hf_cache_environ
+
     (cache_dir / "xet").mkdir(parents=True, exist_ok=True)
-    os.environ["HF_HOME"] = str(cache_dir)
-    os.environ["HF_HUB_CACHE"] = str(cache_dir)
-    os.environ["HF_XET_CACHE"] = str(cache_dir / "xet")
     # MinerU pulls aux models from HF (contained); cache ModelScope in-project too.
-    os.environ["MINERU_MODEL_SOURCE"] = "huggingface"
-    os.environ["MODELSCOPE_CACHE"] = str(cache_dir / "modelscope")
-    os.environ["PADDLE_PDX_MODEL_SOURCE"] = "huggingface"
+    os.environ.update(hf_cache_environ(cache_dir))
     os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir / "xdg"))
     os.environ.pop("TRANSFORMERS_CACHE", None)
 
@@ -117,7 +118,7 @@ def stage_all(model_ids: list[str], kind_label: str, revision, cache_dir, *, for
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config = load_config(ROOT / "ops" / "kaya" / "config.json")
+    config = load_config(args.config or ROOT / "ops" / "kaya" / "config.json")
     if args.local:
         cache_dir = ROOT / config.raw["paths"]["cache"]
         data_dir = ROOT / config.raw["paths"]["data"]

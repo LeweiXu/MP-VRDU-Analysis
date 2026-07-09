@@ -65,8 +65,10 @@ PROMPT_MODES: dict[str, str] = {
     ),
 }
 DEFAULT_PROMPT_MODE = "targeted"
-# The three conditions the hallucination task sweeps (no guidance / generic / abstention-targeted).
-G3_PROMPT_MODES: tuple[str, ...] = ("none", "generic", "targeted")
+# The conditions the hallucination task sweeps: generic and abstention-targeted.
+# The "no guidance" (none) arm is dropped because G1 already covers unprompted
+# behaviour.
+G3_PROMPT_MODES: tuple[str, ...] = ("generic", "targeted")
 
 
 # Named visual-resolution presets. Value = per-page pixel cap = tokens_per_page *
@@ -76,11 +78,9 @@ G3_PROMPT_MODES: tuple[str, ...] = ("none", "generic", "targeted")
 # representation parameter held identical across machines, since a lower-res image
 # is a genuinely different (lossier) input.
 VISUAL_RESOLUTION_PRESETS: dict[str, int] = {
-    "full": 1280 * 28 * 28,  # 1,003,520 px  ~1280 tok/page
-    "high": 768 * 28 * 28,   #   602,112 px   ~768 tok/page
-    "med": 512 * 28 * 28,    #   401,408 px   ~512 tok/page
-    "low": 320 * 28 * 28,    #   250,880 px   ~320 tok/page
-    "min": 224 * 28 * 28,    #   175,616 px   ~224 tok/page
+    "high": 960 * 28 * 28,   #   752,640 px   ~960 tok/page
+    "med": 640 * 28 * 28,    #   501,760 px   ~640 tok/page
+    "low": 400 * 28 * 28,    #   313,600 px   ~400 tok/page
 }
 
 # The single fixed resolution used by every table except the scientific sweep.
@@ -95,6 +95,27 @@ def max_pixels_for_resolution(config: "ExperimentConfig") -> int:
     """Per-page pixel cap for a run's chosen visual-resolution preset."""
 
     return VISUAL_RESOLUTION_PRESETS[config.visual_resolution]
+
+
+def hf_cache_environ(cache_dir: Path) -> dict[str, str]:
+    """Cache-location env vars that point every model download and load, plus the
+    parser subprocesses, at `cache_dir`.
+
+    Shared by prestage (which forces them before downloading) and the generate
+    entry point (which sets them only if unset, so a Kaya run's own exports win).
+    This is what lets a direct run on another machine, e.g. the H100 supervisor,
+    find the prestaged weights without any manual exports.
+    """
+
+    cache = str(cache_dir)
+    return {
+        "HF_HOME": cache,
+        "HF_HUB_CACHE": cache,
+        "HF_XET_CACHE": str(Path(cache) / "xet"),
+        "MODELSCOPE_CACHE": str(Path(cache) / "modelscope"),
+        "MINERU_MODEL_SOURCE": "huggingface",
+        "PADDLE_PDX_MODEL_SOURCE": "huggingface",
+    }
 
 
 @dataclass(frozen=True)
@@ -113,6 +134,11 @@ class ExperimentConfig:
         "qwen3vl-8b-local",
         "qwen3vl-32b-local",
     )
+    # Optional explicit reasoner list for a size/family sweep. When non-empty the
+    # reasoner tasks generate one pass per spec (freeing the GPU between them)
+    # instead of the single reasoner_spec; empty means just reasoner_spec. Set it
+    # to `scaling_specs` for the model-size sweep.
+    reasoner_specs: tuple[str, ...] = ()
     judge_spec: str = "stub"
 
     # Input conditions and the top-k depths swept for retrieved conditions.
@@ -132,8 +158,9 @@ class ExperimentConfig:
     # Pre-registered sufficiency margin in accuracy points.
     sufficiency_margin: float = 3.0
 
-    # Rendering / sampling knobs.
-    dpi: int = 144
+    # Rendering / sampling knobs. dpi is the render resolution the OCR/parser sees
+    # (the VLM downsamples to visual_resolution), so it is set for parser quality.
+    dpi: int = 200
     sample: int | None = None
     # Per-bin document-level subset for full runs: whole documents are drawn per
     # bin until it reaches this many questions, preserving doc-coherent sampling
@@ -146,10 +173,12 @@ class ExperimentConfig:
     quantization: str | None = None
     max_tokens: int = DEFAULT_MAX_TOKENS
 
-    # The single visual-resolution preset this run feeds every reasoner. Defaults
-    # to the fixed deployment resolution; the scientific resolution sweep is the
-    # only run that overrides it per table.
+    # The visual-resolution preset this run feeds a cell when it is not sweeping.
     visual_resolution: str = DEPLOYMENT_RESOLUTION
+    # Optional list of presets to sweep: the reasoner runs every cell once per
+    # preset, and the preset is part of the cell key so the runs never collide.
+    # Empty means just `visual_resolution`. Set it for the resolution sweep.
+    visual_resolutions: tuple[str, ...] = ()
 
     # Optional per-run cache namespace nested under the versioned cache root, so
     # two runs sharing an experiment selection (e.g. two full runs with different
@@ -161,13 +190,20 @@ class ExperimentConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "bins", tuple(self.bins))
         object.__setattr__(self, "representations", tuple(self.representations))
+        object.__setattr__(self, "reasoner_specs", tuple(self.reasoner_specs))
         if self.smoke:
             object.__setattr__(self, "reasoner_spec", SMOKE_REASONER_SPEC)
+            object.__setattr__(self, "reasoner_specs", ())  # smoke never sweeps
             object.__setattr__(self, "max_tokens", min(int(self.max_tokens), SMOKE_MAX_TOKENS))
         if self.quantization is not None:
             if self.quantization not in ("4bit", "8bit"):
                 raise ValueError(f"quantization must be None, '4bit', or '8bit', got {self.quantization!r}")
             object.__setattr__(self, "reasoner_spec", f"{self.reasoner_spec}-{self.quantization}")
+            if self.reasoner_specs:
+                object.__setattr__(
+                    self, "reasoner_specs",
+                    tuple(f"{spec}-{self.quantization}" for spec in self.reasoner_specs),
+                )
         if self.parser_tool not in ("paddleocrvl", "mineru", "unlimited"):
             raise ValueError(
                 f"parser_tool must be one of paddleocrvl/mineru/unlimited, got {self.parser_tool!r}"
@@ -176,6 +212,13 @@ class ExperimentConfig:
             raise ValueError(
                 f"visual_resolution must be one of {sorted(VISUAL_RESOLUTION_PRESETS)}, "
                 f"got {self.visual_resolution!r}"
+            )
+        object.__setattr__(self, "visual_resolutions", tuple(self.visual_resolutions))
+        unknown_res = [r for r in self.visual_resolutions if r not in VISUAL_RESOLUTION_PRESETS]
+        if unknown_res:
+            raise ValueError(
+                f"visual_resolutions must each be one of {sorted(VISUAL_RESOLUTION_PRESETS)}, "
+                f"got {unknown_res}"
             )
         if self.run_tag is not None:
             tag = self.run_tag

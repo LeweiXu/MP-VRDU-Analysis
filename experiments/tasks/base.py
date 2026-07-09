@@ -53,6 +53,17 @@ class GenerationTask(ABC):
 
         return ()
 
+    def _reasoner_specs(self, config: ExperimentConfig) -> tuple[str, ...]:
+        """The reasoner sweep list if set, else the single reasoner_spec.
+
+        The driver runs one generation pass per spec, freeing the GPU between
+        them, so returning several specs here (via `config.reasoner_specs`) is the
+        model-size / family sweep. Each spec's cells key on its own model spec, so
+        the passes never collide in cache.
+        """
+
+        return tuple(config.reasoner_specs) or (config.reasoner_spec,)
+
     def resolve_questions(self, config: ExperimentConfig, questions: Sequence[Question]) -> Sequence[Question]:
         """The corpus this task runs on, bound to its answerable/unanswerable pool."""
 

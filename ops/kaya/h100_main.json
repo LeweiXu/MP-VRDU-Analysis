@@ -1,0 +1,24 @@
+{
+  "_comment": "Trimmed prestage config for ops/specs/h100_main.yaml: only what the 8B G1 ladder run needs. G1 uses oracle pages, so no retrievers; only the paddleocrvl parser and MMLongBench. Pass to prestage with --config.",
+  "remote_root": "/group/ems036/lxu/mpvrdu",
+  "paths": {
+    "cache": ".cache",
+    "data": ".data",
+    "env": "envs/core",
+    "results": "results",
+    "logs": "logs"
+  },
+  "hf": {
+    "max_workers": 8
+  },
+  "models": [
+    "Qwen/Qwen3-VL-8B-Instruct"
+  ],
+  "retrieval_models": {},
+  "parsers": {
+    "paddleocrvl": "PaddlePaddle/PaddleOCR-VL"
+  },
+  "datasets": {
+    "mmlongbench": "yubo2333/MMLongBench-Doc"
+  }
+}

@@ -16,7 +16,7 @@ class G2Retrieval(GenerationTask):
         return tuple(config.k_values) if config.k_values else (1,)
 
     def model_specs(self, config) -> tuple[str, ...]:
-        return (config.reasoner_spec,)
+        return self._reasoner_specs(config)
 
     def generation_cells(self, config, questions, *, retrievers: Retrievers) -> list[Cell]:
         return matched_cross_sweep_cells(questions, retrievers=retrievers, ks=self._k_values(config))

@@ -748,6 +748,22 @@ def print_user_jobs(config: KayaConfig, label: str) -> int:
     return len(jobs)
 
 
+def handle_kill(config: KayaConfig, args: argparse.Namespace) -> None:
+    """Cancel a single SLURM job by id (defaults to the last submitted job)."""
+
+    job_id = args.job_id or last_job_id()
+    simple_job_id = job_id.split(";", 1)[0]
+    print(f"[kill] scancel {simple_job_id} on {config.ssh_alias}")
+    result = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=10", config.ssh_alias, f"scancel {quote(simple_job_id)}"],
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(f"scancel exited {result.returncode}")
+    print(f"[kill] cancelled {simple_job_id}")
+
+
 def handle_cancel(config: KayaConfig, args: argparse.Namespace) -> None:
     """Cancel SLURM jobs: explicit id(s), by --job-name, or --all (this user)."""
 
@@ -1060,6 +1076,9 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--no-pull", action="store_true", help="do not pull logs/results before printing tails")
     watch.add_argument("--tail-lines", type=int, default=120, help="number of log lines to print")
 
+    kill = sub.add_parser("kill", help="cancel a single SLURM job by id (defaults to the last submitted job)")
+    kill.add_argument("job_id", nargs="?", help="SLURM job id to cancel; defaults to .kaya_last_job")
+
     cancel = sub.add_parser("cancel", help="cancel your SLURM jobs: explicit ids, --job-name, or --all")
     cancel.add_argument("job_id", nargs="*", help="specific job id(s) to cancel")
     cancel.add_argument("--all", action="store_true", help="cancel all of your jobs")
@@ -1115,6 +1134,8 @@ def main(argv: list[str] | None = None) -> int:
         handle_submit(config, args)
     elif args.command == "watch":
         handle_watch(config, args)
+    elif args.command == "kill":
+        handle_kill(config, args)
     elif args.command == "cancel":
         handle_cancel(config, args)
     elif args.command == "clear-cache":

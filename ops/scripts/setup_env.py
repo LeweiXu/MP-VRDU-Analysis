@@ -6,9 +6,14 @@ the machine's CUDA wheel index, installs the env's requirements from
 `docs/requirements/`, and runs `pip check`. Model and dataset downloads are not
 here; they live in `prestage.py`.
 
-Run one env or all four:
+Run one env or all four on Kaya (via the login-node runner):
     python -m ops.kaya.kaya run ops/scripts/setup_env.py -- --machine kaya --env core
     python -m ops.kaya.kaya run ops/scripts/setup_env.py -- --machine kaya --env all
+
+Or run it directly on the machine you are on (e.g. the H100 supervisor), building
+the envs inside this checkout at `envs/<name>` where the rest of the code looks
+for them:
+    python -m ops.scripts.setup_env --machine supervisor --env all --local
 """
 
 # kaya: target=login
@@ -53,8 +58,13 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
-def env_prefix(config, name: str) -> Path:
-    return Path(config.remote_root) / "envs" / name
+def env_prefix(config, name: str, *, local: bool = False) -> Path:
+    """Where env `name` is built: this checkout's `envs/` when local, else the
+    Kaya remote root. Local matches `config.DEFAULT_PATHS.env_dir`, which is where
+    the parser worker and reasoner resolve their interpreters."""
+
+    root = ROOT if local else Path(config.remote_root)
+    return root / "envs" / name
 
 
 def install_framework(python: list[str], machine_cfg: dict, env_name: str, env_cfg: dict) -> None:
@@ -70,10 +80,11 @@ def install_framework(python: list[str], machine_cfg: dict, env_name: str, env_c
          f"torch=={torch_v}", f"torchvision=={tv_v}"])
 
 
-def build_env(config, machine: str, env_name: str, python_version: str, *, skip_pip_check: bool) -> None:
+def build_env(config, machine: str, env_name: str, python_version: str, *, skip_pip_check: bool,
+              local: bool = False) -> None:
     machine_cfg = MACHINES[machine]
     env_cfg = ENVS[env_name]
-    prefix = env_prefix(config, env_name)
+    prefix = env_prefix(config, env_name, local=local)
     prefix.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\n[setup_env] ==== {env_name} on {machine} ({machine_cfg['cuda']}) ====", flush=True)
@@ -86,7 +97,13 @@ def build_env(config, machine: str, env_name: str, python_version: str, *, skip_
     run([*python, "-m", "pip", "install", "-r", str(REQUIREMENTS / env_cfg["req"])])
     if machine_cfg["flash_attn"] and env_cfg["framework"] == "torch":
         # H100 (sm_90) has FlashAttention-2; V100/Blackwell-local do not build it.
-        run([*python, "-m", "pip", "install", "flash-attn", "--no-build-isolation"])
+        # Best-effort: the reasoner falls back to the memory-efficient SDPA kernel
+        # if this wheel can't build, so a failed build must not sink the whole env.
+        try:
+            run([*python, "-m", "pip", "install", "flash-attn", "--no-build-isolation"])
+        except subprocess.CalledProcessError as exc:
+            print(f"[setup_env] WARNING: flash-attn build failed ({exc}); "
+                  "continuing without it (the reasoner uses SDPA).", flush=True)
     if not skip_pip_check:
         run([*python, "-m", "pip", "check"])
     # Report the framework version. Runs on the GPU-less login node, where paddle
@@ -109,6 +126,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env", choices=[*sorted(ENVS), "all"], default="all")
     parser.add_argument("--python", help="python version for new envs (default from config)")
     parser.add_argument("--skip-pip-check", action="store_true")
+    parser.add_argument("--local", action="store_true",
+                        help="build envs in this checkout's envs/ (run directly on the target machine, "
+                             "e.g. the H100 supervisor) instead of the Kaya remote root")
     return parser
 
 
@@ -118,8 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     python_version = args.python or str(config.raw.get("python_version", "3.11"))
     names = list(ENVS) if args.env == "all" else [args.env]
     for name in names:
-        build_env(config, args.machine, name, python_version, skip_pip_check=args.skip_pip_check)
-    print(f"\n[setup_env] done: {', '.join(names)} on {args.machine}", flush=True)
+        build_env(config, args.machine, name, python_version,
+                  skip_pip_check=args.skip_pip_check, local=args.local)
+    print(f"\n[setup_env] done: {', '.join(names)} on {args.machine}"
+          f"{' (local checkout)' if args.local else ''}", flush=True)
     return 0
 
 

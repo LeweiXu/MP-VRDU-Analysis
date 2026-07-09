@@ -3,13 +3,29 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 
-from config import DEPLOYMENT_RESOLUTION, ExperimentConfig
+from config import DEPLOYMENT_RESOLUTION, ExperimentConfig, hf_cache_environ
 from data.binning import stamp_bins
 from data.loader import load_mmlongbench
 from experiments.engine.driver import generate
 from experiments.engine.paths import configure_logging
 from experiments.registry import resolve
+
+log = logging.getLogger("mpvrdu.generate")
+
+
+def ensure_cache_env(config: ExperimentConfig) -> None:
+    """Point HF and the parser subprocesses at the in-project cache if unset.
+
+    Lets a direct run (e.g. on the H100 supervisor after prestage --local) find
+    the staged weights with no manual exports. Uses setdefault so a Kaya job's own
+    exports, or anything the operator set, always win.
+    """
+
+    for name, value in hf_cache_environ(config.paths.hf_home).items():
+        os.environ.setdefault(name, value)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,10 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoner-spec", default="qwen3vl-2b-local")
     parser.add_argument("--quantization", choices=("4bit", "8bit"), default=None)
     parser.add_argument("--visual-resolution", default=DEPLOYMENT_RESOLUTION,
-                        help="resolution preset (min/low/med/high/full)")
+                        help="resolution preset (low/med/high)")
     parser.add_argument("--judge-spec", default="stub")
     parser.add_argument("--run-tag", default=None, help="per-run cache namespace (isolates a run's cells)")
     parser.add_argument("--limit", type=int, default=None, help="cap questions per task (smoke/debug)")
+    parser.add_argument("--failed-only", action="store_true",
+                        help="re-run only the cells that failed (status != ok) in a previous run, "
+                             "upgrading them in place; ok cells and side artifacts are left alone")
     parser.add_argument("--allow-unlabelled", action="store_true",
                         help="don't require every doc to be binned (smoke/probe only; real runs stay strict)")
     parser.add_argument("--verbose", action="store_true")
@@ -35,12 +54,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(args.verbose)
 
     if args.spec:
-        from experiments.corpus.yaml_spec import config_from_spec, corpus_limit, load_yaml_spec
+        from experiments.corpus.yaml_spec import config_from_spec, corpus_limit, load_yaml_specs
 
-        spec = load_yaml_spec(args.spec)
-        config = config_from_spec(spec)
-        selector = spec.task
-        limit = args.limit if args.limit is not None else corpus_limit(spec)
+        runs = [
+            (config_from_spec(spec), spec.task,
+             args.limit if args.limit is not None else corpus_limit(spec))
+            for spec in load_yaml_specs(args.spec)
+        ]
     else:
         config = ExperimentConfig(
             reasoner_spec=args.reasoner_spec,
@@ -49,12 +69,19 @@ def main(argv: list[str] | None = None) -> int:
             judge_spec=args.judge_spec,
             run_tag=args.run_tag,
         )
-        selector = args.task
-        limit = args.limit
+        runs = [(config, args.task, args.limit)]
 
-    questions = stamp_bins(load_mmlongbench(config.paths.data_dir), require_complete=not args.allow_unlabelled)
-    for task in resolve(selector):
-        generate(config, task, questions, limit=limit)
+    # The dataset and HF cache location are the same across runs (run_tag only
+    # nests the results cache), so load questions and set the cache env once.
+    first_config = runs[0][0]
+    ensure_cache_env(first_config)
+    questions = stamp_bins(load_mmlongbench(first_config.paths.data_dir),
+                           require_complete=not args.allow_unlabelled)
+    for config, selector, limit in runs:
+        if config.run_tag:
+            log.info("run_tag=%s | task=%s", config.run_tag, selector)
+        for task in resolve(selector):
+            generate(config, task, questions, limit=limit, failed_only=args.failed_only)
     return 0
 
 

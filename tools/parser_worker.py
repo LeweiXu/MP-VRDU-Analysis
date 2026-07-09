@@ -8,7 +8,6 @@ and nothing from the project is imported, so a minimal parser env can run it.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import traceback
 from pathlib import Path
@@ -36,78 +35,39 @@ def _page_image(job: dict, dpi: int) -> str:
 
 # -- paddleocrvl -------------------------------------------------------------
 
-_PADDLE = None
-
-
-def _paddle_basic(image_path: str) -> str:
-    """Read-order text join from PaddleOCR det+rec (offline-friendly floor)."""
-
-    global _PADDLE
-    if _PADDLE is None:
-        from paddleocr import PaddleOCR
-
-        _PADDLE = PaddleOCR(
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            lang="en",
-        )
-    result = _PADDLE.predict(image_path)
-    if not result:
-        return ""
-    res = result[0]
-    texts = res.get("rec_texts") if hasattr(res, "get") else None
-    return "\n".join(t for t in (texts or []) if t).strip()
-
-
-def _paddle_structure(image_path: str) -> str:
-    """PP-StructureV3 layout-aware markdown (needs the layout models present)."""
-
-    from paddleocr import PPStructureV3
-
-    pipeline = PPStructureV3()
-    result = pipeline.predict(image_path)
-    parts = []
-    for res in result:
-        md = res.get("markdown") if hasattr(res, "get") else getattr(res, "markdown", None)
-        if isinstance(md, dict):
-            md = md.get("markdown_texts") or md.get("text")
-        if md:
-            parts.append(str(md))
-    return "\n\n".join(parts).strip()
-
-
-def _paddle_vl(image_path: str, model_id: str) -> str:
-    """PaddleOCR-VL end-to-end VLM parser markdown (richer envs only)."""
-
-    from paddleocr import PaddleOCRVL
-
-    pipeline = PaddleOCRVL()
-    result = pipeline.predict(image_path)
-    parts = []
-    for res in result:
-        md = res.get("markdown") if hasattr(res, "get") else getattr(res, "markdown", None)
-        if isinstance(md, dict):
-            md = md.get("markdown_texts") or md.get("text")
-        if md:
-            parts.append(str(md))
-    return "\n\n".join(parts).strip()
+_PADDLE_VL = None
+PADDLE_PIPELINE_VERSION = "v1"  # PaddleOCR-VL-0.9B
 
 
 def _paddleocrvl(image_path: str, model_id: str) -> str:
-    """Best available paddle markdown. The richer VLM / structure paths need
-    extra models, so they are gated behind MPVRDU_PADDLE_RICH; the det+rec floor
-    runs anywhere the base PaddleOCR weights are staged."""
+    """Run the full PaddleOCR-VL-0.9B page parser.
 
-    if os.environ.get("MPVRDU_PADDLE_RICH"):
-        for attempt in (lambda p: _paddle_vl(p, model_id), _paddle_structure):
-            try:
-                text = attempt(image_path)
-                if text:
-                    return text
-            except Exception:  # noqa: BLE001 - cascade to the offline floor
-                traceback.print_exc()
-    return _paddle_basic(image_path)
+    ``pipeline_version="v1"`` explicitly selects the original 0.9B pipeline.
+    There is deliberately no basic OCR or PP-Structure fallback: selecting
+    ``paddleocrvl`` must either use the registered model or fail visibly.
+    """
+
+    del model_id  # The Paddle pipeline registry selects its own v1 model bundle.
+    global _PADDLE_VL
+    if _PADDLE_VL is None:
+        from paddleocr import PaddleOCRVL
+
+        _PADDLE_VL = PaddleOCRVL(pipeline_version=PADDLE_PIPELINE_VERSION)
+    result = _PADDLE_VL.predict(image_path)
+    parts = []
+    for res in result:
+        # paddleocr 3.7 exposes the page markdown as a computed `.markdown`
+        # property (a dict with `markdown_texts`); `.get("markdown")` is not a
+        # stored key and returns None, so prefer the property and fall back to the
+        # mapping for older layouts.
+        md = getattr(res, "markdown", None)
+        if md is None and hasattr(res, "get"):
+            md = res.get("markdown")
+        if isinstance(md, dict):
+            md = md.get("markdown_texts") or md.get("text") or md.get("markdown")
+        if md:
+            parts.append(str(md))
+    return "\n\n".join(parts).strip()
 
 
 # -- transformers VLM parsers (mineru / unlimited) ---------------------------

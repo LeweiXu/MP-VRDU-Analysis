@@ -33,12 +33,14 @@ def prediction_key(
     representation: str,
     model_spec: str,
     page_indices,
+    visual_resolution: str = "",
 ) -> str:
     """Deterministic hash of everything a reasoner prediction depends on.
 
     Excludes the judge spec: one prediction can be scored by any number of
-    judges, so the reasoner runs once and every judge reuses it. The resolution
-    preset is a run-manifest field, not part of the key.
+    judges, so the reasoner runs once and every judge reuses it. The visual
+    resolution IS part of the key: a lower-res image is a genuinely different
+    (lossier) input, so two resolutions of the same cell are distinct cells.
     """
 
     payload = json.dumps(
@@ -49,6 +51,7 @@ def prediction_key(
             "representation": representation,
             "model_spec": model_spec,
             "page_indices": list(page_indices),
+            "visual_resolution": visual_resolution,
         },
         sort_keys=True,
     )
@@ -63,6 +66,7 @@ def result_key(
     model_spec: str,
     page_indices,
     judge_spec: str,
+    visual_resolution: str = "",
 ) -> str:
     """Prediction key plus the judge spec: the key for a fully-scored result."""
 
@@ -75,6 +79,7 @@ def result_key(
             "model_spec": model_spec,
             "page_indices": list(page_indices),
             "judge_spec": judge_spec,
+            "visual_resolution": visual_resolution,
         },
         sort_keys=True,
     )

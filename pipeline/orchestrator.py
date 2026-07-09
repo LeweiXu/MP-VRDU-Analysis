@@ -94,6 +94,7 @@ class CachedPrediction:
     prefill_latency_s: float
     decode_latency_s: float
     peak_vram_bytes: int
+    visual_resolution: str = ""
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -169,6 +170,7 @@ class Orchestrator:
         cache: ResultCache | None = None,
         prediction_cache: PredictionCache | None = None,
         machine: str | None = None,
+        visual_resolution: str | None = None,
     ) -> None:
         self.config = config
         self.reasoner = reasoner if reasoner is not None else get_reasoner(config.reasoner_spec)
@@ -177,6 +179,8 @@ class Orchestrator:
         self.cache = cache if cache is not None else ResultCache(cache_path)
         self.prediction_cache = prediction_cache
         self.machine = machine or current_machine()
+        # The resolution this orchestrator feeds every cell; part of the cell key.
+        self.visual_resolution = visual_resolution or config.visual_resolution
         self._page_count_cache: dict[str, int] = {}
 
     # -- page resolution --------------------------------------------------
@@ -202,11 +206,12 @@ class Orchestrator:
     def _keys(self, question: Question, conditioner: InputConditioner, modality: str,
               page_indices: tuple[int, ...]) -> tuple[str, str]:
         prediction_key = make_prediction_key(
-            question.id, question.doc_id, conditioner.name, modality, self.reasoner.spec, page_indices
+            question.id, question.doc_id, conditioner.name, modality, self.reasoner.spec,
+            page_indices, self.visual_resolution,
         )
         result_key = make_result_key(
             question.id, question.doc_id, conditioner.name, modality, self.reasoner.spec,
-            page_indices, self.judge.spec,
+            page_indices, self.judge.spec, self.visual_resolution,
         )
         return prediction_key, result_key
 
@@ -307,6 +312,7 @@ class Orchestrator:
             prefill_latency_s=prediction.prefill_latency_s,
             decode_latency_s=prediction.decode_latency_s,
             peak_vram_bytes=prediction.peak_vram_bytes,
+            visual_resolution=self.visual_resolution,
             note=page_set.note,
             metadata={"source_dataset": question.raw_fields.get("source_dataset", self.config.dataset)},
         )
@@ -354,6 +360,7 @@ class Orchestrator:
                     prefill_latency_s=prediction.prefill_latency_s,
                     decode_latency_s=prediction.decode_latency_s,
                     peak_vram_bytes=prediction.peak_vram_bytes,
+                    visual_resolution=self.visual_resolution,
                 )
             )
         return prediction

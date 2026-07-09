@@ -301,6 +301,8 @@ class ResultRow:
     decode_latency_s: float
     # memory
     peak_vram_bytes: int
+    # the visual-resolution preset this cell was fed (part of the cell key)
+    visual_resolution: str = ""
     note: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 

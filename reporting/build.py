@@ -9,8 +9,10 @@ from typing import Any
 
 # Fields that together identify one prediction (a cell without its judge). Rows
 # sharing these belong to the same cell, so grouping on them collapses a
-# multi-judge or re-run history down to one cell.
-IDENTITY_FIELDS = ("question_id", "doc_id", "condition", "representation", "model_spec")
+# multi-judge or re-run history down to one cell. Resolution is part of the cell
+# identity (it changes the image the model sees), so two resolutions of the same
+# cell stay distinct.
+IDENTITY_FIELDS = ("question_id", "doc_id", "condition", "representation", "model_spec", "visual_resolution")
 
 
 def _field(row: Any, name: str, default: Any = "") -> Any:

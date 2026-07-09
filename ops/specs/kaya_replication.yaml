@@ -1,0 +1,38 @@
+# Future experiment (not part of the main run): the model-family replication and
+# the quantization sweep, both on Kaya. Kept separate from kaya.yaml so the main
+# run stays lean; wire it in when you're ready.
+#
+#     python -m ops.generate --spec ops/specs/kaya_replication.yaml
+#
+# Note: InternVL3-8B and the bf16 8B need 2xV100 on Kaya; the 4-bit/8-bit runs fit
+# a single V100.
+
+base:
+  corpus: {sampling: full}
+  parser: paddleocrvl
+  judge_spec: stub
+
+runs:
+  # Model-family replication: the full oracle ladder on InternVL3-8B at the
+  # deployment resolution, to compare against the Qwen3-VL-8B headline.
+  - task: G1_oracle_ladder
+    run_tag: g1-internvl
+    reasoner_spec: internvl3-8b-local
+    visual_resolution: med
+    representations: [T, TL, TLV, V]
+
+  # Quantization sweep at 8B: 4-bit and 8-bit. (bf16 is the main run's g1-size 8B,
+  # so it is not repeated here.) The quantization is appended to the model spec, so
+  # these cache apart from the bf16 rows.
+  - task: G1_oracle_ladder
+    run_tag: g1-8b-4bit
+    reasoner_spec: qwen3vl-8b-local
+    quantization: 4bit
+    visual_resolution: med
+    representations: [T, TL, TLV, V]
+  - task: G1_oracle_ladder
+    run_tag: g1-8b-8bit
+    reasoner_spec: qwen3vl-8b-local
+    quantization: 8bit
+    visual_resolution: med
+    representations: [T, TL, TLV, V]

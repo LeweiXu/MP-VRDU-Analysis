@@ -52,6 +52,7 @@
     "Qwen/Qwen3-VL-2B-Instruct",
     "Qwen/Qwen3-VL-4B-Instruct",
     "Qwen/Qwen3-VL-8B-Instruct",
+    "Qwen/Qwen3-VL-32B-Instruct",
     "OpenGVLab/InternVL3-8B"
   ],
   "retrieval_models": {

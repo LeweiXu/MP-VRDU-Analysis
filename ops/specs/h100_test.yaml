@@ -1,0 +1,20 @@
+# H100 smoke test: same shape as h100_main.yaml (Qwen3-VL-8B, full T/TL/TLV/V
+# ladder on oracle pages, at med) but capped at 5 questions with its own run_tag.
+# Run this first to confirm the whole pipeline works end to end (including the
+# GPU paddleocr-vl parser on the TL/TLV rungs) before committing to the long
+# h100_main.yaml run.
+#
+#     python -m ops.generate --spec ops/specs/h100_test.yaml
+#     python -m ops.scripts.check_run --spec ops/specs/h100_test.yaml
+
+base:
+  corpus: {sampling: {limit: 5}}
+  parser: paddleocrvl
+  judge_spec: stub            # judge later with `python -m ops.judge`
+
+runs:
+  - task: G1_oracle_ladder
+    run_tag: g1-8b-test
+    reasoner_spec: qwen3vl-8b-local
+    visual_resolution: med
+    representations: [T, TL, TLV, V]

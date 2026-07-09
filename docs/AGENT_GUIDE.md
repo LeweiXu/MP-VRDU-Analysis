@@ -156,14 +156,25 @@ page-encoder); `Reasoner.answer(question, model_input)`;
 shape. Additive optional kwargs and side caches behind these are not freeze
 changes.
 
+**Checkpoint 2026-07-09: `visual_resolution` added to the cell key + `ResultRow`.**
+Resolution used to be a per-run manifest field, deliberately *out* of the key, so a
+resolution sweep meant one run per preset. It is now a per-cell axis: the preset is
+part of both cache keys and is stamped on `ResultRow`/`CachedPrediction`, so a
+single run can sweep resolution via `visual_resolutions` and the presets never
+collide. A lower-res image is a genuinely different (lossier) input, so this is the
+honest identity. Machine-independence holds (resolution is a config value, not a
+device property). `IDENTITY_FIELDS` in reporting gained `visual_resolution` to
+match, and `resolution.build` now pivots by the per-cell preset.
+
 **Caching (two layers, both under `results/cache/`).** (1) `ResultCache` - one
 `ResultRow` per cell keyed by SHA-256 over `{question_id, doc_id, condition,
-representation, model_spec, judge_spec, dpi}`; idempotent + resumable from disk.
-(2) `PredictionCache` (additive) - the reasoner output keyed the same way **minus
-judge_spec**, so one prediction is scored by any judge without re-running the
-model. `k`/burying level are encoded in the conditioner name (`retrieved_k3`,
-`buried_n10`). Model spec is in both keys, so scaling/family sweeps produce
-distinct, mergeable rows.
+representation, model_spec, page_indices, visual_resolution, judge_spec}`;
+idempotent + resumable from disk. (2) `PredictionCache` (additive) - the reasoner
+output keyed the same way **minus judge_spec**, so one prediction is scored by any
+judge without re-running the model. `k` is encoded in the conditioner name
+(`retrieved_k3`). Model spec and resolution are in both keys, so scaling / family /
+resolution sweeps produce distinct, mergeable rows. dpi is *not* in the cell key
+(it keys the render/parser disk caches instead).
 
 **Swap point.** The pipeline never imports a backend; it asks `get_reasoner(spec)`
 for a `Reasoner` and hands it a `ModelInput`. Adding a Qwen size or

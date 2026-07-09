@@ -1,0 +1,29 @@
+# Smoke test of kaya.yaml: the same runs (same tasks, sizes, resolutions, rungs),
+# but capped at 2 questions per task and written to its own -smoke cache
+# namespaces so it never touches the real run. Use it to confirm the whole Kaya
+# spec goes end to end before launching the full job.
+#
+#     python -m ops.generate --spec ops/specs/kaya_smoke.yaml
+#
+# The only differences from kaya.yaml are `corpus: {sampling: {limit: 2}}` and the
+# `-smoke` run_tag suffixes.
+
+base:
+  corpus: {sampling: {limit: 2}}   # 2 questions per task (the only real change)
+  parser: paddleocrvl
+  judge_spec: stub
+
+runs:
+  - task: G1_oracle_ladder
+    run_tag: g1-size-kaya-smoke
+    reasoner_specs: [qwen3vl-2b-local, qwen3vl-4b-local, qwen3vl-8b-local]
+    visual_resolution: med
+    representations: [T, TL, TLV, V]
+
+  - task: G1_oracle_ladder
+    run_tag: g1-res-smoke
+    reasoner_spec: qwen3vl-8b-local
+    representations: [TLV, V]
+    visual_resolutions: [low, med, high]
+
+  - {task: G3_hallucination, run_tag: g3-smoke, reasoner_spec: qwen3vl-8b-local, visual_resolution: med}

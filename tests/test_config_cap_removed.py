@@ -17,5 +17,5 @@ def test_resolution_presets_present() -> None:
     config = importlib.import_module("config")
     presets = getattr(config, "VISUAL_RESOLUTION_PRESETS", None)
     assert presets, "config must keep VISUAL_RESOLUTION_PRESETS"
-    # cost-ordered rungs; values are per-page pixel caps.
-    assert set(presets) >= {"min", "low", "med", "high", "full"}
+    # cost-ordered presets; values are per-page pixel caps.
+    assert set(presets) == {"low", "med", "high"}

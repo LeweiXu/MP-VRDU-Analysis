@@ -16,7 +16,7 @@ class G3Hallucination(GenerationTask):
     name = "G3_hallucination"
 
     def model_specs(self, config) -> tuple[str, ...]:
-        return (config.reasoner_spec,)
+        return self._reasoner_specs(config)
 
     def generation_cells(self, config, questions, *, retrievers: Retrievers) -> list[Cell]:
         # Same similarity pages under each prompt condition (no guidance / generic /
