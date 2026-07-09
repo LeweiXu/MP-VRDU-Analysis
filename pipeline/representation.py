@@ -43,28 +43,29 @@ class LadderRepresentation(Representation):
     from the warmed disk cache) instead; TLV and V attach the page images.
     """
 
-    def __init__(self, modality: str, parser_tool: str = DEFAULT_PARSER) -> None:
+    def __init__(self, modality: str, parser_tool: str = DEFAULT_PARSER, dpi: int = 200) -> None:
         self.modality = modality
         self.parser_tool = parser_tool
+        self.dpi = dpi
 
     def build(self, pages: Sequence[Page]) -> Payload:
         parts: list[Part] = []
         if self.modality == "T":
             parts += _text_block("text", embedded_text(pages))
         elif self.modality == "TL":
-            parts += _text_block("text", parser_markdown(pages, self.parser_tool))
+            parts += _text_block("text", parser_markdown(pages, self.parser_tool, self.dpi))
         elif self.modality == "TLV":
-            parts += _text_block("text", parser_markdown(pages, self.parser_tool))
+            parts += _text_block("text", parser_markdown(pages, self.parser_tool, self.dpi))
             parts += list(visual_channel(pages))
         elif self.modality == "V":
             parts += list(visual_channel(pages))
         return Payload(self.modality, tuple(parts))
 
 
-def get_representation(modality: Modality, parser_tool: str = DEFAULT_PARSER) -> Representation:
+def get_representation(modality: Modality, parser_tool: str = DEFAULT_PARSER, dpi: int = 200) -> Representation:
     """Return a representation composer for a ladder rung (T/TL/TLV/V)."""
 
     name = str(modality)
     if name not in RUNGS:
         raise KeyError(f"unknown representation {name!r}; use one of {RUNGS}")
-    return LadderRepresentation(name, parser_tool)
+    return LadderRepresentation(name, parser_tool, dpi)

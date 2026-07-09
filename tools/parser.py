@@ -61,7 +61,7 @@ def _cache_file(page: Page, parser_tool: str, dpi: int) -> Path:
     return DEFAULT_PATHS.cache_dir / "parser" / parser_tool / f"{stem}__dpi{dpi}__p{page.index:04d}.md"
 
 
-def cached_markdown(page: Page, parser_tool: str = DEFAULT_PARSER, dpi: int = 144) -> str | None:
+def cached_markdown(page: Page, parser_tool: str = DEFAULT_PARSER, dpi: int = 200) -> str | None:
     """Return one page's cached parser markdown, or None on a miss."""
 
     path = _cache_file(page, parser_tool, dpi)
@@ -71,7 +71,7 @@ def cached_markdown(page: Page, parser_tool: str = DEFAULT_PARSER, dpi: int = 14
         return None
 
 
-def write_markdown(page: Page, text: str, parser_tool: str = DEFAULT_PARSER, dpi: int = 144) -> None:
+def write_markdown(page: Page, text: str, parser_tool: str = DEFAULT_PARSER, dpi: int = 200) -> None:
     """Persist one page's parser markdown (best effort; never raises)."""
 
     path = _cache_file(page, parser_tool, dpi)
@@ -82,7 +82,7 @@ def write_markdown(page: Page, text: str, parser_tool: str = DEFAULT_PARSER, dpi
         pass
 
 
-def parser_markdown(pages: Sequence[Page], parser_tool: str = DEFAULT_PARSER, dpi: int = 144) -> tuple[str, ...]:
+def parser_markdown(pages: Sequence[Page], parser_tool: str = DEFAULT_PARSER, dpi: int = 200) -> tuple[str, ...]:
     """Return per-page parser markdown, reading only from the warmed disk cache.
 
     Raises `ParserCacheMiss` for any page not yet warmed, so the reasoner path
@@ -115,7 +115,7 @@ def parser_env_python(parser_tool: str) -> Path:
     return DEFAULT_PATHS.env_dir / f"parse-{parser_tool}" / "bin" / "python"
 
 
-def warm_parser_cache(pages: Sequence[Page], parser_tool: str = DEFAULT_PARSER, dpi: int = 144) -> None:
+def warm_parser_cache(pages: Sequence[Page], parser_tool: str = DEFAULT_PARSER, dpi: int = 200) -> None:
     """Run the parser over pages in its isolated env and write markdown to cache.
 
     The parser VLM is heavy and pinned to its own env, so it runs in a subprocess

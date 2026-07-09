@@ -234,7 +234,7 @@ class Orchestrator:
         """
 
         if isinstance(representation, str):
-            representation = get_representation(representation, self.config.parser_tool)  # type: ignore[arg-type]
+            representation = get_representation(representation, self.config.parser_tool, self.config.dpi)  # type: ignore[arg-type]
         page_set = conditioner.condition(question, self.page_count(question))
         if self.prediction_cache is not None:
             prediction_key, _ = self._keys(question, conditioner, representation.modality, page_set.page_indices)
@@ -259,7 +259,7 @@ class Orchestrator:
         """
 
         if isinstance(representation, str):
-            representation = get_representation(representation, self.config.parser_tool)  # type: ignore[arg-type]
+            representation = get_representation(representation, self.config.parser_tool, self.config.dpi)  # type: ignore[arg-type]
         if prompt_mode not in PROMPT_MODES:
             raise ValueError(f"unknown prompt_mode {prompt_mode!r}; expected one of {sorted(PROMPT_MODES)}")
         self.reasoner.prompt_instruction = PROMPT_MODES[prompt_mode]

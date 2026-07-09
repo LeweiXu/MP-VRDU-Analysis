@@ -117,7 +117,7 @@ def main() -> int:
     job_spec = json.loads(sys.stdin.read())
     parser_tool = job_spec["parser_tool"]
     model_id = job_spec["model_id"]
-    dpi = int(job_spec.get("dpi", 144))
+    dpi = int(job_spec.get("dpi", 200))
     written = 0
     for job in job_spec["jobs"]:
         try:

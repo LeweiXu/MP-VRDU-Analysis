@@ -40,7 +40,9 @@ ENVS: dict[str, dict] = {
     "core": {"req": "core.txt", "framework": "torch", "torch": "2.7.0", "torchvision": "0.22.0"},
     "parse-mineru": {"req": "parse-mineru.txt", "framework": "torch", "torch": "2.7.0", "torchvision": "0.22.0"},
     "parse-unlimited": {"req": "parse-unlimited.txt", "framework": "torch", "torch": "2.10.0", "torchvision": "0.25.0"},
-    "parse-paddleocrvl": {"req": "parse-paddleocrvl.txt", "framework": "paddle", "paddle": "3.0.0"},
+    # paddle 3.0.0 crashes PaddleOCR-VL's static predictor with a PIR strides
+    # error (InvalidArgument); 3.3.1 fixes it. Same version we run locally.
+    "parse-paddleocrvl": {"req": "parse-paddleocrvl.txt", "framework": "paddle", "paddle": "3.3.1"},
 }
 
 # The three machine configurations. Only the CUDA wheel index and a few

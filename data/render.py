@@ -23,7 +23,7 @@ def safe_stem(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_") or "document"
 
 
-def render_cache_dir(pdf_path: Path, cache_dir: Path | None = None, dpi: int = 144) -> Path:
+def render_cache_dir(pdf_path: Path, cache_dir: Path | None = None, dpi: int = 200) -> Path:
     """Return the deterministic render directory for one PDF and DPI."""
 
     root = Path(cache_dir or DEFAULT_PATHS.cache_dir)
@@ -106,7 +106,7 @@ def render_pdf(
     pdf_path: Path,
     page_indices: tuple[int, ...] | list[int] | None = None,
     cache_dir: Path | None = None,
-    dpi: int = 144,
+    dpi: int = 200,
     render_images: bool = True,
     extract_text: bool = True,
 ) -> list[Page]:
@@ -162,7 +162,7 @@ def render_question_pages(
     data_dir: Path | None = None,
     cache_dir: Path | None = None,
     page_indices: tuple[int, ...] | list[int] | None = None,
-    dpi: int = 144,
+    dpi: int = 200,
 ) -> list[Page]:
     """Resolve and render pages for a question.
 
