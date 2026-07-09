@@ -3,6 +3,7 @@ ColQwen3."""
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable
@@ -21,6 +22,11 @@ from schema import Question
 COLMODERNVBERT_MODEL_ID = "ModernVBERT/colmodernvbert"
 COLQWEN25_MODEL_ID = "vidore/colqwen2.5-v0.2"
 COLQWEN3_MODEL_ID = "OpenSearch-AI/Ops-Colqwen3-4B"
+
+# How many documents' page-image embeddings to keep on host memory at once. The
+# retrieval pass is question-major and questions cluster by document, so a small
+# window captures nearly all reuse while bounding host RAM.
+PAGE_EMBED_CACHE_DOCS = 8
 
 
 class ColVisionRetriever(Retriever):
@@ -47,6 +53,10 @@ class ColVisionRetriever(Retriever):
         self.allow_text_fallback = bool(allow_text_fallback)
         self._model: Any | None = None
         self._processor: Any | None = None
+        # Page-image embeddings are query-independent; keep the last few docs'
+        # embeddings on CPU so the k-sweep and a document's questions reuse one
+        # image forward pass instead of re-embedding every page per question.
+        self._page_emb: "OrderedDict[tuple[str, int], Any]" = OrderedDict()
 
     def _load(self) -> tuple[Any, Any]:
         """Load the ColPali-family model/processor for `model_id` (GPU node)."""
@@ -73,7 +83,14 @@ class ColVisionRetriever(Retriever):
         self._model = None
         self._processor = None
 
-    def _model_scores(self, question: Question, pages: Sequence[Any]) -> list[float]:
+    def _page_embeddings(self, question: Question, pages: Sequence[Any]) -> Any:
+        """Return the document's page-image embeddings, cached on CPU per doc."""
+
+        key = (question.doc_id, len(pages))
+        cached = self._page_emb.get(key)
+        if cached is not None:
+            self._page_emb.move_to_end(key)
+            return cached
         import torch
         from PIL import Image
 
@@ -82,9 +99,21 @@ class ColVisionRetriever(Retriever):
         if len(images) != len(pages):
             raise ValueError("all pages need image_path for vision retrieval")
         batch_images = processor.process_images(images).to(model.device)
+        with torch.no_grad():
+            embeddings = model(**batch_images)
+        embeddings = embeddings.to("cpu")
+        self._page_emb[key] = embeddings
+        while len(self._page_emb) > PAGE_EMBED_CACHE_DOCS:
+            self._page_emb.popitem(last=False)
+        return embeddings
+
+    def _model_scores(self, question: Question, pages: Sequence[Any]) -> list[float]:
+        import torch
+
+        model, processor = self._load()
+        image_embeddings = self._page_embeddings(question, pages).to(model.device)
         batch_queries = processor.process_queries([question.question]).to(model.device)
         with torch.no_grad():
-            image_embeddings = model(**batch_images)
             query_embeddings = model(**batch_queries)
         scores = processor.score_multi_vector(query_embeddings, image_embeddings)
         try:
@@ -97,7 +126,7 @@ class ColVisionRetriever(Retriever):
         query = set(tokenize(question.question))
         return [float(len(query.intersection(tokenize(p.text)))) + 1.0 / (1 + int(p.index)) for p in pages]
 
-    def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
+    def rank(self, question: Question, page_count: int) -> tuple[int, ...]:
         pages = render_document_pages(question, page_count, data_dir=self.data_dir,
                                       cache_dir=self.cache_dir, dpi=self.dpi, render_images=True)
         if not pages:
@@ -108,7 +137,10 @@ class ColVisionRetriever(Retriever):
             if not self.allow_text_fallback:
                 raise
             raw = self._fallback_scores(question, pages)
-        return rank_pages(normalise_scores(raw), k)
+        return rank_pages(normalise_scores(raw), page_count)
+
+    def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
+        return self.rank(question, page_count)[: int(k)]
 
 
 class ColModernVbertRetriever(ColVisionRetriever):

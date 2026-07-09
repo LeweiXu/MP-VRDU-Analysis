@@ -83,10 +83,34 @@ def load_yaml_spec(path: Path) -> Spec:
     return parse_spec(raw)
 
 
+def _sampling(spec: Spec) -> Mapping[str, Any]:
+    """The corpus `sampling` block, tolerating `{sampling: {...}}` or a flat block."""
+
+    corpus = spec.corpus or {}
+    inner = corpus.get("sampling", corpus)
+    return inner if isinstance(inner, Mapping) else {}
+
+
+def corpus_limit(spec: Spec) -> int | None:
+    """A `{sampling: {limit: N}}` cap for the run, or None for the full pool."""
+
+    value = _sampling(spec).get("limit")
+    return int(value) if value is not None else None
+
+
 def config_from_spec(spec: Spec, *, smoke: bool = False):
     """Build an `ExperimentConfig` from a spec's run knobs."""
 
     from config import DEFAULT_REASONER_SPEC, DEPLOYMENT_RESOLUTION, ExperimentConfig
+
+    sampling = _sampling(spec)
+    kwargs: dict[str, Any] = {}
+    if "per_bin" in sampling:
+        kwargs["per_bin_sample"] = int(sampling["per_bin"])
+    if "seed" in sampling:
+        kwargs["sample_seed"] = int(sampling["seed"])
+    if spec.conditions:
+        kwargs["conditions"] = spec.conditions
 
     return ExperimentConfig(
         smoke=smoke,
@@ -97,4 +121,6 @@ def config_from_spec(spec: Spec, *, smoke: bool = False):
         visual_resolution=spec.visual_resolution or DEPLOYMENT_RESOLUTION,
         k_values=spec.k_values or (1, 3, 5, 7, 10),
         run_tag=spec.run_tag,
+        parser_tool=spec.parser or "paddleocrvl",
+        **kwargs,
     )

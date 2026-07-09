@@ -77,6 +77,11 @@ def load_annotations(path: str | None = None) -> Mapping[str, DocLabel]:
             doc_id = (raw.get("doc_id") or "").strip()
             if not doc_id:
                 continue
+            # A row with no bin_label yet is an in-progress annotation, not a
+            # malformed one: skip it so the sheet can grow incrementally. The
+            # completeness gate in stamp_bins reports which docs are still blank.
+            if not (raw.get("bin_label") or "").strip():
+                continue
             label = DocLabel(
                 doc_id=doc_id,
                 bin_label=(raw.get("bin_label") or "").strip(),

@@ -38,6 +38,7 @@ class ResultCache:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._index: dict[str, ResultRow] = {}
+        self._handle = None
         if self.path.exists():
             for line in self.path.read_text().splitlines():
                 line = line.strip()
@@ -53,9 +54,11 @@ class ResultCache:
         if row.result_key in self._index:
             return
         self._index[row.result_key] = row
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a") as handle:
-            handle.write(row.to_json() + "\n")
+        if self._handle is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = self.path.open("a")
+        self._handle.write(row.to_json() + "\n")
+        self._handle.flush()
 
     def __iter__(self) -> Iterator[ResultRow]:
         return iter(self._index.values())
@@ -126,6 +129,7 @@ class PredictionCache:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._index: dict[str, CachedPrediction] = {}
+        self._handle = None
         if self.path.exists():
             for line in self.path.read_text().splitlines():
                 line = line.strip()
@@ -141,9 +145,11 @@ class PredictionCache:
         if record.prediction_key in self._index:
             return
         self._index[record.prediction_key] = record
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a") as handle:
-            handle.write(record.to_json() + "\n")
+        if self._handle is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = self.path.open("a")
+        self._handle.write(record.to_json() + "\n")
+        self._handle.flush()
 
     def __iter__(self) -> Iterator[CachedPrediction]:
         return iter(self._index.values())
@@ -211,13 +217,15 @@ class Orchestrator:
         question: Question,
         conditioner: InputConditioner,
         representation: Representation | str,
-    ) -> None:
+    ) -> PageSet:
         """Warm the retrieval and render caches without loading the reasoner.
 
         Conditioning runs the retriever (warming its cache) and rendering writes
         the page PNGs, so the later `run_cell` needs neither once the caches are
-        warm. Parser markdown is warmed separately in its own env, so this does
-        not build TL/TLV text here.
+        warm. Returns the conditioned `PageSet` so the caller can reuse it (e.g.
+        to warm parser markdown) without conditioning the cell a second time.
+        Parser markdown is warmed separately in its own env, so this does not
+        build TL/TLV text here.
         """
 
         if isinstance(representation, str):
@@ -226,8 +234,9 @@ class Orchestrator:
         if self.prediction_cache is not None:
             prediction_key, _ = self._keys(question, conditioner, representation.modality, page_set.page_indices)
             if self.prediction_cache.get(prediction_key) is not None:
-                return
+                return page_set
         self.render_pages(question, page_set)
+        return page_set
 
     def run_cell(
         self,

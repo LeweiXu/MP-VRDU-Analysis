@@ -77,6 +77,11 @@ def classify_scanned(pdf_path: Path, max_pages: int = 5) -> ScanEstimate:
     )
 
 
+# Text spans are query- and dpi-independent, so a page's spans are extracted from
+# the PDF once per process and reused across every render/retrieval call.
+_SPAN_CACHE: dict[tuple[str, int], tuple[TextSpan, ...]] = {}
+
+
 def extract_text_spans(page) -> tuple[TextSpan, ...]:
     """Extract line-level text spans from a PyMuPDF page."""
 
@@ -127,15 +132,19 @@ def render_pdf(
         for index in indices:
             if index < 0 or index >= doc.page_count:
                 raise IndexError(f"page index {index} out of range for {pdf} with {doc.page_count} pages")
-            page = doc.load_page(index)
             image_path: Path | None = None
             if render_images:
                 image_path = target_dir / f"page_{index:04d}.png"
                 if not image_path.exists():
                     matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
-                    pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+                    pixmap = doc.load_page(index).get_pixmap(matrix=matrix, alpha=False)
                     pixmap.save(str(image_path))
-            spans = extract_text_spans(page) if extract_text else ()
+            spans: tuple[TextSpan, ...] = ()
+            if extract_text:
+                span_key = (str(pdf), index)
+                if span_key not in _SPAN_CACHE:
+                    _SPAN_CACHE[span_key] = extract_text_spans(doc.load_page(index))
+                spans = _SPAN_CACHE[span_key]
             out.append(
                 Page(
                     doc_id=pdf.name,

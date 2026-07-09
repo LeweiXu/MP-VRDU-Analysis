@@ -203,6 +203,28 @@ def _generated_token_count(output_ids: Any, answer: str) -> int:
     return count if count > 0 else max(1, len(answer.split()))
 
 
+class _FirstTokenTimer:
+    """Streamer that records when generation emits its first decoded token.
+
+    `generate` calls `put` once with the prompt ids, then once per new token, so
+    the second call marks the first generated token. Time-to-first-token is a
+    close proxy for prefill (ingesting the representation) and lets one `generate`
+    yield both the prefill and decode split, with no second prefill forward.
+    """
+
+    def __init__(self) -> None:
+        self.first_token_time: float | None = None
+        self._calls = 0
+
+    def put(self, _value: Any) -> None:
+        self._calls += 1
+        if self._calls == 2 and self.first_token_time is None:
+            self.first_token_time = time.perf_counter()
+
+    def end(self) -> None:
+        return None
+
+
 class Qwen3VLBackend(Reasoner):
     """Qwen3-VL local backend using Hugging Face `transformers` generation."""
 
@@ -366,21 +388,21 @@ class Qwen3VLBackend(Reasoner):
             torch.cuda.reset_peak_memory_stats()
 
         with self._sdpa_context(), torch.inference_mode():
-            # Prefill cost (ingesting the representation) timed on its own forward,
-            # then the full generate for the end-to-end latency.
-            prefill_start = time.perf_counter()
-            model(**inputs)
-            if cuda:
-                torch.cuda.synchronize()
-            prefill_latency_s = time.perf_counter() - prefill_start
-
+            # One generate for the whole cell. A streamer marks the first decoded
+            # token, so time-to-first-token approximates prefill (ingesting the
+            # representation) and the remainder is decode, with no second prefill
+            # forward paid on every cell.
+            timer = _FirstTokenTimer()
             gen_start = time.perf_counter()
-            generated_ids = model.generate(**inputs, max_new_tokens=self.max_new_tokens, do_sample=False)
+            generated_ids = model.generate(
+                **inputs, max_new_tokens=self.max_new_tokens, do_sample=False, streamer=timer
+            )
             if cuda:
                 torch.cuda.synchronize()
             latency_s = time.perf_counter() - gen_start
 
         peak_vram_bytes = int(torch.cuda.max_memory_allocated()) if cuda else 0
+        prefill_latency_s = (timer.first_token_time - gen_start) if timer.first_token_time is not None else latency_s
         decode_latency_s = max(0.0, latency_s - prefill_latency_s)
 
         output_ids = _slice_generated_ids(generated_ids, input_len)

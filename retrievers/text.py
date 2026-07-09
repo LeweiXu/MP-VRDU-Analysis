@@ -12,9 +12,9 @@ from retrievers import (
     Retriever,
     as_vectors,
     cosine,
+    document_page_texts,
     normalise_scores,
     rank_pages,
-    render_document_pages,
     simple_bm25_scores,
     tokenize,
 )
@@ -36,9 +36,8 @@ class Bm25Retriever(Retriever):
         self.dpi = int(dpi)
 
     def _page_texts(self, question: Question, page_count: int) -> list[str]:
-        pages = render_document_pages(question, page_count, data_dir=self.data_dir,
-                                      cache_dir=self.cache_dir, dpi=self.dpi, render_images=False)
-        return [page.text for page in pages]
+        return document_page_texts(question, page_count, data_dir=self.data_dir,
+                                   cache_dir=self.cache_dir, dpi=self.dpi)
 
     def _bm25(self, query_tokens: Sequence[str], page_tokens: Sequence[Sequence[str]]) -> list[float]:
         try:
@@ -48,12 +47,15 @@ class Bm25Retriever(Retriever):
         except Exception:
             return simple_bm25_scores(query_tokens, page_tokens)
 
-    def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
+    def rank(self, question: Question, page_count: int) -> tuple[int, ...]:
         page_texts = self._page_texts(question, page_count)
         if not page_texts:
             return ()
         scores = self._bm25(tokenize(question.question), [tokenize(t) for t in page_texts])
-        return rank_pages(normalise_scores(scores), k)
+        return rank_pages(normalise_scores(scores), page_count)
+
+    def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
+        return self.rank(question, page_count)[: int(k)]
 
 
 class DenseTextRetriever(Retriever):
@@ -74,6 +76,9 @@ class DenseTextRetriever(Retriever):
         self.dpi = int(dpi)
         self.embedder = embedder
         self.allow_bm25_fallback = bool(allow_bm25_fallback)
+        # Page embeddings are query-independent, so they are encoded once per
+        # document and reused across every question and k.
+        self._page_emb: dict[tuple[str, int], list[list[float]]] = {}
 
     def _load_embedder(self) -> Any:
         """Load the sentence embedder lazily (subclass-specific)."""
@@ -90,24 +95,39 @@ class DenseTextRetriever(Retriever):
 
         self.embedder = None
 
-    def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
-        pages = render_document_pages(question, page_count, data_dir=self.data_dir,
-                                      cache_dir=self.cache_dir, dpi=self.dpi, render_images=False)
-        page_texts = [page.text for page in pages]
+    def _page_embeddings(self, question: Question, page_texts: Sequence[str], page_count: int) -> list[list[float]]:
+        key = (question.doc_id, int(page_count))
+        cached = self._page_emb.get(key)
+        if cached is not None:
+            return cached
+        vectors = self._encode(list(page_texts))
+        self._page_emb[key] = vectors
+        return vectors
+
+    def rank(self, question: Question, page_count: int) -> tuple[int, ...]:
+        page_texts = self._page_texts(question, page_count)
         if not page_texts:
             return ()
         try:
-            vectors = self._encode([question.question, *page_texts])
-            if len(vectors) != len(page_texts) + 1:
+            page_vectors = self._page_embeddings(question, page_texts, page_count)
+            query_vectors = self._encode([question.question])
+            if len(page_vectors) != len(page_texts) or not query_vectors:
                 raise RuntimeError("embedder returned an unexpected shape")
-            scores = [cosine(vectors[0], v) for v in vectors[1:]]
+            scores = [cosine(query_vectors[0], v) for v in page_vectors]
         except Exception:
             if not self.allow_bm25_fallback:
                 raise
             scores = normalise_scores(
                 simple_bm25_scores(tokenize(question.question), [tokenize(t) for t in page_texts])
             )
-        return rank_pages(normalise_scores(scores), k)
+        return rank_pages(normalise_scores(scores), page_count)
+
+    def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
+        return self.rank(question, page_count)[: int(k)]
+
+    def _page_texts(self, question: Question, page_count: int) -> list[str]:
+        return document_page_texts(question, page_count, data_dir=self.data_dir,
+                                   cache_dir=self.cache_dir, dpi=self.dpi)
 
 
 class BgeM3Retriever(DenseTextRetriever):

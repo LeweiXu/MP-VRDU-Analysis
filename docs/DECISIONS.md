@@ -453,3 +453,25 @@ _One line per real judgement call: what, why, what it affected._
   Scoring skips non-ok rows and blank bins bucket to `(unlabeled)`. Reruns the local
   smoke with the parser on: all four tasks now `status=ok` (TL/TLV carry real
   paddleocrvl markdown), and all ten tables build from those rows.
+- **G3 prompt sweep wired (2026-07-09).** The hallucination task now runs the three
+  prompt conditions (`none` / `generic` / `targeted`) instead of one. The instruction
+  strings live in `config.PROMPT_MODES` (targeted = the previous frozen preamble, so
+  answerable G1/G2 cells are byte-identical); `DEFAULT_PROMPT_MODE="targeted"`,
+  `G3_PROMPT_MODES=(none,generic,targeted)`. The mode rides on the conditioner name
+  (`similarity_<r>_k3_prompt-<mode>`, mirroring how retrieval k rides the name), so each
+  mode is its own cache cell; `Cell.prompt_mode` carries it and the driver passes it to
+  `Orchestrator.run_cell`, which sets `reasoner.prompt_instruction` per cell.
+  `render_prompt` in both backends (qwen3vl, internvl) took an `instruction` arg;
+  `Reasoner` ABC gained `prompt_instruction`. The hallucination table groups by the
+  parsed prompt mode. Frozen key composition, `ModelInput`, and `ResultRow` unchanged
+  (only the `condition` value varies, as it already did for k). Local G3 smoke: 6 rows
+  (3 modes x 2 q), targeted abstains 100%, none/generic 0% — the prompt changes behaviour.
+- **Annotation table treated as authoritative when present (2026-07-09).** `data/annotations.py`
+  now raises on a sheet that exists but is missing a required column (`doc_id`/`bin_label`/
+  `scan_label`), and skips rows whose `bin_label` is still blank (in-progress annotation)
+  rather than erroring on them. `data/binning.stamp_bins` gained `require_complete=True`:
+  once any doc is labelled, every corpus document must be labelled or the run stops with an
+  actionable message (which docs are blank); an all-blank/absent sheet still degrades to
+  blank labels so dev/smoke runs proceed. `stamp_bins` leaves `doc_type` untouched, so a
+  cell's telemetry keeps the native document type alongside the manual `bin_label` (both
+  were already in `ResultRow`; confirmed populated end to end).

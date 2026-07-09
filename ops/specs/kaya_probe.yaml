@@ -1,0 +1,15 @@
+# Final Kaya pre-flight probe: run all four generation tasks end to end on 1 GPU
+# with the 2B reasoner (4-bit), the deployment parser, and a tiny corpus. Paired
+# with ops/scripts/final_probe.py, which also exercises every retriever, every
+# parser, the tools, and resolution robustness. Not an experiment; a go/no-go.
+task: all
+reasoner_spec: qwen3vl-2b-local
+quantization: 4bit
+visual_resolution: med
+parser: paddleocrvl
+judge_spec: stub
+representations: [T, TL, TLV, V]
+corpus:
+  sampling:
+    limit: 2
+run_tag: kaya-probe

@@ -115,9 +115,16 @@ def build_retrievers(config):
     from retrievers.text import Bm25Retriever
     from retrievers.vision import ColQwen25Retriever
 
+    persist_dir = config.paths.cache_dir / "retrieval"
     return Retrievers(
-        text=MemoizedRetriever(Bm25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)),
-        vision=MemoizedRetriever(ColQwen25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)),
+        text=MemoizedRetriever(
+            Bm25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi),
+            persist_dir=persist_dir,
+        ),
+        vision=MemoizedRetriever(
+            ColQwen25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi),
+            persist_dir=persist_dir,
+        ),
     )
 
 
@@ -128,30 +135,20 @@ def _modality_of(cell) -> str:
     return rep if isinstance(rep, str) else rep.modality
 
 
-def _warm_parser_cache(config, prewarm, cells) -> None:
-    """Warm parser markdown for every TL/TLV page in one isolated-env pass.
+def _warm_parser_cache(config, pages) -> None:
+    """Warm parser markdown for the given TL/TLV pages in one isolated-env pass.
 
     The parser runs in its own env and its output crosses to the reasoner only
     through the disk cache, so this happens in the pre-pass with no reasoner
-    loaded. Pages are deduplicated so a document's page is parsed once per run.
-    A parser that cannot run is logged, not raised: its TL/TLV cells then record a
-    parser-miss row rather than sinking the whole task.
+    loaded. `pages` is already deduplicated by the caller. A parser that cannot
+    run is logged, not raised: its TL/TLV cells then record a parser-miss row
+    rather than sinking the whole task.
     """
 
-    from tools.parser import warm_parser_cache
-
-    pages, seen = [], set()
-    for cell in cells:
-        if _modality_of(cell) not in ("TL", "TLV"):
-            continue
-        page_set = cell.conditioner.condition(cell.question, prewarm.page_count(cell.question))
-        for page in prewarm.render_pages(cell.question, page_set):
-            key = (str(page.pdf_path), page.index)
-            if key not in seen:
-                seen.add(key)
-                pages.append(page)
     if not pages:
         return
+    from tools.parser import warm_parser_cache
+
     try:
         warm_parser_cache(pages, parser_tool=config.parser_tool, dpi=config.dpi)
         log.info("parser warm: %s over %d pages", config.parser_tool, len(pages))
@@ -225,12 +222,21 @@ def generate(config, task, questions, *, limit=None, machine=None):
         cells = task.generation_cells(config, task_questions, retrievers=retrievers)
         prewarm = Orchestrator(config, reasoner=_SpecOnly(spec), judge=StubJudge("prewarm"),
                                cache=result_cache, prediction_cache=prediction_cache)
+        parser_pages, seen_pages = [], set()
         for cell in cells:
             try:
-                prewarm.prewarm_cell(cell.question, cell.conditioner, cell.representation)
+                page_set = prewarm.prewarm_cell(cell.question, cell.conditioner, cell.representation)
             except Exception as exc:  # noqa: BLE001 - warming is best effort
                 log.warning("prewarm failed q=%s: %s", cell.question.id, exc)
-        _warm_parser_cache(config, prewarm, cells)
+                continue
+            if _modality_of(cell) not in ("TL", "TLV"):
+                continue
+            for page in prewarm.render_pages(cell.question, page_set):
+                key = (str(page.pdf_path), page.index)
+                if key not in seen_pages:
+                    seen_pages.add(key)
+                    parser_pages.append(page)
+        _warm_parser_cache(config, parser_pages)
         retrievers.text.unload()
         retrievers.vision.unload()
         free_gpu()

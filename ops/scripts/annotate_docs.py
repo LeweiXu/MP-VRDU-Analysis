@@ -27,6 +27,8 @@ Workflow:
     python -m ops.scripts.annotate_docs annotate
     # skip the exploratory dominant_visual question entirely:
     python -m ops.scripts.annotate_docs annotate --no-dominant-visual
+    # skip the optional notes question:
+    python -m ops.scripts.annotate_docs annotate --no-notes
     # inter-annotator agreement on a blind 25-doc subset:
     python -m ops.scripts.annotate_docs kappa-sheet --n 25 --seed 0
     python -m ops.scripts.annotate_docs annotate --sheet annotations/kappa_subset.csv
@@ -177,6 +179,31 @@ def read_sheet(path: Path) -> list[dict[str, str]]:
 
 
 def cmd_sheet(args: argparse.Namespace) -> int:
+    if args.fill_empty_scan_labels:
+        if not args.output.exists():
+            print(
+                f"{args.output} does not exist; --fill-empty-scan-labels only updates "
+                "an existing sheet."
+            )
+            return 1
+        rows = read_sheet(args.output)
+        filled = 0
+        for row in rows:
+            if (row.get("scan_label") or "").strip():
+                continue
+            auto_scan = (row.get("auto_scan") or "").strip()
+            if auto_scan not in SCAN_LABELS:
+                print(
+                    f"  ! {row.get('doc_id', '<unknown>')}: cannot fill scan_label; "
+                    f"auto_scan={auto_scan!r}"
+                )
+                continue
+            row["scan_label"] = auto_scan
+            filled += 1
+        write_sheet(rows, args.output)
+        print(f"filled {filled} empty scan_label fields from auto_scan: {args.output}")
+        return 0
+
     if args.output.exists() and not args.force:
         print(f"{args.output} already exists; refusing to overwrite hand labels. Use --force to rebuild.")
         return 1
@@ -391,7 +418,9 @@ def _prompt_multi(field: str, options: tuple[str, ...], default: str | None) -> 
         marker = "  <- current" if option in current else ""
         print(f"  {i}) {option}{marker}")
     while True:
-        raw = input("  select [comma-separated numbers / Enter=default / s=skip / q=save+quit]: ").strip().lower()
+        raw = input(
+            "  select [space/comma-separated numbers / Enter=default / s=skip / q=save+quit]: "
+        ).strip().lower()
         if raw == "q":
             raise _Quit
         if raw == "s":
@@ -406,7 +435,7 @@ def _prompt_multi(field: str, options: tuple[str, ...], default: str | None) -> 
                 if option not in chosen:
                     chosen.append(option)
             return MULTI_SEP.join(chosen)
-        print("  invalid; enter one or more listed numbers separated by commas")
+        print("  invalid; enter one or more listed numbers separated by spaces or commas")
 
 
 def _prompt_notes(default: str) -> str:
@@ -432,7 +461,14 @@ def open_document(pdf_path: Path, open_cmd: str | None) -> None:
         print(f"  (could not open document: {exc}; open the path above manually)")
 
 
-def _annotate_row(row: dict[str, str], *, open_cmd: str | None, do_open: bool, fields: list[tuple[str, tuple[str, ...], str | None]]) -> None:
+def _annotate_row(
+    row: dict[str, str],
+    *,
+    open_cmd: str | None,
+    do_open: bool,
+    fields: list[tuple[str, tuple[str, ...], str | None]],
+    prompt_notes: bool = True,
+) -> None:
     """Prompt the given menu fields for one document, updating `row` in place."""
 
     print("\n" + "=" * 72)
@@ -453,7 +489,8 @@ def _annotate_row(row: dict[str, str], *, open_cmd: str | None, do_open: bool, f
         choice = prompt(field, options, default)
         if choice is not None:
             row[field] = choice
-    row["notes"] = _prompt_notes((row.get("notes") or "").strip())
+    if prompt_notes:
+        row["notes"] = _prompt_notes((row.get("notes") or "").strip())
 
 
 def cmd_annotate(args: argparse.Namespace) -> int:
@@ -471,10 +508,18 @@ def cmd_annotate(args: argparse.Namespace) -> int:
 
     if args.no_dominant_visual:
         print("(dominant_visual prompt disabled)")
+    if args.no_notes:
+        print("(notes prompt disabled)")
     print(f"{len(pending)} of {len(rows)} documents to annotate. Answers save after each doc; 'q' saves and exits.")
     try:
         for row in pending:
-            _annotate_row(row, open_cmd=args.open_cmd, do_open=args.open, fields=fields)
+            _annotate_row(
+                row,
+                open_cmd=args.open_cmd,
+                do_open=args.open,
+                fields=fields,
+                prompt_notes=not args.no_notes,
+            )
             write_sheet(rows, path)
     except (_Quit, KeyboardInterrupt):
         write_sheet(rows, path)
@@ -492,14 +537,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     annotate = sub.add_parser("annotate", help="interactively annotate each document (resumable)")
     annotate.add_argument("--sheet", type=Path, default=DEFAULT_SHEET)
-    annotate.add_argument("--redo-all", action="store_true", help="revisit already-annotated docs too")
+    annotate.add_argument(
+        "--redo-all",
+        action="store_true",
+        help="revisit all docs, defaulting prompts to their saved annotations",
+    )
     annotate.add_argument("--no-dominant-visual", action="store_true", help="skip the exploratory dominant_visual question")
+    annotate.add_argument("--no-notes", action="store_true", help="skip the optional notes question")
     annotate.add_argument("--no-open", dest="open", action="store_false", help="do not auto-open the PDF viewer")
     annotate.add_argument("--open-cmd", help="viewer command to open each PDF (default: xdg-open/wslview/open)")
 
     sheet = sub.add_parser("sheet", help="build the blank (auto-seeded) annotation sheet, no prompting")
     sheet.add_argument("--output", type=Path, default=DEFAULT_SHEET)
-    sheet.add_argument("--force", action="store_true", help="overwrite an existing sheet (loses hand labels)")
+    sheet_mode = sheet.add_mutually_exclusive_group()
+    sheet_mode.add_argument("--force", action="store_true", help="overwrite an existing sheet (loses hand labels)")
+    sheet_mode.add_argument(
+        "--fill-empty-scan-labels",
+        action="store_true",
+        help="existing sheet only: copy auto_scan into empty scan_label fields",
+    )
 
     score = sub.add_parser("score", help="report label distributions and scan-vs-auto agreement")
     score.add_argument("--sheet", type=Path, default=DEFAULT_SHEET)

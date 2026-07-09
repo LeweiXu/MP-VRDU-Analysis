@@ -43,12 +43,15 @@ def write_retrieval_eval(
     if not ordered:
         return
 
+    persist_dir = config.paths.cache_dir / "retrieval"
     retrievers = {
         "text": MemoizedRetriever(
-            Bm25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)
+            Bm25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi),
+            persist_dir=persist_dir,
         ),
         "vision": MemoizedRetriever(
-            ColQwen25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)
+            ColQwen25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi),
+            persist_dir=persist_dir,
         ),
     }
     side_dir.mkdir(parents=True, exist_ok=True)
