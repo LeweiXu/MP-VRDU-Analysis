@@ -77,6 +77,7 @@ def write_retrieval_eval(
     from data.loader import resolve_pdf
     from data.render import pdf_page_count
     from experiments.engine.paths import free_gpu
+    from retrievers import MemoizedRetriever
     from retrievers.joint import union
     from scoring.retrieval import score_retrieval
 
@@ -87,30 +88,16 @@ def write_retrieval_eval(
     joint_ks = tuple(int(k) for k in joint_ks)
     page_counts = {q.id: pdf_page_count(resolve_pdf(q.doc_id, config.paths.data_dir)) for q in questions}
 
-    # Rank every method the corpus once, keeping full rankings + timing. A method
-    # that fails to load is simply absent (its rows and any joint using it skip).
+    persist_dir = config.paths.cache_dir / "retrieval"
+    # Rank each method over the corpus once. Wrapping in MemoizedRetriever persists
+    # the full ranking to the shared retrieval memo (the same file build_retrievers
+    # reads), so the inference stage reuses these rankings instead of ranking again.
+    # A method that fails to load is simply absent (its rows and any joint using it
+    # skip). Cost telemetry comes from the inner retriever.
     rankings: dict[str, dict[str, tuple[int, ...]]] = {}
     latency: dict[str, dict[str, float]] = {}
     index_build: dict[str, float] = {}
     modalities = {**{n: "text" for n in text_methods}, **{n: "vision" for n in vision_methods}}
-
-    for name, kind in [*((n, "text") for n in text_methods), *((n, "vision") for n in vision_methods)]:
-        try:
-            retriever = _build_retriever(config, name, kind)
-            rmap: dict[str, tuple[int, ...]] = {}
-            lmap: dict[str, float] = {}
-            for q in questions:
-                rmap[q.id] = tuple(retriever.rank(q, page_counts[q.id]))
-                lmap[q.id] = float(getattr(retriever, "last_query_s", 0.0))
-            rankings[name] = rmap
-            latency[name] = lmap
-            index_build[name] = float(getattr(retriever, "index_build_s", 0.0))
-            if hasattr(retriever, "unload"):
-                retriever.unload()
-        except Exception as exc:  # noqa: BLE001 - one method's failure must not sink the artifact
-            log.warning("retrieval eval: method %s failed, skipping its rows: %s", name, exc)
-        finally:
-            free_gpu()
 
     def _emit(handle, row) -> None:
         record = asdict(row)
@@ -121,17 +108,33 @@ def write_retrieval_eval(
 
     side_dir.mkdir(parents=True, exist_ok=True)
     with (side_dir / filename).open("w") as handle:
-        for name in (*text_methods, *vision_methods):
-            if name not in rankings:
-                continue
-            idx = index_build.get(name, 0.0)
-            for q in questions:
-                ranking = rankings[name].get(q.id, ())
-                lat = latency[name].get(q.id, 0.0)
-                for k in single_ks:
-                    _emit(handle, score_retrieval(
-                        q, ranking[:k], retriever=name, modality=modalities[name], k=k,
-                        retrieval_latency_s=lat, index_build_amortized_s=idx))
+        # Rank + score each single method and write its rows (then flush) as it
+        # finishes, so a crash keeps every completed method's rows.
+        for name, kind in [*((n, "text") for n in text_methods), *((n, "vision") for n in vision_methods)]:
+            try:
+                retriever = MemoizedRetriever(_build_retriever(config, name, kind), persist_dir=persist_dir)
+                rmap: dict[str, tuple[int, ...]] = {}
+                lmap: dict[str, float] = {}
+                for q in questions:
+                    rmap[q.id] = tuple(retriever.rank(q, page_counts[q.id]))
+                    lmap[q.id] = float(getattr(retriever.inner, "last_query_s", 0.0))
+                idx = float(getattr(retriever.inner, "index_build_s", 0.0))
+                rankings[name] = rmap
+                latency[name] = lmap
+                index_build[name] = idx
+                for q in questions:
+                    for k in single_ks:
+                        _emit(handle, score_retrieval(
+                            q, rmap[q.id][:k], retriever=name, modality=modalities[name], k=k,
+                            retrieval_latency_s=lmap[q.id], index_build_amortized_s=idx))
+                handle.flush()
+                retriever.unload()
+            except Exception as exc:  # noqa: BLE001 - one method's failure must not sink the artifact
+                log.warning("retrieval eval: method %s failed, skipping its rows: %s", name, exc)
+            finally:
+                free_gpu()
+
+        # Joint unions: emitted once both constituent methods have ranked.
         for tname, vname in joint_pairs:
             if tname not in rankings or vname not in rankings:
                 continue
@@ -144,6 +147,7 @@ def write_retrieval_eval(
                     _emit(handle, score_retrieval(
                         q, merged, retriever=joint_name, modality="joint", k=k,
                         retrieval_latency_s=lat, index_build_amortized_s=idx))
+            handle.flush()
 
 
 def write_classifier_eval(

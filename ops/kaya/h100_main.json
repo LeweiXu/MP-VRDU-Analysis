@@ -1,5 +1,5 @@
 {
-  "_comment": "Trimmed prestage config for ops/specs/h100_main.yaml: only what the 8B G1 ladder run needs. G1 uses oracle pages, so no retrievers; only the paddleocrvl parser and MMLongBench. Pass to prestage with --config.",
+  "_comment": "Prestage config for the H100 supervisor: everything needed to run FULL G1 + G2 from ops/specs/target_architecture.yaml on one strong machine. Covers all reasoners incl. 32B (size/family sweeps), all six retrievers + their colpali bases (G2 benchmark; bm25 needs no weights), and all three parsers (G1 parser sweep), over MMLongBench. LongDocURL is abandoned (kept in the YAML for demo only), so it is NOT staged. Pass to prestage with --config; add --local when running directly on the supervisor.",
   "remote_root": "/group/ems036/lxu/mpvrdu",
   "paths": {
     "cache": ".cache",
@@ -12,11 +12,32 @@
     "max_workers": 8
   },
   "models": [
-    "Qwen/Qwen3-VL-8B-Instruct"
+    "Qwen/Qwen3-VL-2B-Instruct",
+    "Qwen/Qwen3-VL-4B-Instruct",
+    "Qwen/Qwen3-VL-8B-Instruct",
+    "Qwen/Qwen3-VL-32B-Instruct",
+    "OpenGVLab/InternVL3-8B"
   ],
-  "retrieval_models": {},
+  "retrieval_models": {
+    "text": [
+      "BAAI/bge-m3",
+      "Qwen/Qwen3-Embedding-4B"
+    ],
+    "vision": [
+      "ModernVBERT/colmodernvbert",
+      "vidore/colqwen2.5-v0.2",
+      "OpenSearch-AI/Ops-Colqwen3-4B"
+    ]
+  },
+  "retrieval_model_dependencies": {
+    "ModernVBERT/colmodernvbert-base": [
+      "google/siglip2-base-patch16-512"
+    ]
+  },
   "parsers": {
-    "paddleocrvl": "PaddlePaddle/PaddleOCR-VL"
+    "paddleocrvl": "PaddlePaddle/PaddleOCR-VL",
+    "mineru": "opendatalab/MinerU2.5-2509-1.2B",
+    "unlimited": "baidu/Unlimited-OCR"
   },
   "parser_aux_models": {
     "paddleocrvl": ["PaddlePaddle/PP-DocLayoutV2"]

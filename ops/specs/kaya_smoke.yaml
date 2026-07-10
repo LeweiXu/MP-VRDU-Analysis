@@ -29,7 +29,7 @@ runs:
     inference:
       reasoner_spec: qwen3vl-2b-local
       visual_resolution: med
-      text_retriever: bm25
+      text_retriever: bge-m3
       vision_retriever: colqwen2.5
       joint: true
       k_values: [1]

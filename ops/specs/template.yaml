@@ -1,0 +1,141 @@
+# Reference menu for the spec format. ONE document-understanding pipeline
+#   page-selection (retrieval)  ->  representation  ->  reasoner  ->  judge
+# and every generation task is that same pipeline with different VALUES on a fixed
+# set of variables. `task_name` is only a label: the logical grouping + the parallel
+# job / cache namespace, NOT a different mechanism.
+#
+# Every task declares the SAME full variable set explicitly, so a spec is a complete,
+# unambiguous description of one experiment with nothing implicit and no fallbacks.
+# There is no `base` and no `sweeps`: a variable is either a scalar or a list, and a
+# LIST is simply the set of values to run over that axis (length-1 = a single value).
+#
+# This file is the reference (a `template` task documenting every variable, then the
+# three real tasks as worked examples). Real runs live in the kaya*/h100* specs.
+
+runs:
+
+  # ======================================================================== #
+  # The full menu: every variable and its options. Not meant to be run as-is.
+  # ======================================================================== #
+  - task_name: template
+    run_tag: template
+
+    # --- corpus: which questions ---
+    corpus:
+      pool: answerable                      # answerable | unanswerable
+      sampling: {per_doc_type: 50, seed: 0} # {per_doc_type: N,seed} | {per_bin: N,seed} | full | {limit: N} | {ids: [...]}
+    dataset: [mmlongbench]                  # mmlongbench
+
+    # --- reasoner: model + how it runs (each is a list; >1 value runs one pass per value) ---
+    reasoner_spec: [qwen3vl-2b-local]       # qwen3vl-{2b,4b,8b,32b}-local | internvl3-8b-local
+    quantization: [bf16]                    # bf16 | 4bit | 8bit
+    visual_resolution: [med]                # low | med | high
+    dpi: 200
+
+    # --- representation the reasoner ingests (cell dimension) ---
+    parser: [paddleocrvl]                   # paddleocrvl | mineru | unlimited  (source of TL/TLV text)
+    reasoner_representations: [T, TL, TLV, V]
+
+    # --- retrieval: how pages are selected for the reasoner ---
+    # retrieval_representation is the rep the retriever RANKS OVER, in the same
+    # T/TL/TLV/V vocabulary as the reasoner: text retrieval over PyMuPDF text is T,
+    # vision retrieval over the page image is V, `oracle` = gold pages (no ranking).
+    retrieval_representation: [T, V]
+    text_retrievers:   [bm25, bge-m3, qwen3-embedding]        # methods scored in the benchmark; [] to skip text
+    vision_retrievers: [colmodernvbert, colqwen2.5, colqwen3] # methods scored in the benchmark; [] to skip vision
+    joints: matched                         # matched (cheap|cheap,mid|mid,exp|exp) | [[t,v],...] | []
+    k_values: [1, 3, 5, 7, 10]              # top-k pages; [] when oracle (all gold pages used)
+    joint_k_values: [1, 3, 5]
+    inference_text_retriever: bge-m3        # the ONE text arm fed to the reasoner (must be in text_retrievers) | none
+    inference_vision_retriever: colqwen2.5  # the ONE vision arm fed to the reasoner | none
+    inference_joint: true                   # also feed the text u vision union
+
+    # --- prompting (cell dimension) ---
+    prompt_modes: [none]                    # none | generic | targeted
+
+    # --- deployment side artifact ---
+    classifier: none                        # none | qwen3vl-2b-local  (doc-domain classifier, routing price)
+
+    judge_spec: stub
+
+  # ======================================================================== #
+  # G1 - oracle ladder: reasoner over GOLD pages across the full ladder.
+  # Page selection is oracle, so there is no ranking, no top-k, no benchmark.
+  # ======================================================================== #
+  - task_name: G1_oracle_ladder
+    run_tag: g1
+    corpus: {pool: answerable, sampling: {per_doc_type: 50, seed: 0}}
+    dataset: [mmlongbench]
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    dpi: 200
+    parser: [paddleocrvl]
+    reasoner_representations: [T, TL, TLV, V]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    prompt_modes: [none]
+    classifier: none
+    judge_spec: stub
+
+  # ======================================================================== #
+  # G2 - retrieval: real retrievers select the pages (matched vision arm, cross
+  # text arm, and their union), swept over k; also the accuracy benchmark.
+  # ======================================================================== #
+  - task_name: G2_retrieval
+    run_tag: g2
+    corpus: {pool: answerable, sampling: {per_doc_type: 50, seed: 0}}
+    dataset: [mmlongbench]
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    dpi: 200
+    parser: [paddleocrvl]
+    reasoner_representations: [TLV, V]      # the deploy rungs retrieval feeds
+    retrieval_representation: [T, V]        # text arm over PyMuPDF T, vision arm over V
+    text_retrievers:   [bm25, bge-m3, qwen3-embedding]
+    vision_retrievers: [colmodernvbert, colqwen2.5, colqwen3]
+    joints: matched
+    k_values: [1, 3, 5, 7, 10]
+    joint_k_values: [1, 3, 5]
+    inference_text_retriever: bge-m3        # must be in text_retrievers
+    inference_vision_retriever: colqwen2.5  # must be in vision_retrievers
+    inference_joint: true
+    prompt_modes: [none]
+    classifier: none
+    judge_spec: stub
+
+  # ======================================================================== #
+  # G3 - hallucination / prompting: unanswerable questions over a small
+  # similarity-retrieved page set (no oracle arm at zero gold pages), sweeping
+  # the prompt condition. The doc-domain classifier rides along here.
+  # ======================================================================== #
+  - task_name: G3_hallucination
+    run_tag: g3
+    corpus: {pool: unanswerable, sampling: full}
+    dataset: [mmlongbench]
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    dpi: 200
+    parser: [paddleocrvl]
+    reasoner_representations: [TLV]
+    retrieval_representation: [T]           # lexical similarity over PyMuPDF text
+    text_retrievers: []                     # no accuracy benchmark for G3
+    vision_retrievers: []
+    joints: []
+    k_values: [3]                           # fixed small similarity k
+    joint_k_values: []
+    inference_text_retriever: bm25          # locked lexical similarity arm
+    inference_vision_retriever: none
+    inference_joint: false
+    prompt_modes: [none, generic, targeted] # the swept variable for this task
+    classifier: qwen3vl-2b-local
+    judge_spec: stub

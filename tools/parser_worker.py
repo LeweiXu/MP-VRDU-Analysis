@@ -77,25 +77,49 @@ _HF = {}
 _OCR_PROMPT = "Convert this document page to clean Markdown. Output only the Markdown."
 
 
-def _hf_vlm_markdown(image_path: str, model_id: str) -> str:
-    """Generic transformers image->markdown for the VLM parser backends.
+def _load_vlm(model_id: str):
+    """Load an OCR VLM with the correct auto-class + its processor, cached in `_HF`.
 
-    MinerU 2.5 and Unlimited-OCR are both VLMs loaded via transformers; this runs
-    a single OCR-to-markdown generation. Verified on the Kaya parser envs (each
-    heavy stack is pinned there); not exercised locally.
+    These are vision-language models, not causal LMs: MinerU 2.5 is a Qwen2-VL
+    (`Qwen2VLConfig`) and Unlimited-OCR a custom image-text-to-text model
+    (`UnlimitedOCRConfig`). `AutoModelForCausalLM` rejects both ("Unrecognized
+    configuration class"), so load through the vision auto-classes, newest first,
+    falling back across transformers versions.
+    """
+
+    import transformers
+    from transformers import AutoProcessor
+
+    if model_id in _HF:
+        return _HF[model_id]
+    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+    load_kwargs = dict(trust_remote_code=True, torch_dtype="auto", device_map="auto")
+    errors = []
+    for cls_name in ("AutoModelForImageTextToText", "AutoModelForVision2Seq"):
+        cls = getattr(transformers, cls_name, None)
+        if cls is None:
+            continue
+        try:
+            model = cls.from_pretrained(model_id, **load_kwargs)
+            _HF[model_id] = (processor, model)
+            return _HF[model_id]
+        except Exception as exc:  # noqa: BLE001 - try the next vision auto-class
+            errors.append(f"{cls_name}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(f"could not load VLM {model_id!r} via a vision auto-class; tried: " + " | ".join(errors))
+
+
+def _hf_vlm_markdown(image_path: str, model_id: str) -> str:
+    """Transformers image->markdown for the VLM parser backends (mineru / unlimited).
+
+    Runs a single OCR-to-markdown generation on one page. The parser stacks are
+    pinned in their own Kaya envs (parse-mineru / parse-unlimited) and exercised
+    there, not locally.
     """
 
     import torch
     from PIL import Image
-    from transformers import AutoModelForCausalLM, AutoProcessor
 
-    if model_id not in _HF:
-        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, trust_remote_code=True, torch_dtype="auto", device_map="auto"
-        )
-        _HF[model_id] = (processor, model)
-    processor, model = _HF[model_id]
+    processor, model = _load_vlm(model_id)
 
     image = Image.open(image_path).convert("RGB")
     messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": _OCR_PROMPT}]}]

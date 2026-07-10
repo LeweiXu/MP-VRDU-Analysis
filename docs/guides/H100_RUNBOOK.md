@@ -62,8 +62,8 @@ exercises every path, including the GPU paddleocr-vl parser on the TL/TLV rungs,
 in a few minutes instead of hours. Still in the core env, from the repo root:
 
 ```bash
-python -m ops.generate --spec ops/specs/h100_test.yaml
-python -m ops.scripts.check_run --spec ops/specs/h100_test.yaml
+python -m ops.generate --spec ops/specs/h100_smoke.yaml
+python -m ops.scripts.check_run --spec ops/specs/h100_smoke.yaml
 ```
 
 If `check_run` prints `RESULT: OK` you know the envs, the weights, and the parser

@@ -267,7 +267,6 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
         log.info("failed-only %s: retrying %d failed cells", task.name, len(failed_ids))
     result_cache = ResultCache(paths.results)
     prediction_cache = PredictionCache(paths.predictions)
-    retrievers = build_retrievers(config)
     task_questions = list(task.resolve_questions(config, questions))
     if limit is not None:
         task_questions = task_questions[:limit]
@@ -275,6 +274,20 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
     resolutions = config.visual_resolutions or (config.visual_resolution,)
     log.info("generate %s | %d questions | specs=%s | resolutions=%s",
              task.name, len(task_questions), list(specs) or "(side-only)", list(resolutions))
+
+    # The retrieval-accuracy benchmark is stage 1: it ranks every method and persists
+    # the rankings to the shared retrieval memo, which the inference retrievers below
+    # reuse instead of ranking the shared methods a second time. So run it before the
+    # reasoner cells (GPU free, no reasoner resident). On a failed-only retry the memo
+    # already exists from the first run, so skip it. Only the task that declares the
+    # retrieval benchmark side-artifact runs here; other tasks keep post-loop side work.
+    retrieval_stage_first = getattr(task, "side_artifact", None) == "retrieval.jsonl" and not failed_only
+    if retrieval_stage_first:
+        log.info("generate %s: retrieval stage-1 (before inference)", task.name)
+        task.run_side(config, questions, paths.side_dir, limit=limit)
+        free_gpu()
+
+    retrievers = build_retrievers(config)
 
     class _SpecOnly(Reasoner):
         def __init__(self, spec):
@@ -348,6 +361,9 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
     if failed_only:
         # A failed-only re-run retries reasoner cells; side artifacts (which have
         # no per-cell status) are regenerated wholesale on a normal run.
+        return
+    if retrieval_stage_first:
+        # Already ran as stage 1 before inference; nothing left to write here.
         return
     log.info("generate %s: side work", task.name)
     # Side writers get the full corpus (not the task pool) and the smoke limit, so a

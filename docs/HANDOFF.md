@@ -70,26 +70,28 @@ spec using paddleocrvl and ≤ 8B. **No setup blocker for that scope.**
 ### Blockers for running `ops/specs/target_architecture.yaml` IN FULL (H100 end goal)
 
 The full reference spec sweeps parsers, 32B, and LongDocURL, which the core build does
-not cover. Three real gaps remain:
+not cover. Status of the three gaps:
 
-1. **`mineru` + `unlimited` parsers are a code bug, NOT fixed.** `parser_worker._hf_vlm_markdown`
-   loads via `AutoModelForCausalLM.from_pretrained` (`tools/parser_worker.py:90,94`), but
-   MinerU2.5 is a Qwen2-VL model — `ValueError: Unrecognized configuration class
-   Qwen2VLConfig … for AutoModelForCausalLM` (final_probe:38-52); Unlimited-OCR fails the
-   same way. Machine-independent (fails on V100 and H100). The `9488b03` "fix" was
-   **paddleocrvl/paddle**, a different parser — `parser_worker.py` itself is untouched.
-   Fix: load with the correct class (`AutoModelForImageTextToText` / the model-specific
-   `Qwen2VLForConditionalGeneration`), not `AutoModelForCausalLM`. The G1 `parser` sweep
-   (`target_architecture.yaml:69-71`) hits both, so full-run "no errors" needs this.
-2. **32B reasoner not staged.** `config.json:51-55` stages 2B/4B/8B + InternVL3-8B only;
-   the `size` sweep includes `qwen3vl-32b-local`, so add 32B to prestage for the full run
-   (runs on the H100, not the V100).
-3. **LongDocURL not staged.** `config.json:81-83` stages mmlongbench only; the `dataset`
-   sweep needs LongDocURL staged (the `load_longdocurl` loader already exists).
+1. **`mineru` + `unlimited` parser loader — FIX LANDED (needs Kaya re-probe).**
+   `parser_worker` was loading VL models via `AutoModelForCausalLM` — wrong class:
+   MinerU2.5 is a Qwen2-VL (`Qwen2VLConfig`) and Unlimited-OCR a custom
+   image-text-to-text model (`UnlimitedOCRConfig`), so both crashed with "Unrecognized
+   configuration class" (final_probe:38-59). New `_load_vlm` (`tools/parser_worker.py`)
+   loads through `AutoModelForImageTextToText` → `AutoModelForVision2Seq` (with
+   `trust_remote_code`). Compiles locally but **cannot be runtime-verified here** (parser
+   envs + weights are Kaya-only) — re-probe on Kaya to confirm both load and generate.
+   Caveat: this keeps the raw-transformers `generate()` path; if MinerU output is poor,
+   the next step is its own `mineru[vlm]` pipeline (which uses the staged layout/formula
+   aux models). NB the `9488b03` commit fixed **paddleocrvl/paddle**, a different parser.
+2. **32B reasoner — STAGED for the H100.** Added `Qwen/Qwen3-VL-32B-Instruct` to
+   `ops/kaya/h100_main.json`, which now stages the full G1 + G2 set (all reasoners incl.
+   32B, all six retrievers + colpali bases, all three parsers, MMLongBench). 32B runs on
+   the H100, not the V100.
+3. **LongDocURL — abandoned.** Kept in `target_architecture.yaml` for demo/completeness
+   only; intentionally NOT staged (its `dataset` sweep is not run).
 
-(Note: the per-parser / per-method try/except means a broken parser yields skip rows
-rather than crashing the run — so the job "completes" but those parser-sweep cells are
-empty. "Run in full with no errors" requires actually fixing #1.)
+(The per-parser try/except means a broken parser yields skip rows rather than crashing —
+the job "completes" but those cells are empty; "no errors" needs #1 confirmed on Kaya.)
 
 ---
 
