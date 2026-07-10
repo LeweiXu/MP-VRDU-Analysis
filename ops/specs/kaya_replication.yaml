@@ -17,22 +17,25 @@ runs:
   # deployment resolution, to compare against the Qwen3-VL-8B headline.
   - task: G1_oracle_ladder
     run_tag: g1-internvl
-    reasoner_spec: internvl3-8b-local
-    visual_resolution: med
-    representations: [T, TL, TLV, V]
+    base:
+      reasoner_spec: internvl3-8b-local
+      visual_resolution: med
+      representations: [T, TL, TLV, V]
 
   # Quantization sweep at 8B: 4-bit and 8-bit. (bf16 is the main run's g1-size 8B,
   # so it is not repeated here.) The quantization is appended to the model spec, so
   # these cache apart from the bf16 rows.
   - task: G1_oracle_ladder
     run_tag: g1-8b-4bit
-    reasoner_spec: qwen3vl-8b-local
-    quantization: 4bit
-    visual_resolution: med
-    representations: [T, TL, TLV, V]
+    base:
+      reasoner_spec: qwen3vl-8b-local
+      quantization: 4bit
+      visual_resolution: med
+      representations: [T, TL, TLV, V]
   - task: G1_oracle_ladder
     run_tag: g1-8b-8bit
-    reasoner_spec: qwen3vl-8b-local
-    quantization: 8bit
-    visual_resolution: med
-    representations: [T, TL, TLV, V]
+    base:
+      reasoner_spec: qwen3vl-8b-local
+      quantization: 8bit
+      visual_resolution: med
+      representations: [T, TL, TLV, V]

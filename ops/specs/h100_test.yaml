@@ -15,6 +15,7 @@ base:
 runs:
   - task: G1_oracle_ladder
     run_tag: g1-8b-test
-    reasoner_spec: qwen3vl-8b-local
-    visual_resolution: med
-    representations: [T, TL, TLV, V]
+    base:
+      reasoner_spec: qwen3vl-8b-local
+      visual_resolution: med
+      representations: [T, TL, TLV, V]

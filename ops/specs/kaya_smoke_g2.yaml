@@ -1,17 +1,18 @@
-# Focused offline contract check for real vision retrieval and parser isolation.
+# G2 recovery slice for the per-document-type Kaya smoke.
 
 base:
-  corpus: {sampling: {limit: 1}}
+  corpus: {sampling: {per_doc_type: 1, seed: 0}}
+  dataset: mmlongbench
   parser: paddleocrvl
   judge_spec: stub
 
 runs:
   - task: G2_retrieval
-    run_tag: offline-retrieval-contract-smoke
+    run_tag: g2-perdoctype1-smoke
     retrieval:
-      text_retrievers: [bm25]
-      vision_retrievers: [colmodernvbert, colqwen2.5]
-      joints: [[bm25, colqwen2.5]]
+      text_retrievers: [bm25, bge-m3, qwen3-embedding]
+      vision_retrievers: [colmodernvbert, colqwen2.5, colqwen3]
+      joints: matched
       k_values: [1]
       joint_k_values: [1]
     inference:

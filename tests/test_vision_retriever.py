@@ -21,21 +21,33 @@ def test_colmodernvbert_uses_embedded_text_config(monkeypatch, tmp_path):
         return config
 
     monkeypatch.setattr(ModernVBertConfig, "from_pretrained", fake_from_pretrained)
-    retriever = ColModernVbertRetriever(cache_dir=tmp_path)
+    hf_home = tmp_path / "hf"
+    monkeypatch.setenv("HF_HOME", str(hf_home))
+    retriever = ColModernVbertRetriever(cache_dir=tmp_path / "results")
     kwargs = retriever.model_load_kwargs()
 
     assert calls == [
         (
             "ModernVBERT/colmodernvbert-base",
-            {"cache_dir": tmp_path, "local_files_only": True},
+            {"cache_dir": hf_home, "local_files_only": True},
         )
     ]
-    assert kwargs == {"config": config, "local_files_only": True}
+    assert kwargs == {
+        "config": config,
+        "local_files_only": True,
+        "key_mapping": {
+            r"^model\.vision_model\.vision_model\.": "model.vision_model.",
+            r"^model\.connector\.modality_projection\.weight$": (
+                "model.connector.modality_projection.proj.weight"
+            ),
+            r"^model\.custom_text_proj\.": "custom_text_proj.",
+        },
+    }
     assert config.freeze_config == {"freeze_text_layers": False}
     assert text_config.text_model_name == str(
-        (tmp_path / "mpvrdu" / "colmodernvbert-text-config").resolve()
+        (hf_home / "mpvrdu" / "colmodernvbert-text-config").resolve()
     )
-    saved = json.loads((tmp_path / "mpvrdu" / "colmodernvbert-text-config" / "config.json").read_text())
+    saved = json.loads((hf_home / "mpvrdu" / "colmodernvbert-text-config" / "config.json").read_text())
     assert saved == {"model_type": "modernbert", "vocab_size": 50408}
 
 

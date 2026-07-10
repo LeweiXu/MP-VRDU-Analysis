@@ -75,3 +75,35 @@ def test_parser_warm_unloads_retrievers_first(monkeypatch) -> None:
     driver._warm_parser_after_retrieval(None, [object()], retrievers, lambda: events.append("free"))
 
     assert events == ["unload-text", "unload-vision", "free", "parser", "free"]
+
+
+def test_inference_retrievers_disable_silent_fallback(monkeypatch, tmp_path) -> None:
+    driver = __import__("experiments.engine.driver", fromlist=["unused"])
+    retrievers = __import__("retrievers", fromlist=["unused"])
+    text = __import__("retrievers.text", fromlist=["unused"])
+    vision = __import__("retrievers.vision", fromlist=["unused"])
+    calls = {}
+
+    monkeypatch.setattr(retrievers, "MemoizedRetriever", lambda inner, **_kwargs: inner)
+    monkeypatch.setattr(text, "get_text_retriever", lambda name, **kwargs: calls.setdefault("text", (name, kwargs)))
+    monkeypatch.setattr(
+        vision,
+        "get_vision_retriever",
+        lambda name, **kwargs: calls.setdefault("vision", (name, kwargs)),
+    )
+    paths = type("Paths", (), {"data_dir": tmp_path, "cache_dir": tmp_path})()
+    config = type(
+        "Config",
+        (),
+        {
+            "paths": paths,
+            "dpi": 200,
+            "inference_text_retriever": "bge-m3",
+            "inference_vision_retriever": "colqwen2.5",
+        },
+    )()
+
+    driver.build_retrievers(config)
+
+    assert calls["text"][1]["allow_bm25_fallback"] is False
+    assert calls["vision"][1]["allow_text_fallback"] is False

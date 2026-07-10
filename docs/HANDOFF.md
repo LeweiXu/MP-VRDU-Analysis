@@ -24,6 +24,73 @@ Machine naming: `setup_env` accepts `V100` (sm_70, no flash-attn) or `H100`
 (sm_90, flash-attn). `--local` controls whether the environments are built in the
 current checkout rather than the configured Kaya root.
 
+**Scope narrowed (2026-07-10):** the only two targets that matter are **Kaya V100s**
+and the **supervisor H100 (run locally with `--local`)**. Non-Kaya / arbitrary
+machines are out of scope.
+
+---
+
+## Setup verdict for V100 + H100 (confirmed 2026-07-10)
+
+For the core science (G1/G2/G3, paddleocrvl parser, reasoners ≤ 8B, retrievers
+bm25 / bge-m3 / colqwen2.5 / colmodernvbert), **setup + prestage work on both boxes —
+no setup blocker.** Verified against the code:
+
+- Both machines exist in `setup_env` (`setup_env.py:40-42`): V100 = cu126 + no
+  flash-attn, H100 = cu126 + flash-attn. `core` = torch 2.7.0, `parse-paddleocrvl` =
+  paddle 3.3.1 (`setup_env.py:30-35`); torch 2.7 cu126 covers sm_70 and sm_90.
+- flash-attn on H100 is best-effort: the build is try/excepted and only warns
+  (`setup_env.py:135-142`); the reasoner uses SDPA regardless. So H100 setup does not
+  hard-fail if flash-attn does not build. On the supervisor, run both scripts with
+  `--local` (else they target the Kaya remote root).
+- `prestage` (`ops/kaya/config.json`) stages 2B/4B/8B + InternVL3-8B (not 32B), the
+  retriever adapters, and **the colpali bases**: colqwen2.5-base auto-discovered from
+  `adapter_config.json` (`prestage.py:122`), colmodernvbert-base + siglip2 via
+  `retrieval_model_dependencies` (`config.json:68-72`); plus paddleocrvl
+  (+ PP-DocLayoutV2) and MMLongBench. bm25 needs no model.
+
+What actually works now (verified against logs job 1025361 on a V100 + the newest
+retriever probe job 1027198, `{"passed": 6, "failed": []}`):
+
+- **All six retrievers load and rank offline**, including `colqwen3` — it does NOT use
+  colpali_engine (which lacks a ColQwen3 class); `ColQwen3Retriever._load` loads the
+  repo's own transformers model via `AutoModel.from_pretrained(trust_remote_code=True,
+  local_files_only=True)` (`retrievers/vision.py:271-289`). So colqwen3 is not a blocker.
+- `qwen3-embedding-4B` is the only retriever that fails on a 16 GB **V100** (CUDA OOM,
+  final_probe:16); it loads on the H100. Hardware only, per-method skip.
+- `paddleocrvl` works after the paddle 3.0.0 → 3.3.1 fix (commit `9488b03`). The
+  `[FAIL] parser.paddleocrvl` in the old job 1025361 (line 21, PIR strides error) is
+  pre-fix and stale.
+
+Core G1/G2/G3 need only `core` + `parse-paddleocrvl`, so the practical build is:
+`setup_env --machine {V100|H100} --env core,parse-paddleocrvl` (+ `--local` on the H100),
+`prestage --config ops/kaya/config.json` (+ `--local`), then `generate` on a G1/G2/G3
+spec using paddleocrvl and ≤ 8B. **No setup blocker for that scope.**
+
+### Blockers for running `ops/specs/target_architecture.yaml` IN FULL (H100 end goal)
+
+The full reference spec sweeps parsers, 32B, and LongDocURL, which the core build does
+not cover. Three real gaps remain:
+
+1. **`mineru` + `unlimited` parsers are a code bug, NOT fixed.** `parser_worker._hf_vlm_markdown`
+   loads via `AutoModelForCausalLM.from_pretrained` (`tools/parser_worker.py:90,94`), but
+   MinerU2.5 is a Qwen2-VL model — `ValueError: Unrecognized configuration class
+   Qwen2VLConfig … for AutoModelForCausalLM` (final_probe:38-52); Unlimited-OCR fails the
+   same way. Machine-independent (fails on V100 and H100). The `9488b03` "fix" was
+   **paddleocrvl/paddle**, a different parser — `parser_worker.py` itself is untouched.
+   Fix: load with the correct class (`AutoModelForImageTextToText` / the model-specific
+   `Qwen2VLForConditionalGeneration`), not `AutoModelForCausalLM`. The G1 `parser` sweep
+   (`target_architecture.yaml:69-71`) hits both, so full-run "no errors" needs this.
+2. **32B reasoner not staged.** `config.json:51-55` stages 2B/4B/8B + InternVL3-8B only;
+   the `size` sweep includes `qwen3vl-32b-local`, so add 32B to prestage for the full run
+   (runs on the H100, not the V100).
+3. **LongDocURL not staged.** `config.json:81-83` stages mmlongbench only; the `dataset`
+   sweep needs LongDocURL staged (the `load_longdocurl` loader already exists).
+
+(Note: the per-parser / per-method try/except means a broken parser yields skip rows
+rather than crashing the run — so the job "completes" but those parser-sweep cells are
+empty. "Run in full with no errors" requires actually fixing #1.)
+
 ---
 
 ## Diagnosis task 1: why does `setup_env --env all` fail?
@@ -138,8 +205,62 @@ scope for prestaging.
 
 ## Coordinate / not in scope here
 
-- **G4 → G3 merge is in flight by another agent** (`docs/WIP_g4_g3_merge.md`): don't touch
-  the driver `run_side` call site, `G3_hallucination`, the registry, or the deleted G4.
-- **Per-sweep YAML expander is deferred**; its target schema is
-  `ops/specs/target_architecture.yaml` (user-owned, with the precedence rules). Not part
-  of this env/prestage work.
+Both of the items that were in flight when this handoff was written have since **landed**
+(2026-07-10); details in `docs/DECISIONS.md`. What they change for the offline/retrieval
+contract:
+
+- **G4 → G3 merge — LANDED** (committed). Tasks are now G1/G2/G3; the classifier is G3's
+  optional side artifact (`classifier.jsonl`, gated on `config.classifier_spec`). The
+  driver `run_side` call site, `G3_hallucination`, and the registry all moved; the G4
+  module is gone. `docs/WIP_g4_g3_merge.md` is deleted.
+- **Per-sweep YAML expander — LANDED** (uncommitted; `docs/WIP_yaml_expander.md`). It
+  reworks the retrieval wiring this handoff cares about, but **behaviour-preserving on the
+  defaults**, so the findings above still hold at the same spots:
+  - `driver.build_retrievers` now builds the inference arms from
+    `config.inference_text_retriever` / `_vision_retriever` via `get_text_retriever` /
+    `get_vision_retriever` (defaults still bm25 / colqwen2.5, same fallback default). So
+    finding #2 (silent `allow_text_fallback` degradation) is unchanged — fix it at the
+    retriever construction, now config-driven.
+  - `side_artifacts.write_retrieval_eval` takes its method sets as params
+    (`text_methods` / `vision_methods` / `joint_pairs`, defaults = the old constants), fed
+    from the G2 `retrieval` block. Per-method try/except + skip is unchanged, so findings
+    #1/#3/#4 (colpali bases, colqwen3 unsupported, qwen3-embedding OOM) are unaffected.
+  - **Prestage-scope shift:** `parser` and `dataset` are now real spec axes. A `parser`
+    sweep needs the `mineru` / `unlimited` envs+weights (task 1 / the scope note above); a
+    `dataset` sweep selects the loader in `ops/generate.py` (`DATASET_LOADERS`:
+    mmlongbench / longdocurl), so **LongDocURL is back in prestage scope IF the dataset
+    sweep is run** (it is skipped otherwise, so the "no longer in scope" line stays true
+    for the default kaya run).
+
+---
+
+## Next work (deferred — NOT this turn)
+
+Separate from the env/prestage contract. Both confirmed by the 2026-07-10 audit against
+the code; captured here so the next session fixes them.
+
+1. **Pivot-v4 G2 stage reuse + continuous write.** Today Stage 2 (inference) does not
+   consume Stage 1 (retrieval) — they compute rankings independently and in the wrong
+   order:
+   - The inference retrievers (bm25 / colqwen2.5) run first, memoized under
+     `<run_tag>/retrieval/` (`driver.py:129-135`); the benchmark runs **after** all
+     reasoner cells (`driver.py:357`) and rebuilds every method from scratch with **raw**
+     (non-memoized) retrievers (`side_artifacts.py:50,52`). bm25/colqwen2.5 are ranked
+     twice, and — because the two paths can set different `allow_*` fallback flags — the
+     pages fed to the reasoner can silently diverge from the ranking scored in
+     `retrieval.jsonl` (the env finding-#2 hazard).
+   - `write_retrieval_eval` ranks every method into in-memory dicts, then opens
+     `retrieval.jsonl` `"w"` and dumps all rows at the end (`side_artifacts.py:90-113,
+     122-123`) — it is **not** written incrementally.
+   - Fix direction: run retrieval Stage 1 FIRST, write `retrieval.jsonl` rows as each
+     method finishes (incremental append), and have inference READ the persisted stage-1
+     ranking for bm25/colqwen2.5 instead of recomputing. Add a test asserting the
+     inference pages match the `retrieval.jsonl` ranking for the same (question, method).
+
+2. **YAML reader must enforce bm25 + colqwen2.5 are present.** Every G2 `retrieval` block
+   must contain `bm25` in `text_retrievers` and `colqwen2.5` in `vision_retrievers` — they
+   are the fixed matched/cross arms the inference stage feeds and that G3's similarity
+   retrieval uses. Today `_g2_spec` (`experiments/corpus/yaml_spec.py`) only validates that
+   the inference PICKS are a subset of the benchmark lists; it does not require
+   bm25/colqwen2.5 to exist. Add the presence check (raise `SpecError` if either is
+   missing) alongside the existing subset validation.

@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Sequence
 import json
+import os
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
@@ -19,6 +20,7 @@ from retrievers import (
     render_document_pages,
     tokenize,
 )
+from config import DEFAULT_PATHS
 from schema import Question
 
 COLMODERNVBERT_MODEL_ID = "ModernVBERT/colmodernvbert"
@@ -30,6 +32,7 @@ COLQWEN3_MODEL_ID = "OpenSearch-AI/Ops-Colqwen3-4B"
 # retrieval pass is question-major and questions cluster by document, so a small
 # window captures nearly all reuse while bounding host RAM.
 PAGE_EMBED_CACHE_DOCS = 8
+PAGE_EMBED_BATCH_SIZE = 2
 
 
 class ColVisionRetriever(Retriever):
@@ -47,6 +50,7 @@ class ColVisionRetriever(Retriever):
     # order. Same-family names only (naming-convention variants), never a different
     # architecture, so a wrong class raises rather than producing garbage rankings.
     model_classes: tuple[tuple[str, str], ...] = (("ColQwen2_5", "ColQwen2_5_Processor"),)
+    page_embed_batch_size = PAGE_EMBED_BATCH_SIZE
 
     def __init__(self, *, data_dir: Path | None = None, cache_dir: Path | None = None, dpi: int = 96,
                  model_id: str | None = None,
@@ -132,10 +136,14 @@ class ColVisionRetriever(Retriever):
         if len(images) != len(pages):
             raise ValueError("all pages need image_path for vision retrieval")
         start = perf_counter()
-        batch_images = processor.process_images(images).to(model.device)
-        with torch.no_grad():
-            embeddings = model(**batch_images)
-        embeddings = embeddings.to("cpu")
+        embeddings = []
+        for start_index in range(0, len(images), self.page_embed_batch_size):
+            batch_images = processor.process_images(
+                images[start_index : start_index + self.page_embed_batch_size]
+            ).to(model.device)
+            with torch.no_grad():
+                batch_embeddings = model(**batch_images)
+            embeddings.extend(row.detach().to("cpu") for row in batch_embeddings)
         self.index_build_s += perf_counter() - start
         self._page_emb[key] = embeddings
         while len(self._page_emb) > PAGE_EMBED_CACHE_DOCS:
@@ -148,7 +156,7 @@ class ColVisionRetriever(Retriever):
         model, processor = self._load()
         # Page-embed build is timed inside _page_embeddings (index cost); the query
         # timer below covers only the query encode + multi-vector scoring.
-        image_embeddings = self._page_embeddings(question, pages).to(model.device)
+        image_embeddings = self._page_embeddings(question, pages)
         start = perf_counter()
         batch_queries = processor.process_queries([question.question]).to(model.device)
         with torch.no_grad():
@@ -206,9 +214,10 @@ class ColModernVbertRetriever(ColVisionRetriever):
 
         from colpali_engine.models.modernvbert.configuration_modernvbert import ModernVBertConfig
 
+        hf_home = Path(os.environ.get("HF_HOME", DEFAULT_PATHS.hf_home))
         config = ModernVBertConfig.from_pretrained(
             COLMODERNVBERT_BASE_MODEL_ID,
-            cache_dir=self.cache_dir,
+            cache_dir=hf_home,
             local_files_only=True,
         )
         config.freeze_config = {"freeze_text_layers": False}
@@ -217,7 +226,7 @@ class ColModernVbertRetriever(ColVisionRetriever):
         # config and reopens its 50,368-token default backbone. The published
         # checkpoint contains a 50,408-token embedding and its complete text
         # config, so expose that nested config as a local AutoConfig directory.
-        text_config_dir = self.cache_dir / "mpvrdu" / "colmodernvbert-text-config"
+        text_config_dir = hf_home / "mpvrdu" / "colmodernvbert-text-config"
         text_config_dir.mkdir(parents=True, exist_ok=True)
         text_config = config.text_config.to_dict()
         text_config["model_type"] = "modernbert"
@@ -227,7 +236,17 @@ class ColModernVbertRetriever(ColVisionRetriever):
         )
         config.text_config.text_model_name = str(text_config_dir.resolve())
 
-        return {"config": config, "local_files_only": True}
+        return {
+            "config": config,
+            "local_files_only": True,
+            "key_mapping": {
+                r"^model\.vision_model\.vision_model\.": "model.vision_model.",
+                r"^model\.connector\.modality_projection\.weight$": (
+                    "model.connector.modality_projection.proj.weight"
+                ),
+                r"^model\.custom_text_proj\.": "custom_text_proj.",
+            },
+        }
 
 
 class ColQwen25Retriever(ColVisionRetriever):
@@ -247,6 +266,34 @@ class ColQwen3Retriever(ColVisionRetriever):
         ("ColQwen3", "ColQwen3Processor"),
         ("ColQwen3", "ColQwen3_Processor"),
     )
+    page_embed_batch_size = 1
+
+    def _load(self) -> tuple[Any, Any]:
+        """Load the repository's official Transformers model and processor."""
+
+        if self._model is not None and self._processor is not None:
+            return self._model, self._processor
+        import torch
+        from transformers import AutoModel, AutoProcessor
+
+        cuda = bool(torch.cuda.is_available())
+        hf_home = Path(os.environ.get("HF_HOME", DEFAULT_PATHS.hf_home))
+        self._model = AutoModel.from_pretrained(
+            self.model_id,
+            dims=2560,
+            trust_remote_code=True,
+            local_files_only=True,
+            cache_dir=hf_home,
+            dtype=torch.float16 if cuda else torch.float32,
+            device_map="cuda:0" if cuda else "cpu",
+        ).eval()
+        self._processor = AutoProcessor.from_pretrained(
+            self.model_id,
+            trust_remote_code=True,
+            local_files_only=True,
+            cache_dir=hf_home,
+        )
+        return self._model, self._processor
 
 
 VISION_RETRIEVERS = {

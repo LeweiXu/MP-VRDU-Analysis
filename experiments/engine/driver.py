@@ -121,9 +121,19 @@ def build_retrievers(config):
 
     persist_dir = config.paths.cache_dir / "retrieval"
     kwargs = dict(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)
+    text_kwargs = dict(kwargs)
+    if config.inference_text_retriever != "bm25":
+        text_kwargs["allow_bm25_fallback"] = False
+    vision_kwargs = {**kwargs, "allow_text_fallback": False}
     return Retrievers(
-        text=MemoizedRetriever(get_text_retriever(config.inference_text_retriever, **kwargs), persist_dir=persist_dir),
-        vision=MemoizedRetriever(get_vision_retriever(config.inference_vision_retriever, **kwargs), persist_dir=persist_dir),
+        text=MemoizedRetriever(
+            get_text_retriever(config.inference_text_retriever, **text_kwargs),
+            persist_dir=persist_dir,
+        ),
+        vision=MemoizedRetriever(
+            get_vision_retriever(config.inference_vision_retriever, **vision_kwargs),
+            persist_dir=persist_dir,
+        ),
     )
 
 
