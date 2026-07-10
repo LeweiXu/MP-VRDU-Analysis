@@ -60,10 +60,10 @@ PROMPT_MODES: dict[str, str] = {
     ),
 }
 DEFAULT_PROMPT_MODE = "targeted"
-# The conditions the hallucination task sweeps: generic and abstention-targeted.
-# The "no guidance" (none) arm is dropped because G1 already covers unprompted
-# behaviour.
-G3_PROMPT_MODES: tuple[str, ...] = ("generic", "targeted")
+# The conditions the hallucination task sweeps: no guidance, generic, and
+# abstention-targeted. The prompting comparison needs the unprompted (none) arm as
+# its baseline, so all three ride their own cache cells.
+G3_PROMPT_MODES: tuple[str, ...] = ("none", "generic", "targeted")
 
 
 # Named visual-resolution presets. Value = per-page pixel cap = tokens_per_page *
@@ -162,6 +162,11 @@ class ExperimentConfig:
     # for the doc-level bootstrap CIs. Set to 0/None to run the whole corpus.
     per_bin_sample: int | None = 100
     sample_seed: int = 0
+    # Per-doc_type document-level subset: whole documents are drawn per native
+    # doc_type label until it reaches this many questions (same doc-coherent draw
+    # as per_bin_sample). Set via a spec's {sampling: {per_doc_type: N, seed: S}};
+    # None runs the whole pool.
+    per_doc_type_sample: int | None = None
     # Optional bitsandbytes quantization for the local reasoner: None (bf16),
     # "4bit", or "8bit". When set it is appended to `reasoner_spec` as a
     # `-4bit`/`-8bit` suffix so the quantized run gets its own cache rows.

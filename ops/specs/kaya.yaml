@@ -1,37 +1,34 @@
-# Kaya run: the G1 size sweep (2B/4B/8B), the G1 resolution sweep at 8B, and G3.
-# The H100 runs the 8B headline (h100_main.yaml) and G2 (h100_optional.yaml).
+# Kaya real run: G1 oracle ladder, G2 retrieval (inference k-sweep + accuracy
+# side-artifact), and G3 hallucination. All 8B, med resolution, paddleocrvl parser,
+# stub judge (judge later with `python -m ops.judge`). G1/G2 sample 50 questions per
+# native doc_type (whole documents); G3 runs the full unanswerable pool.
 #
 #     python -m ops.generate --spec ops/specs/kaya.yaml
 #
-# Each run is its own cache namespace (run_tag), so they never overwrite each
-# other and can be judged/built one at a time.
+# Each run is its own cache namespace (run_tag), so they never overwrite each other
+# and can be judged/built one at a time.
 
 base:
-  corpus: {sampling: full}     # every answerable question (the tasks bind the pool)
+  corpus: {sampling: {per_doc_type: 50, seed: 0}}
   parser: paddleocrvl
-  judge_spec: stub             # judge later with `python -m ops.judge`
+  judge_spec: stub
 
 runs:
-  # G1 size sweep at the deployment resolution. Size is part of the cache key, so
-  # all three live in one run; scale.build reads them off the rows.
   - task: G1_oracle_ladder
-    run_tag: g1-size-kaya
-    reasoner_specs: [qwen3vl-2b-local, qwen3vl-4b-local, qwen3vl-8b-local]
+    run_tag: g1-doctype50
+    reasoner_specs: [qwen3vl-8b-local]
     visual_resolution: med
     representations: [T, TL, TLV, V]
 
-  # G1 resolution sweep at 8B. Resolution is a per-cell key axis, so the presets
-  # are one run swept via visual_resolutions. Image rungs only: T/TL carry no
-  # image. If a high-res cell OOMs on a V100, complete it later with --failed-only
-  # on the H100.
-  - task: G1_oracle_ladder
-    run_tag: g1-res
+  - task: G2_retrieval
+    run_tag: g2-doctype50
     reasoner_spec: qwen3vl-8b-local
+    visual_resolution: med
     representations: [TLV, V]
-    visual_resolutions: [low, med, high]
+    k_values: [1, 3, 5, 7, 10]
 
-  # G3 hallucination + prompting over the unanswerable subset, 8B.
-  - {task: G3_hallucination, run_tag: g3, reasoner_spec: qwen3vl-8b-local, visual_resolution: med}
-
-  # G4 classifier pricing (side-only, no reasoner cells).
-  # - {task: G4_classifier_pricing, run_tag: g4}
+  - task: G3_hallucination
+    run_tag: g3-full
+    reasoner_spec: qwen3vl-8b-local
+    visual_resolution: med
+    corpus: {sampling: full}

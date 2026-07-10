@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from retrievers import (
@@ -34,25 +35,52 @@ class Bm25Retriever(Retriever):
         self.data_dir = Path(data_dir or DEFAULT_DATA_DIR)
         self.cache_dir = Path(cache_dir or DEFAULT_CACHE_DIR)
         self.dpi = int(dpi)
+        # Retrieval cost (pivot 6.3): cumulative per-doc index build time and the
+        # last query's scoring time, read by the retrieval side-artifact.
+        self.index_build_s = 0.0
+        self.last_query_s = 0.0
+        # Per-doc BM25 index (page tokens + built index), so building is counted
+        # once per document and every question/k reuses it.
+        self._index: dict[tuple[str, int], tuple[Any, list[list[str]]]] = {}
 
     def _page_texts(self, question: Question, page_count: int) -> list[str]:
         return document_page_texts(question, page_count, data_dir=self.data_dir,
                                    cache_dir=self.cache_dir, dpi=self.dpi)
 
-    def _bm25(self, query_tokens: Sequence[str], page_tokens: Sequence[Sequence[str]]) -> list[float]:
-        try:
-            from rank_bm25 import BM25Okapi
+    def _doc_index(self, question: Question, page_count: int) -> tuple[Any, list[list[str]]]:
+        key = (question.doc_id, int(page_count))
+        cached = self._index.get(key)
+        if cached is not None:
+            return cached
+        start = perf_counter()
+        page_tokens = [tokenize(t) for t in self._page_texts(question, page_count)]
+        bm25 = None
+        if page_tokens:
+            try:
+                from rank_bm25 import BM25Okapi
 
-            return [float(s) for s in BM25Okapi(list(page_tokens)).get_scores(list(query_tokens))]
-        except Exception:
-            return simple_bm25_scores(query_tokens, page_tokens)
+                bm25 = BM25Okapi(list(page_tokens))
+            except Exception:
+                bm25 = None
+        self.index_build_s += perf_counter() - start
+        entry = (bm25, page_tokens)
+        self._index[key] = entry
+        return entry
 
     def rank(self, question: Question, page_count: int) -> tuple[int, ...]:
-        page_texts = self._page_texts(question, page_count)
-        if not page_texts:
+        bm25, page_tokens = self._doc_index(question, page_count)
+        if not page_tokens:
+            self.last_query_s = 0.0
             return ()
-        scores = self._bm25(tokenize(question.question), [tokenize(t) for t in page_texts])
-        return rank_pages(normalise_scores(scores), page_count)
+        start = perf_counter()
+        query_tokens = tokenize(question.question)
+        if bm25 is not None:
+            scores = [float(s) for s in bm25.get_scores(list(query_tokens))]
+        else:
+            scores = simple_bm25_scores(query_tokens, page_tokens)
+        ranked = rank_pages(normalise_scores(scores), page_count)
+        self.last_query_s = perf_counter() - start
+        return ranked
 
     def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
         return self.rank(question, page_count)[: int(k)]
@@ -79,6 +107,9 @@ class DenseTextRetriever(Retriever):
         # Page embeddings are query-independent, so they are encoded once per
         # document and reused across every question and k.
         self._page_emb: dict[tuple[str, int], list[list[float]]] = {}
+        # Retrieval cost (pivot 6.3): cumulative page-embed build time, last query time.
+        self.index_build_s = 0.0
+        self.last_query_s = 0.0
 
     def _load_embedder(self) -> Any:
         """Load the sentence embedder lazily (subclass-specific)."""
@@ -100,26 +131,35 @@ class DenseTextRetriever(Retriever):
         cached = self._page_emb.get(key)
         if cached is not None:
             return cached
+        start = perf_counter()
         vectors = self._encode(list(page_texts))
+        self.index_build_s += perf_counter() - start
         self._page_emb[key] = vectors
         return vectors
 
     def rank(self, question: Question, page_count: int) -> tuple[int, ...]:
         page_texts = self._page_texts(question, page_count)
         if not page_texts:
+            self.last_query_s = 0.0
             return ()
         try:
+            # Page-embed build is timed inside _page_embeddings (index cost), so the
+            # query timer below only covers the query encode + scoring.
             page_vectors = self._page_embeddings(question, page_texts, page_count)
+            start = perf_counter()
             query_vectors = self._encode([question.question])
             if len(page_vectors) != len(page_texts) or not query_vectors:
                 raise RuntimeError("embedder returned an unexpected shape")
             scores = [cosine(query_vectors[0], v) for v in page_vectors]
+            self.last_query_s = perf_counter() - start
         except Exception:
             if not self.allow_bm25_fallback:
                 raise
+            start = perf_counter()
             scores = normalise_scores(
                 simple_bm25_scores(tokenize(question.question), [tokenize(t) for t in page_texts])
             )
+            self.last_query_s = perf_counter() - start
         return rank_pages(normalise_scores(scores), page_count)
 
     def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:

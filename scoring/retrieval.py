@@ -34,6 +34,11 @@ class RetrievalEvalRow:
     precision: float
     recall: float
     f1: float
+    # Retrieval cost (pivot 6.3), so the cost-rung story is honest. Per-query wall
+    # time to rank this question, and the method's one-time index/embed build cost
+    # over the corpus (the same amortized value on every row for a method).
+    retrieval_latency_s: float = 0.0
+    index_build_amortized_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,8 @@ def score_retrieval(
     retriever: str,
     modality: str,
     k: int,
+    retrieval_latency_s: float = 0.0,
+    index_build_amortized_s: float = 0.0,
 ) -> RetrievalEvalRow:
     """Build one retrieval metric row for a question."""
 
@@ -86,6 +93,8 @@ def score_retrieval(
         precision=prf.precision,
         recall=prf.recall,
         f1=prf.f1,
+        retrieval_latency_s=float(retrieval_latency_s),
+        index_build_amortized_s=float(index_build_amortized_s),
     )
 
 

@@ -2,7 +2,7 @@
 
 This is the canonical operational guide for agents working on MP-VRDU on UWA
 Kaya. All Kaya-specific scripts, configuration, and documentation live in this
-`kaya/` directory.
+`ops/kaya` directory.
 
 ## Mental Model
 
@@ -16,7 +16,7 @@ Kaya work has three locations:
   have no internet. Compute jobs should read pre-staged `.cache/` and `.data/`
   artifacts and default to Hugging Face offline mode.
 
-The remote mirror is configured in `kaya/config.json` as
+The remote mirror is configured in `ops/kayaconfig.json` as
 `/group/ems036/lxu/mpvrdu`. `/group` is shared storage visible from both login
 and compute nodes, so a file staged on the login node can be read by a GPU job.
 
@@ -63,7 +63,7 @@ Important details:
 
 - `--partition=gpu --gres=gpu:1` requests one GPU on the configured GPU
   partition.
-- `--account` and `--qos` are optional in `kaya/config.json`; leave blank unless
+- `--account` and `--qos` are optional in `ops/kayaconfig.json`; leave blank unless
   SLURM rejects jobs for accounting.
 - `logs/` must exist before submission because SLURM opens output files before
   executing the script.
@@ -79,7 +79,7 @@ Important details:
 
 ## Static Config
 
-Use `kaya/config.json` for durable site/project values:
+Use `ops/kayaconfig.json` for durable site/project values:
 
 - SSH alias and remote root.
 - module names.
@@ -100,23 +100,23 @@ rsync and should never be copied to Kaya.
 `kaya.py` is intentionally small. It owns only common execution mechanics:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya show-config
-envs/mpvrdu/bin/python -m kaya.kaya push
-envs/mpvrdu/bin/python -m kaya.kaya pull
-envs/mpvrdu/bin/python -m kaya.kaya run <program> -- <args>
-envs/mpvrdu/bin/python -m kaya.kaya submit <file.py|file.sbatch> -- <args>
-envs/mpvrdu/bin/python -m kaya.kaya watch [job_id]
+envs/mpvrdu/bin/python -m ops.kaya.kaya show-config
+envs/mpvrdu/bin/python -m ops.kaya.kaya push
+envs/mpvrdu/bin/python -m ops.kaya.kaya pull
+envs/mpvrdu/bin/python -m ops.kaya.kaya run <program> -- <args>
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit <file.py|file.sbatch> -- <args>
+envs/mpvrdu/bin/python -m ops.kaya.kaya watch [job_id]
 ```
 
 It does not contain task-specific subcommands. Setup, prestage, GPU smoke, and
 probe commands are separate runnable scripts:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-models
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-retrieval-models --skip-parsers --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
-envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --job-arg value
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/setup_env.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/prestage.py -- --skip-models
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/prestage.py -- --skip-retrieval-models --skip-parsers --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit path/to/job.sbatch -- --job-arg value
 ```
 
 Python runnable files can declare defaults in their header:
@@ -204,7 +204,7 @@ jobs offline.
 
 ## Safety Rules
 
-- Keep all Kaya-specific source/config/docs under `kaya/`.
+- Keep all Kaya-specific source/config/docs under `ops/kaya`.
 - Do not reintroduce `scripts/kaya/` or `docs/KAYA.md`.
 - Do not put code, secrets, or generated results in `.cache`, `.data`, `envs`,
   `results`, or `logs`.
@@ -224,11 +224,11 @@ jobs offline.
 - No SLURM logs: ensure `logs/` exists and the `.sbatch` output paths point
   there.
 - SLURM rejects partition/GRES/account: inspect `sinfo`, `scontrol show
-  partition gpu`, and update `kaya/config.json`.
+  partition gpu`, and update `ops/kayaconfig.json`.
 
 ## clear-cache command
 
-`kaya.kaya clear-cache` removes cached generation results on the remote to start
+`ops.kaya.kaya clear-cache` removes cached generation results on the remote to start
 fresh. Default drops `results/cache/{full,smoke}` + `results/tables/{full,smoke}`
 and keeps the expensive `renders`/`marker` parse caches; `--renders` also drops
 those, `--all` nukes all of `results/cache` + `results/tables` + logs, `--logs`
@@ -247,7 +247,7 @@ Paths are validated to stay inside `results/`/`logs/`.
   `--gres gpu:v100:1` and backfills in minutes.
 - **`run` vs `submit`.** `run` executes on the login node (SSH, no SLURM) unless
   the `.py` header says `target=gpu`; `submit` always goes through SLURM (generated
-  sbatch for `.py`, as-is for `.sbatch`). GPU resources come from `kaya/config.json`
+  sbatch for `.py`, as-is for `.sbatch`). GPU resources come from `ops/kayaconfig.json`
   or `--partition/--gres/--cpus-per-task/--mem/--time/--account/--qos`.
 - **Offline caches.** Compute jobs run HF-offline and must read root-relative
   caches: the runner exports `HF_HOME`/`HF_HUB_CACHE=<root>/.cache`, unsets

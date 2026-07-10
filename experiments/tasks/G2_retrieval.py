@@ -7,6 +7,11 @@ from pathlib import Path
 from experiments.engine.side_artifacts import write_retrieval_eval
 from experiments.tasks.base import Cell, GenerationTask, Retrievers, matched_cross_sweep_cells
 
+# The reasoner-inference sweep runs at these two rungs only (pivot 7): TLV and V.
+INFERENCE_REPRESENTATIONS = ("TLV", "V")
+# Joint (free union) uses shallow k so the union stays under ~10 pages (pivot 4.1).
+JOINT_K_VALUES = (1, 3, 5)
+
 
 class G2Retrieval(GenerationTask):
     name = "G2_retrieval"
@@ -15,15 +20,35 @@ class G2Retrieval(GenerationTask):
     def _k_values(self, config) -> tuple[int, ...]:
         return tuple(config.k_values) if config.k_values else (1,)
 
+    def _representations(self, config) -> tuple[str, ...]:
+        reps = tuple(r for r in config.representations if r in INFERENCE_REPRESENTATIONS)
+        return reps or INFERENCE_REPRESENTATIONS
+
     def model_specs(self, config) -> tuple[str, ...]:
         return self._reasoner_specs(config)
 
     def generation_cells(self, config, questions, *, retrievers: Retrievers) -> list[Cell]:
-        return matched_cross_sweep_cells(questions, retrievers=retrievers, ks=self._k_values(config))
+        return matched_cross_sweep_cells(
+            questions,
+            retrievers=retrievers,
+            ks=self._k_values(config),
+            joint_ks=JOINT_K_VALUES,
+            representations=self._representations(config),
+        )
 
     def run_side(self, config, questions, side_dir: Path) -> None:
-        """Log page R/P/F1 for both retrievers across the k-sweep."""
+        """Score the full six-method + three-joint retrieval-accuracy ladder.
 
-        k_values = self._k_values(config)
-        pairs = [("vision", k) for k in k_values] + [("text", k) for k in k_values]
-        write_retrieval_eval(config, questions, pairs, side_dir, filename=self.side_artifact)
+        This is the RQ2 accuracy benchmark (no reasoner): every text and vision
+        method plus the three matched-tier joint unions, per bin, with retrieval
+        cost. It is a separate experiment from the reasoner k-sweep above.
+        """
+
+        write_retrieval_eval(
+            config,
+            questions,
+            side_dir,
+            single_ks=self._k_values(config),
+            joint_ks=JOINT_K_VALUES,
+            filename=self.side_artifact,
+        )

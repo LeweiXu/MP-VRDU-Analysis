@@ -46,6 +46,30 @@ class RetrievedTopK(InputConditioner):
         return PageSet(tuple(ranked)[: self.k], "retrieved", note=f"k={self.k}")
 
 
+class JointTopK(InputConditioner):
+    """Feed the free deduplicated union of two retrievers' top-k page sets.
+
+    Joint retrieval is post-hoc and free (pivot 4.1): it unions two already-ranked
+    page sets, no new retrieval and no score fusion (union, not RRF). Each retriever
+    is asked for its own top-k, then `union` dedups them keeping first-seen order,
+    so the result is at most 2k pages.
+    """
+
+    def __init__(self, text: Retriever, vision: Retriever, k: int, name: str | None = None) -> None:
+        self.text = text
+        self.vision = vision
+        self.k = int(k)
+        self.name = name or f"retrieved_joint_k{self.k}"
+
+    def condition(self, question: Question, page_count: int) -> PageSet:
+        from retrievers.joint import union
+
+        text_pages = self.text.retrieve(question, page_count, self.k)
+        vision_pages = self.vision.retrieve(question, page_count, self.k)
+        merged = union(text_pages, vision_pages)
+        return PageSet(tuple(merged), "retrieved", note=f"joint k={self.k}")
+
+
 class SimilarityTopK(InputConditioner):
     """Feed a few similarity-retrieved pages for zero-gold-page questions.
 

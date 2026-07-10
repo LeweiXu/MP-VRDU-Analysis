@@ -167,6 +167,8 @@ def config_from_spec(spec: Spec, *, smoke: bool = False):
     kwargs: dict[str, Any] = {}
     if "per_bin" in sampling:
         kwargs["per_bin_sample"] = int(sampling["per_bin"])
+    if "per_doc_type" in sampling:
+        kwargs["per_doc_type_sample"] = int(sampling["per_doc_type"])
     if "seed" in sampling:
         kwargs["sample_seed"] = int(sampling["seed"])
     if spec.conditions:

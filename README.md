@@ -8,10 +8,11 @@ MMLongBench-Doc; the primary reasoner is Qwen3-VL.
 
 This README is the definitive guide to the **experiment**: what a cell is, the
 representation ladder, how documents are binned, the retrieval and prompting
-sweeps, the telemetry, and the four generation tasks. For the exact decision
-record see `docs/pivot_v4.md` (science) and `docs/DECISIONS.md` (changelog). For
-how to run it day to day see `docs/USER_GUIDE.md` (local) and
-`ops/kaya/KAYA_USER_GUIDE.md` (cluster).
+sweeps, the telemetry, and the four generation tasks. It describes the system **as
+it is now**; the history of how it got here (pivots, superseded designs) lives in
+`docs/DECISIONS.md`. The coding agent's reference for code structure and frozen
+contracts is `docs/AGENT_GUIDE.md`. Cluster operations are in
+`ops/kaya/KAYA.md`.
 
 ## Quick start
 
@@ -205,23 +206,34 @@ parser model into the reasoner process.
 
 ## 3. Document bins (the deployable axis)
 
-The thesis axis is **which modality dominates a document's information content**,
-labelled by hand rather than derived from MMLongBench's native `doc_type` (which
-encodes domain, not modality). Three bins, ordered text to visual:
+> ⚠ PENDING v5 — the binning source is being finalised, so this section describes
+> a moving part. The bin **axis** is stable: *which modality dominates a document's
+> information content*, document-level, ordered text → visual. How a document *gets*
+> its bin is what is changing. The v5 direction is to bin by **representative
+> document domains** or by `evidence_source`; the manual per-document annotation
+> pass (below) is **currently optional and not the working default** — it proved
+> hard to apply cleanly and the completeness requirement was relaxed. Until the v5
+> decision lands in `docs/DECISIONS.md`, do not treat any single label source as
+> final.
 
-- **text-dominant** (information is linguistic; a scanned handwritten note is
-  text-dominant even though it is image-based on disk),
-- **mixed-modality** (needs both; e.g. a text-dense paper with a few figures),
-- **visual-dominant** (information lives in the imagery/design).
+The thesis axis names three bins — **text-dominant** (information is linguistic; a
+scanned handwritten note is text-dominant even though it is image-based on disk),
+**mixed-modality** (needs both; e.g. a text-dense paper with a few figures), and
+**visual-dominant** (information lives in the imagery/design) — deliberately *not*
+MMLongBench's native `doc_type`, which encodes domain rather than modality.
 
-Labels live in `annotations/doc_labels.csv` (one row per document:
-`bin_label`, `scan_label` = digital/scanned, and an exploratory multi-valued
-`dominant_visual`). `data/annotations.py` reads and validates them;
-`data/binning.py::stamp_bins` stamps `bin_label`/`scan_label` onto every
-`Question`. Once the sheet exists it is authoritative: a partial or malformed
-sheet fails the run loudly rather than binning blank. A blind-subset Cohen's kappa
-flow (`ops/scripts/annotate_docs.py`) supports a second-annotator reliability check
-against the same 0.75 gate used for the judge.
+Two mechanisms exist in the code. (1) **Manual annotation** — optional labels in
+`annotations/doc_labels.csv` (`bin_label`, `scan_label` = digital/scanned,
+exploratory multi-valued `dominant_visual`), read by `data/annotations.py` and
+stamped onto each `Question` by `data/binning.py::stamp_bins`. A present sheet is
+validated (columns checked, blank rows skipped), but completeness is **opt-in**
+(`--require-complete-annotations`); an absent or partial sheet degrades to blank
+bins (rendered `(unlabeled)`) so dev and smoke runs proceed. (2) **`doc_type`
+sampling** — corpus sampling is by native `doc_type`, which is unaffected by the
+bin labels, so runs proceed regardless of annotation coverage. A blind-subset
+Cohen's-kappa flow (`ops/scripts/annotate_docs.py`) supports a second-annotator
+reliability check against the same 0.75 gate as the judge, if the manual pass is
+resumed.
 
 ## 4. Page selection (conditioners)
 
@@ -335,7 +347,9 @@ model-size "experiments" are YAML runs over `G1`, not new tasks). Each keeps the
 - **`G4_classifier_pricing`**: a side-only task that prices the modality-bin
   classifier (first pages, small model): its latency and VRAM. Routing itself is
   not a task; the routing table is assembled at **build time** from G1's ladder
-  rows plus this classifier price.
+  rows plus this classifier price. *(⚠ PENDING v5 — G4 is being collapsed: routing
+  is fully build-time over G1, and the classifier reduces to an optional one-shot
+  prediction pass. See `docs/DECISIONS.md` when landed.)*
 
 ## 12. Research questions
 
@@ -369,11 +383,15 @@ the *same* file rather than a parallel one, so pooling is a file copy, not a mer
 
 ## Where to go next
 
-- `docs/USER_GUIDE.md` / `ops/kaya/KAYA_USER_GUIDE.md`: run commands, cluster
-  submission, flags, outputs.
-- `docs/pivot_v4.md`: the science decision record (authoritative on what/why).
-- `docs/DECISIONS.md`: the build changelog, one entry per stage, with deviations.
-- `docs/AGENT_GUIDE.md`: fixed decisions, frozen interfaces, models/data/tools
-  reference.
-- `docs/ANNOTATION_GUIDE.md`: the manual binning + kappa workflow.
-- `docs/REPO_STRUCTURE.md`: this tree plus the auto-generated per-file map.
+Three docs, each with one job (see `CLAUDE.md` for the discipline that keeps them
+from contradicting each other):
+
+- **`docs/AGENT_GUIDE.md`** — the coding agent's reference: repository structure,
+  frozen interfaces, invariants, and the per-layer implementation reference.
+- **`docs/DECISIONS.md`** — the only place history lives: every pivot, superseded
+  design, and deviation, newest first.
+- **`ops/kaya/KAYA.md`** — cluster operations: SLURM submission, offline-cache
+  setup, sync, flags.
+
+Generated (never hand-edited): `docs/REPO_STRUCTURE.md` (auto per-file map) and
+`docs/generated/` (script outputs).

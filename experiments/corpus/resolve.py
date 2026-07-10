@@ -78,11 +78,32 @@ def sample_per_bin(corpus: Sequence[Any], per_bin: int | None, seed: int = 0) ->
     return [question for question in corpus if question.id in keep_ids]
 
 
+def sample_per_doc_type(corpus: Sequence[Any], per_doc_type: int | None, seed: int = 0) -> list[Any]:
+    """Subset to about `per_doc_type` questions per doc_type by drawing whole documents.
+
+    Same document-coherent draw as `sample_per_bin`, but grouped by the native
+    `doc_type` label instead of `bin_label`. Within each doc_type, documents are
+    shuffled by `seed` and taken whole until the group reaches `per_doc_type`
+    questions; the returned list preserves the original corpus order.
+    """
+
+    grouped: dict[str, list[Any]] = {}
+    for question in corpus:
+        grouped.setdefault(question.doc_type, []).append(question)
+
+    keep_ids: set[str] = set()
+    for group in grouped.values():
+        keep_ids |= _draw_documents(group, per_doc_type, seed)
+
+    return [question for question in corpus if question.id in keep_ids]
+
+
 def resolve_corpus(spec: Mapping[str, Any], corpus: Sequence[Any]) -> list[Any]:
     """Apply a spec's `corpus` block to a question list.
 
-    Modes: `full` (everything), `{per_bin: N, seed: S}` (document-coherent
-    subset), `{limit: N}` or `{ids: [...]}` (a fast smoke/debug slice).
+    Modes: `full` (everything), `{per_bin: N, seed: S}` or `{per_doc_type: N,
+    seed: S}` (document-coherent subsets), `{limit: N}` or `{ids: [...]}` (a fast
+    smoke/debug slice).
     """
 
     sampling: Any = spec.get("sampling", "full") if isinstance(spec, Mapping) else spec
@@ -96,4 +117,6 @@ def resolve_corpus(spec: Mapping[str, Any], corpus: Sequence[Any]) -> list[Any]:
             return [q for q in corpus if q.id in wanted]
         if "per_bin" in sampling:
             return sample_per_bin(corpus, int(sampling["per_bin"]), int(sampling.get("seed", 0)))
+        if "per_doc_type" in sampling:
+            return sample_per_doc_type(corpus, int(sampling["per_doc_type"]), int(sampling.get("seed", 0)))
     raise ValueError(f"unrecognised corpus sampling: {sampling!r}")

@@ -10,14 +10,14 @@ This guide explains how to run MP-VRDU work on Kaya through `kaya.py`.
 - The local conda env exists at `envs/mpvrdu`.
 - Root `.env` contains `HF_TOKEN=...` if Hugging Face auth is needed.
 
-All fixed Kaya values are in `kaya/config.json`: SSH alias, remote path,
+All fixed Kaya values are in `ops/kaya/config.json`: SSH alias, remote path,
 modules, env path, SLURM defaults, rsync excludes, model IDs, dataset IDs, and
 secret forwarding rules.
 
 Check the config:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya show-config
+envs/mpvrdu/bin/python -m ops.kaya.kaya show-config
 ```
 
 ## How Kaya Works
@@ -52,28 +52,28 @@ ssh kaya 'scancel <jobid>'
 Push the code mirror:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya push
+envs/mpvrdu/bin/python -m ops.kaya.kaya push
 ```
 
 Build/update the Kaya env:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/setup_env.py
 ```
 
 Stage the dataset, all configured model weights, and tool caches on the login
 node:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/prestage.py
 ```
 
 For a smaller first pass:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-models
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/prestage.py -- --skip-reasoner-models --retrieval-model-id BAAI/bge-small-en-v1.5
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/prestage.py -- --skip-models
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/prestage.py -- --skip-retrieval-models --skip-tool-caches --model-id Qwen/Qwen3-VL-2B-Instruct
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/prestage.py -- --skip-reasoner-models --retrieval-model-id BAAI/bge-small-en-v1.5
 ```
 
 `prestage.py` uses the Hugging Face Python package. Models are downloaded as
@@ -85,28 +85,28 @@ for Xet-backed cache downloads. `HF_TOKEN` is read from local `.env` and
 forwarded to the remote login-node process. `.env` itself is never rsynced.
 
 If prestage fails in PaddleOCR with a `PaddlePredictorOption` `TypeError`, rerun
-`envs/mpvrdu/bin/python -m kaya.kaya run scripts/setup_env.py` first. The env needs
+`envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/setup_env.py` first. The env needs
 the PaddleX 3.1 pin from `requirements.txt`.
 
 ## kaya.py Commands
 
-Invocation is `python -m kaya.kaya [--config PATH] <command> [options] [program] [-- forwarded args]`.
+Invocation is `python -m ops.kaya.kaya [--config PATH] <command> [options] [program] [-- forwarded args]`.
 Runner options come before the program path; everything after `--` is forwarded
 verbatim to the Python script or `.sbatch` file. The one global option is:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--config PATH` | `kaya/config.json` | Path to the Kaya JSON config the runner resolves site/SLURM/path values from. |
+| `--config PATH` | `ops/kaya/config.json` | Path to the Kaya JSON config the runner resolves site/SLURM/path values from. |
 
 The commands are `show-config`, `push`, `pull`, `run`, `submit`, `watch`,
 `cancel`, and `clear-cache`.
 
 ### `show-config`
 
-Prints `kaya/config.json` as resolved by the runner. No options.
+Prints `ops/kaya/config.json` as resolved by the runner. No options.
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya show-config
+envs/mpvrdu/bin/python -m ops.kaya.kaya show-config
 ```
 
 ### `push`
@@ -117,7 +117,7 @@ options. Excluded paths include `.git/`, `.env`, `.cache/`, `.data/`, `envs/`,
 source-only edits can be deleted by the next push.
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya push
+envs/mpvrdu/bin/python -m ops.kaya.kaya push
 ```
 
 ### `pull`
@@ -126,7 +126,7 @@ Pulls remote `logs/` and `results/` back to the local repo. No options. It does
 not pull datasets, model caches, or environments.
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya pull
+envs/mpvrdu/bin/python -m ops.kaya.kaya pull
 ```
 
 ### Shared job options (`run` and `submit`)
@@ -144,7 +144,7 @@ commands.
 
 **SLURM resources** (only used for generated `.py` wrappers; for a `.sbatch`
 file these are passed only when set, as overrides). When a flag is omitted the
-value falls back to `slurm.*` in `kaya/config.json` (defaults: `partition=gpu`,
+value falls back to `slurm.*` in `ops/kaya/config.json` (defaults: `partition=gpu`,
 `gres=gpu:1`, `cpus_per_task=4`, `mem=24G`, `time=00:30:00`, blank
 `account`/`qos`).
 
@@ -182,8 +182,8 @@ and submits a GPU sbatch wrapper (same path as `submit`).
 Plus all [shared job options](#shared-job-options-run-and-submit).
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/dataset_stats.py
-envs/mpvrdu/bin/python -m kaya.kaya run --target gpu --time 00:05:00 scripts/gpu_test.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/dataset_stats.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya run --target gpu --time 00:05:00 scripts/gpu_test.py
 ```
 
 ### `submit`
@@ -205,10 +205,10 @@ overrides. Custom `.sbatch` files run from the remote repo root; use
 runs repo files by path.
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
-envs/mpvrdu/bin/python -m kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 \
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --gres gpu:v100:1 --time 06:00:00 \
   cli/generate.py -- --spec specs/full_generation.yaml
-envs/mpvrdu/bin/python -m kaya.kaya submit path/to/job.sbatch -- --arg-for-job value
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit path/to/job.sbatch -- --arg-for-job value
 ```
 
 ### `watch`
@@ -224,8 +224,8 @@ Waits for a job and pulls/prints logs. If no job id is supplied, it uses
 | `--tail-lines N` | `120` | Number of log lines to print. |
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya watch
-envs/mpvrdu/bin/python -m kaya.kaya watch <jobid> --tail-lines 200
+envs/mpvrdu/bin/python -m ops.kaya.kaya watch
+envs/mpvrdu/bin/python -m ops.kaya.kaya watch <jobid> --tail-lines 200
 ```
 
 ### `cancel`
@@ -241,9 +241,9 @@ optionally narrowed by `--state`).
 | `--state S` | none | Restrict `--all`/`--job-name` to a SLURM state, e.g. `PENDING` or `RUNNING`. |
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya cancel 1009584
-envs/mpvrdu/bin/python -m kaya.kaya cancel --job-name t1-4bit
-envs/mpvrdu/bin/python -m kaya.kaya cancel --all --state PENDING
+envs/mpvrdu/bin/python -m ops.kaya.kaya cancel 1009584
+envs/mpvrdu/bin/python -m ops.kaya.kaya cancel --job-name t1-4bit
+envs/mpvrdu/bin/python -m ops.kaya.kaya cancel --all --state PENDING
 ```
 
 ### `clear-cache`
@@ -264,8 +264,8 @@ repo. Prompts for confirmation unless `--yes`.
 | `--yes` | off | Skip the confirmation prompt. |
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya clear-cache --mode full --experiment G1_sufficiency --dry-run
-envs/mpvrdu/bin/python -m kaya.kaya clear-cache --mode full --experiment G1_sufficiency --local --yes
+envs/mpvrdu/bin/python -m ops.kaya.kaya clear-cache --mode full --experiment G1_sufficiency --dry-run
+envs/mpvrdu/bin/python -m ops.kaya.kaya clear-cache --mode full --experiment G1_sufficiency --local --yes
 ```
 
 ## Python Script Headers
@@ -296,25 +296,25 @@ silently ignored.
 Login-node data check:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya run scripts/dataset_stats.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya run scripts/dataset_stats.py
 ```
 
 GPU smoke:
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --time 00:05:00 scripts/gpu_test.py
 ```
 
 Deployment-resolution probe (GPU):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit --target gpu --gres gpu:v100:2 --time 00:30:00 scripts/resolution_probe.py
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --target gpu --gres gpu:v100:2 --time 00:30:00 scripts/resolution_probe.py
 ```
 
 Single YAML smoke (cache a small G1/G5 2B run):
 
 ```bash
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --spec specs/smoke_generation.yaml
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit cli/generate.py -- --spec specs/smoke_generation.yaml
 ```
 
 Experiments now split by **role** (see `docs/USER_GUIDE.md`): the study is
@@ -326,10 +326,10 @@ not forwarded to Kaya.
 
 ```bash
 # 1. GENERATE on Kaya (GPU): cache predictions from a YAML spec
-envs/mpvrdu/bin/python -m kaya.kaya submit cli/generate.py -- --spec specs/full_generation.yaml
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit cli/generate.py -- --spec specs/full_generation.yaml
 
 # 2. bring the prediction cache back
-envs/mpvrdu/bin/python -m kaya.kaya pull
+envs/mpvrdu/bin/python -m ops.kaya.kaya pull
 
 # 3. JUDGE locally (scores predictions; no tables): reads manifests under the run-tag
 python -m cli.judge --run-tag yaml-full
@@ -344,12 +344,12 @@ Use `specs/smoke_generation.yaml` / `--run-tag yaml-smoke` for the smoke templat
 
 The default config uses `--partition=gpu --gres=gpu:1`. `slurm.account` and
 `slurm.qos` are blank, so jobs use your default eligible Kaya association. If
-SLURM rejects a job for accounting, set those fields in `kaya/config.json`.
+SLURM rejects a job for accounting, set those fields in `ops/kaya/config.json`.
 
 ## Normal Loop
 
 1. Edit locally.
 2. Run quick local checks.
-3. `envs/mpvrdu/bin/python -m kaya.kaya submit <script.py|job.sbatch>`.
+3. `envs/mpvrdu/bin/python -m ops.kaya.kaya submit <script.py|job.sbatch>`.
 4. Inspect local `logs/` after the runner pulls results.
 5. Record durable findings in `docs/AGENT_GUIDE.md`.

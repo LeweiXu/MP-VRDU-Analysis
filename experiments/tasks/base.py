@@ -9,7 +9,7 @@ from pathlib import Path
 
 from config import DEFAULT_PROMPT_MODE, ExperimentConfig
 from experiments.corpus.resolve import filter_by_pool, pool_for_task
-from pipeline.conditioner import InputConditioner, OracleConditioner, RetrievedTopK
+from pipeline.conditioner import InputConditioner, JointTopK, OracleConditioner, RetrievedTopK
 from retrievers import Retriever
 from schema import Modality, Question
 
@@ -65,9 +65,17 @@ class GenerationTask(ABC):
         return tuple(config.reasoner_specs) or (config.reasoner_spec,)
 
     def resolve_questions(self, config: ExperimentConfig, questions: Sequence[Question]) -> Sequence[Question]:
-        """The corpus this task runs on, bound to its answerable/unanswerable pool."""
+        """The corpus this task runs on, bound to its answerable/unanswerable pool.
 
-        return filter_by_pool(questions, pool_for_task(self.name))
+        When `config.per_doc_type_sample` is set, the pool is subset to about that
+        many questions per native doc_type, drawn as whole documents.
+        """
+
+        pool = filter_by_pool(questions, pool_for_task(self.name))
+        if config.per_doc_type_sample:
+            from experiments.corpus.resolve import sample_per_doc_type
+            pool = sample_per_doc_type(pool, config.per_doc_type_sample, config.sample_seed)
+        return pool
 
     def generation_cells(
         self, config: ExperimentConfig, questions: Sequence[Question], *, retrievers: Retrievers
@@ -94,24 +102,37 @@ def matched_cross_sweep_cells(
     *,
     retrievers: Retrievers,
     ks: Sequence[int],
-    representation: Modality = "TLV",
+    joint_ks: Sequence[int] = (1, 3, 5),
+    representations: Sequence[Modality] = ("TLV",),
 ) -> list[Cell]:
-    """Matched (vision-retrieval) and cross (text-retrieval) cells swept over k.
+    """Matched (vision-retrieval), cross (text-retrieval), and joint (free union)
+    cells swept over k, at each representation rung.
 
-    Question-major, k-minor. The `retrieved_{modality}_k{k}` conditioner name
-    carries k, so each k lands in its own prediction-cache row.
+    This is the reasoner-inference sweep: bm25 (text) + colqwen2.5 (vision) + their
+    post-hoc union (joint), fed to the reasoner at every rung in `representations`
+    (TLV and V). The full six-method accuracy ladder lives in the retrieval
+    side-artifact, not here. Question-major; the `retrieved_{modality}_k{k}`
+    conditioner name carries the modality and k, so each (modality, k, rung) lands
+    in its own prediction-cache row.
     """
 
-    conditioners = [
+    single = [
         (
             RetrievedTopK(retrievers.vision, k, name=f"retrieved_vision_k{k}"),
             RetrievedTopK(retrievers.text, k, name=f"retrieved_text_k{k}"),
         )
         for k in ks
     ]
+    joint = [
+        JointTopK(retrievers.text, retrievers.vision, k, name=f"retrieved_joint_k{k}")
+        for k in joint_ks
+    ]
     cells: list[Cell] = []
     for question in questions:
-        for vision, text in conditioners:
-            cells.append(Cell(question, vision, representation))
-            cells.append(Cell(question, text, representation))
+        for rep in representations:
+            for vision, text in single:
+                cells.append(Cell(question, vision, rep))
+                cells.append(Cell(question, text, rep))
+            for cond in joint:
+                cells.append(Cell(question, cond, rep))
     return cells

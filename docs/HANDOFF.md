@@ -1,178 +1,182 @@
-# Handoff: efficiency pass, YAML run-splitting, per-cell resolution, supervisor handoff
+# Handoff: per-sweep YAML config architecture
 
-Date: 2026-07-09. This session did a big round of work on the run machinery and the
-handoff to the H100 supervisor. Everything below is landed and the test suite is
-green (175 passing) unless it's under "In progress" or "Open items".
+Date: 2026-07-10. Goal: make every sub-generation sweep in G1/G2/G3 individually
+controllable from the spec YAML. Right now some sweeps are list fields, some are
+single-value-per-run (so you need a separate run block to sweep them), and the G2
+retriever set is hardcoded and not spec-controllable at all. The target is that a
+spec spells out every axis explicitly, and you dial each one up or down (or off) on
+its own.
 
-## Efficiency fixes (hot paths)
+The mock-up of the target schema is checked in at **`ops/specs/target_architecture.yaml`**
+(heavily commented, not wired to anything yet). Read that first; it's the concrete
+shape we're building toward. This file is the "how to build it".
 
-- **qwen3vl backend: no more double prefill** (`models/qwen3vl.py`). `answer()` used
-  to run a full `model(**inputs)` forward just to time prefill, then `generate()`
-  which prefills again. Now a `_FirstTokenTimer` streamer captures time-to-first-
-  token inside the single `generate`, so prefill is paid once. Same
-  prefill/decode split telemetry, ~half the prefill cost on every cell.
-- **Retrieval amortized** (`retrievers/`). `MemoizedRetriever` now caches the full
-  ranking per `(question, page_count)` and slices per k, so a k-sweep computes the
-  ranking once. Added `Retriever.rank()`. Page embeddings are cached per document
-  (vision: CPU-resident LRU; dense text: per-doc), so a doc's pages are embedded
-  once, not per question. Added an optional on-disk page-set cache
-  (`MemoizedRetriever(persist_dir=...)`, wired in `driver.build_retrievers` and the
-  retrieval side-artifact) so rankings survive across processes.
-- **Doc page text cached** (`retrievers/__init__.py::document_page_texts`) and
-  **render spans cached in-process** (`data/render.py::_SPAN_CACHE`), so BM25/dense
-  stop re-parsing the PDF per question and repeat renders skip `get_text`.
-- **Cache writers keep one open handle** (`pipeline/orchestrator.py`
-  ResultCache/PredictionCache) instead of open/close per row, and the driver
-  pre-pass conditions each cell once (feeds the same page set to the parser warm).
+Note: the previous HANDOFF (the full G1-G3 doc_type-sampled Kaya build) is done. Its
+decisions live in `docs/DECISIONS.md` under "Full G1-G3 doc_type-sampled Kaya
+submission (2026-07-10)". The G1/G2/G3 code, the six-method retrieval side-artifact,
+retrieval timing, and `kaya.yaml`/`kaya_smoke.yaml` are all landed and pytest is
+green; this handoff is only about the config/YAML rework on top of that.
 
-## YAML runs: base + runs (multi-run per file)
+## The idea in one paragraph
 
-`experiments/corpus/yaml_spec.py` grew `parse_specs` / `load_yaml_specs`. A spec
-file is either flat (one run) or `base:` + `runs:` (several runs merged over a
-shared base, each isolated by a unique `run_tag`). `ops/generate.py` iterates the
-runs. This is how a task is split into chunks and across machines: give each
-machine's file the same `run_tag` but a different slice of a sweep. The flat form
-still works. There is still no `machine` field.
+Each main task (G1/G2/G3) gets a `base:` block of baseline scalars plus named
+sub-sweep blocks. A sub-sweep varies exactly ONE axis and holds everything else at
+`base` (this is the pivot's "one field changed each"; it deliberately avoids a full
+cross-product of coupled axes). You control a sweep by editing its list: multi-value
+runs it, one value collapses it to the baseline, deleting the block (or
+`enabled: false`) turns it off. Each sub-sweep is its own cache namespace,
+`run_tag = "<base run_tag>-<sweep name>"`.
 
-## Model-size sweep
+## Design decisions already made (confirm before deviating)
 
-`config.ExperimentConfig.reasoner_specs` (+ the `reasoner_specs` spec key) is a
-list; when set, `GenerationTask._reasoner_specs` returns it and the driver runs one
-pass per spec, freeing the GPU between them. Each spec keys its own rows, so the
-size sweep lives in one run. `ops/kaya/config.json` gained the 32B id
-(`Qwen/Qwen3-VL-32B-Instruct`) for prestage.
+1. **Independent per-axis sub-sweeps, NOT one big cross-product.** A flat "list per
+   axis, multiply everything" both explodes (32B x 4bit x high-res x mineru x
+   longdocurl) and wastes compute (T/TL are identical across resolutions). If the
+   user ever wants true cross-products (e.g. size x resolution together) that's a
+   different engine; ask.
+2. **Coupled sweeps carry their own `representations` override.** `resolution` runs
+   at `[TLV, V]` (resolution is meaningless without a vision channel); `parser` runs
+   at `[TL, TLV]` (parser only feeds the parsed rungs). See the mock-up.
+3. **G2 is two explicit stages.** `retrieval:` is the accuracy benchmark (no
+   reasoner) that sweeps every listed method x k into the side-artifact.
+   `inference:` is the reasoner k-sweep that picks WHICH retrievers (from the
+   retrieval stage) to actually feed the model, at TLV and V. The inference
+   retrievers must be a subset of the retrieval-stage lists, because inference reuses
+   the stage-1 cached rankings.
+4. **`joints: matched`** auto-pairs by cost tier: cheap (bm25 | colmodernvbert), mid
+   (bge-m3 | colqwen2.5), expensive (qwen3-embedding | colqwen3). Or list explicit
+   `[[text, vision], ...]` pairs, or `[]` to skip joints.
 
-## Resolution is a per-cell key axis (frozen-interface change)
+## What exists today (starting point)
 
-Recorded as a checkpoint in `AGENT_GUIDE.md`. Resolution used to be a per-run
-manifest field, out of the cache key. It is now part of both keys and stamped on
-`ResultRow`/`CachedPrediction`:
+- **`experiments/corpus/yaml_spec.py`** — `ALLOWED_KEYS`, the `Spec` dataclass,
+  `parse_spec`, `parse_specs` (base+runs merge, run keys win), `config_from_spec`,
+  `corpus_limit`, `load_yaml_specs`. Today a spec is flat: one task, list fields
+  `representations` / `reasoner_specs` / `visual_resolutions` / `k_values`, and
+  single-value `parser` / `quantization` / `visual_resolution`. `dataset` is NOT in
+  `ALLOWED_KEYS` (so it can't be swept from a spec yet, even though the config field
+  exists).
+- **`config.py` `ExperimentConfig`** — already has `dataset` (default "mmlongbench"),
+  `reasoner_spec`/`reasoner_specs`, `quantization` (single), `parser_tool`,
+  `visual_resolution`/`visual_resolutions`, `k_values`, `representations`. Quant is
+  folded into the reasoner spec string in `__post_init__` (so a quantized run caches
+  apart). There are no retriever fields at all.
+- **`experiments/engine/driver.py` `build_retrievers`** (~line 110) — hardcodes
+  `text = MemoizedRetriever(Bm25Retriever(...))`, `vision =
+  MemoizedRetriever(ColQwen25Retriever(...))`. This is what the G2 inference stage
+  uses. Registries `get_text_retriever` / `get_vision_retriever` already exist in
+  `retrievers/text.py` / `retrievers/vision.py`.
+- **`experiments/engine/side_artifacts.py` `write_retrieval_eval`** — the six-method
+  benchmark. The method set is hardcoded module constants `_TEXT_METHODS`,
+  `_VISION_METHODS`, `_JOINT_PAIRS`, and the k lists come in as `single_ks`/`joint_ks`
+  kwargs from the task. Already robust per-method (each try/excepted, big-model OOM
+  skips just that method).
+- **`experiments/tasks/G2_retrieval.py`** — `INFERENCE_REPRESENTATIONS = ("TLV","V")`,
+  `JOINT_K_VALUES = (1,3,5)` as module constants; `generation_cells` builds the
+  inference cells via `matched_cross_sweep_cells` (bm25 + colqwen2.5 + joint);
+  `run_side` calls `write_retrieval_eval`.
+- **`experiments/tasks/base.py`** — `Retrievers` is a 2-slot `(text, vision)`
+  dataclass; `matched_cross_sweep_cells(questions, *, retrievers, ks, joint_ks,
+  representations)`.
+- **`ops/generate.py`** — loads the dataset once for the first config
+  (`load_mmlongbench(first_config.paths.data_dir)`), then runs each spec.
 
-- `prediction_key` / `result_key` (`experiments/engine/paths.py`) take
-  `visual_resolution`.
-- `Orchestrator(visual_resolution=...)` threads it into the keys and rows.
-- Config grew `visual_resolutions` (a list); the driver loops resolutions inside
-  the spec loop, reusing the loaded reasoner and just changing `max_pixels`
-  (a processor-side downscale), so a resolution sweep is one run.
-- `IDENTITY_FIELDS` (both copies in `reporting/`) gained `visual_resolution`, and
-  `reporting/tables/resolution.py` now pivots by the per-cell preset.
+## What to build
 
-Verified live at 2B: V visual tokens scale with the preset and each (rung,
-resolution) is a distinct key.
+### 1. `yaml_spec.py` — the parser is where most of the work is
 
-**Resolution presets** are now just `low / med / high` (dropped min/full), bumped
-~25% to nice values: low 400, med 640, high 960 tok/page (`config.py`).
-`RES_ORDER` and the `--visual-resolution` help match.
+Expand a `base` + `sweeps` (and G2's `retrieval`/`inference`) block into a list of
+plain flat `Spec`s AT PARSE TIME, one per sweep value-set, each with a derived
+`run_tag`. If you do this, the driver needs no changes: it already runs one pass per
+spec. Concretely:
 
-## `--failed-only` retry (the machine-split mechanism)
+- Add the new keys to `ALLOWED_KEYS`: `base`, `sweeps`, `retrieval`, `inference`,
+  `dataset`, `datasets`, `quantizations`, `parsers`, `text_retrievers`,
+  `vision_retrievers`, `joints`, `joint_k_values`, `prompt_modes`, `similarity_k`,
+  `retriever`, `enabled`.
+- **Backward compatibility:** if a run block has none of `base`/`sweeps`/`retrieval`/
+  `inference`, treat it as a flat spec exactly as today, so the current `kaya.yaml`
+  and `kaya_smoke.yaml` keep working unchanged. Only the new nested shape triggers the
+  expander. (Decide with the user whether to also migrate kaya.yaml to the new shape,
+  or leave it flat.)
+- For a G1-style block: emit the `base` as one Spec (`run_tag = base tag`), then for
+  each enabled sweep emit one Spec that overlays that sweep's axis list (and any
+  `representations` override) onto the base, with `run_tag = "<base>-<sweep>"`. A
+  sweep whose list has a single value that equals base can be skipped (it would be a
+  duplicate of base).
+- For a G2 block: emit one Spec carrying both the `retrieval` method lists (for the
+  side-artifact) and the `inference` retriever picks + reps. These two live on the
+  same task/run so they share the retrieval cache; don't split them into separate
+  run_tags or the inference stage won't find the stage-1 rankings.
+- `config_from_spec` maps all the new fields onto `ExperimentConfig`.
 
-`ops.generate --failed-only` (driver `_prepare_failed_only` + `_cell_identity`,
-which include resolution) reads what a run wrote, drops the non-`ok` rows, re-runs
-only those cells, and upgrades them in place; `ok` cells and side artifacts are
-left alone. Verified locally: flipped one cell to error, `--failed-only` retried
-exactly that cell back to ok with no duplicates.
+### 2. `config.py` — new fields
 
-## G3 prompt sweep
+Add: `quantizations: tuple[str,...]`, `parsers: tuple[str,...]`, `datasets:
+tuple[str,...]`, and the G2 retriever fields — `text_retrievers`,
+`vision_retrievers`, `joints` (either the literal "matched" or a tuple of pairs),
+`joint_k_values`, plus the inference picks `inference_text_retriever`,
+`inference_vision_retriever`, `inference_joint: bool`, and `inference_representations`.
+Keep the singular `quantization`/`parser_tool`/`dataset`/`visual_resolution` as the
+baseline values the sweeps vary. Quant-in-spec-string folding already exists; extend
+it if a `quantizations` sweep is expanded (each expanded Spec still sets a single
+`quantization`).
 
-`config.G3_PROMPT_MODES` dropped the `none` arm (G1 covers unprompted behaviour);
-it is now `(generic, targeted)`.
+### 3. `driver.build_retrievers` — build from the spec, not hardcoded
 
-## dpi -> 200
+Read `config.inference_text_retriever` / `config.inference_vision_retriever` (default
+bm25 / colqwen2.5) via the `get_*_retriever` factories, wrap in `MemoizedRetriever`
+sharing `cache/retrieval`. The joint arm is still `JointTopK(text, vision)`.
 
-`ExperimentConfig.dpi` default is 200 (was 144). dpi is the OCR/parser render
-resolution; the VLM downsamples to the resolution preset, so this only affects
-TL/TLV parse quality. It is also a spec field (`dpi:`), so it's per-run settable.
+### 4. `side_artifacts.write_retrieval_eval` — method lists from config
 
-## Run health check: `ops/scripts/check_run.py`
+Replace the `_TEXT_METHODS` / `_VISION_METHODS` / `_JOINT_PAIRS` module constants with
+values from the config: `config.text_retrievers`, `config.vision_retrievers`, and the
+joints (expand "matched" to the tier pairs, or use the explicit list). Keep the
+per-method try/except + `free_gpu()`. Everything else (timing, scoring, robustness)
+stays.
 
-New. Given a spec, it scans each run_tag's `results.jsonl` and reports per task how
-many cells are ok / oom / error, missing vs expected, and the top failure reasons.
-Exits nonzero if anything looks broken, so it gates a run. This is the "did it work"
-tool (there was none before, only a per-cell debug viewer).
+### 5. `G2_retrieval.py` — read inference reps/retrievers from config
 
-## kaya `kill`
+`generation_cells` should pass `config.inference_representations` (default
+`("TLV","V")`) and the joint on/off from config into `matched_cross_sweep_cells`, and
+`run_side` should pass `config.text_retrievers` / `config.vision_retrievers` /
+`config.joints` (or new single_ks/joint_ks) into `write_retrieval_eval`. The two
+module constants become config-driven.
 
-`python -m ops.kaya.kaya kill [JOB_ID]` cancels a single SLURM job (defaults to
-`.kaya_last_job`). `handle_kill` in `ops/kaya/kaya.py`.
+### 6. `generate.py` — per-dataset corpus load (the dataset sweep)
 
-## Supervisor handoff (H100)
+Today the corpus is loaded once from mmlongbench. When a `dataset` axis is present,
+each expanded Spec names its dataset; load the corpus for that Spec's dataset (there's
+a loader for LongDocURL alongside `load_mmlongbench`; wire a small dataset->loader
+map). Cache the load per dataset so two runs on the same dataset don't reload.
 
-- **`setup_env.py --local`** builds the envs into this checkout's `envs/` (matching
-  where `parser_env_python` and the reasoner look), so the supervisor can run it
-  directly instead of through the Kaya SSH runner. flash-attn install is now
-  best-effort (warns and continues, since the reasoner falls back to SDPA).
-- **`ops/generate.py` sets the HF cache env** (`config.hf_cache_environ`, setdefault
-  so Kaya's own exports win), so a direct run finds prestaged weights with no manual
-  exports. `prestage.py` uses the same helper.
-- **`prestage.py --config PATH`** lets prestage read a trimmed model list.
-  `ops/kaya/h100_main.json` stages only what `h100_main.yaml` needs: the 8B
-  reasoner, the paddleocrvl parser, and MMLongBench (no retrievers, no other sizes).
-- **`docs/H100_RUNBOOK.md`** walks the supervisor through setup_env -> prestage
-  (with `--config ops/kaya/h100_main.json`) -> generate `h100_main.yaml` ->
-  `check_run` -> hand back `results/`. Generate-only; judging/building happen
-  elsewhere. Retry section uses `--failed-only`.
+## Semantic rules to enforce (and test)
 
-## Parser bug fixed (would have hit the supervisor)
+- Collapse-to-disable: a sweep list with one element (or absent) contributes only the
+  baseline.
+- Coupled reps: `resolution` sweep uses `[TLV, V]`, `parser` sweep uses `[TL, TLV]`,
+  unless the block overrides `representations` explicitly.
+- Inference retrievers must be a subset of the retrieval-stage lists (validate and
+  raise a clear `SpecError` if not; otherwise the inference stage points at rankings
+  that were never computed).
+- Frozen cache keys still hold (CLAUDE.md): new conditioner names and additive config
+  fields are fine; don't reshape the key. Distinct `run_tag` per expanded sweep keeps
+  caches from colliding.
 
-`tools/parser_worker.py::_paddleocrvl` read `res.get("markdown")`, which returns
-`None` in paddleocr 3.7 (markdown is a computed `.markdown` property there, not a
-stored key). The result was **empty TL/TLV text**. Fixed to prefer the `.markdown`
-property (a dict with `markdown_texts`) with a fallback to the old mapping. Found by
-building the parser env locally and actually running it. Verified end to end through
-`warm_parser_cache`: real markdown out (4843 chars, "# Is the service safe?...")
-where the old code wrote an empty string.
+## Testing
 
-## Shipped spec files (`ops/specs/`)
+- `tests/test_yaml_spec.py` — add cases for the expander: a G1 block with two sweeps
+  expands to base + one Spec per sweep with the right run_tags and overlaid axes; a
+  collapsed sweep (single value) does not duplicate base; a flat legacy spec still
+  parses unchanged; the inference-subset validation raises on a bad pick.
+- Keep the existing specs (`kaya.yaml`, `kaya_smoke.yaml`) parsing green (backward
+  compat).
+- Whole suite green before submitting anything.
 
-- `h100_main.yaml` - 8B G1 over T/TL/TLV/V, full set, at med. The supervisor's run.
-- `kaya.yaml` - G1 size sweep (2B/4B/8B), G1 resolution sweep at 8B (low/med/high),
-  G3. (G4 line is present but commented.)
-- `kaya_smoke.yaml` - kaya.yaml capped at 2 questions with `-smoke` run_tags.
-- `kaya_replication.yaml` - future: InternVL3-8B replication + 4bit/8bit quant sweep.
-- `local_test.yaml` - 2B correctness test (edited by the user to the full T/TL/TLV/V
-  ladder, limit 5). Needs the local parse env (below).
-- `template.yaml` - documents every field and both spec forms.
-- `kaya_probe.yaml` - pre-existing go/no-go probe.
+## Not in scope for this handoff
 
-## Local parser env (for local_test.yaml)
-
-Built `envs/parse-paddleocrvl` locally: `paddleocr[doc-parser]==3.7.0` + CPU
-`paddlepaddle==3.3.1` (Blackwell has no GPU paddle wheels; paddle 3.0 hit a PIR op
-bug, 3.3.1 fixed it). `parser_env_python` finds it at the default path, so no env
-var needed. The PaddleOCR-VL model bundle is cached at `~/.paddlex/official_models`.
-CPU parsing is ~5-6 min/page, so a local TL/TLV run is slow but functional; this is
-purely a local limitation (the H100 uses GPU paddle).
-
-## Testing status
-
-- `pytest`: 175 passing. New tests: `test_check_run.py`, `test_resolution_and_retry.py`
-  (resolution-in-key, `--failed-only` helpers, G3 modes, config validation), plus
-  multi-run and reasoner_specs coverage in `test_yaml_spec.py`.
-  `test_config_cap_removed.py` updated to the low/med/high preset set.
-- Ran real 2B generations locally to verify: the resolution sweep (unique keys per
-  preset, tokens scale low<med<high), `--failed-only`, and G1+G4 end to end with
-  `check_run` green.
-
-## Next step (not done)
-
-- **The full `local_test.yaml` run has NOT been launched.** The parser env and the
-  parser fix are both verified, so the pieces are in place. Next step: run it in the
-  background with the local GPU env and `check_run` it. TL/TLV will be slow on CPU
-  paddle (~5-6 min/page), so the whole thing is a long run.
-
-## Open items
-
-- **32B has no home now.** Reducing the H100 to the 8B headline dropped the
-  `g1-size-32b` run, so the size sweep is 2B/4B/8B. If you want the 32B point back it
-  needs its own H100 spec (and the full prestage, not the h100_main.json trim).
-- **`h100_optional.yaml` (G2) was removed** and the runbook is main-only, so G2
-  isn't staged by `h100_main.json` (it has no retrievers). Whoever runs G2 needs the
-  retrievers prestaged.
-- **Corpus `per_bin` / `ids` sampling isn't wired into generation** (only `full` and
-  `limit` take effect in the generate path). Fine for the full run and the `limit`
-  smoke; a spec that expects a per_bin subset would silently run full.
-- **`REPO_STRUCTURE.md` not regenerated** for the new `check_run.py` (run
-  `python -m ops.scripts.dump_docstrings` when you want the file map refreshed).
-- **Annotations must be complete for real runs.** The smokes use
-  `--allow-unlabelled`; drop that for kaya.yaml/h100_main.yaml or the bins come out
-  blank and the bin-axis analysis breaks.
+Getting the current runs green on Kaya is a separate, in-progress thread (the smoke
+`kaya_smoke.yaml` shakeout and then the real `kaya.yaml`). That uses the existing flat
+specs and does not depend on this rework. Don't block the config rework on it or vice
+versa.

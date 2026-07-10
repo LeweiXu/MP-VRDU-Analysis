@@ -1,17 +1,38 @@
-# DECISIONS — pivot-v4 changelog + probe/env verdicts
+# DECISIONS — the changelog
 
-This is the pivot-v4 decision log called for by `pivot_v4_implementation.md`. It
-records the do-over reference point, the Phase-1 probe/env verdicts, and every
-real judgement call made while building v4 (one line each: what, why, what it
-affected).
+This is the **only** doc that carries history. Every pivot, superseded design, and
+real judgement call is recorded here, newest first (one line each: what, why, what
+it affected). `README.md` and `docs/AGENT_GUIDE.md` describe the system as it is
+now, present tense; anything about how it *changed* lives here. See `CLAUDE.md` for
+the documentation discipline.
 
-> Note on where this lives: the repo's `CLAUDE.md` says the DECISIONS content was
-> folded into `AGENT_GUIDE.md`. The v4 implementation plan reintroduces a standalone
-> `docs/DECISIONS.md` as the pivot changelog. This file is that changelog. Final
-> reconciliation of `AGENT_GUIDE.md` / `PROJECT_SPEC.md` / `README.md` to v4 (and
-> folding `pivot_v4.md` in here) happens in the Phase-4 cleanup, not now.
+Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
+v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
+below and should not be kept as separate live files.
+
+**Docs consolidated to three (2026-07-10).** Reduced the authored docs to
+`README.md` (user + experiment), `docs/AGENT_GUIDE.md` (agent: structure, frozen
+interfaces, implementation reference), and this changelog. The former
+`PROJECT_SPEC.md`, `USER_GUIDE.md`, `ANNOTATION_GUIDE.md`, and the standalone
+`pivot_*.md` files are folded into these three; the Kaya runbook lives at
+`ops/kaya/KAYA.md`. Cause of the prior contradictions: `AGENT_GUIDE` described a
+"v3 now, v4 pending" migration state that rotted once v4 shipped, while `README`
+described shipped v4 — so they disagreed. Fix: present-tense-only in the two
+authored docs, single-source-of-truth per fact, and history confined to this file
+(rules added to `CLAUDE.md`).
+
+**Open (⚠ PENDING v5):** (a) **Binning source** — manual annotation is optional and
+not the working default (see the 2026-07-10 entry below); the direction is to bin
+by representative document domains or by `evidence_source`, and to define which
+experiments need the full corpus vs a frozen random subset. (b) **G4 / routing** —
+G4 collapses: routing becomes fully build-time over G1, and the classifier reduces
+to an optional one-shot prediction pass. (c) **Dependencies** — evaluating the
+remaining strip (the vLLM-drop verdict is already recorded below). These are
+tracked here; the two authored docs describe only shipped behaviour and mark these
+spots `⚠ PENDING v5`.
 
 ---
+
 
 ## Phase 0 — capture (2026-07-08)
 
@@ -475,3 +496,105 @@ _One line per real judgement call: what, why, what it affected._
   blank labels so dev/smoke runs proceed. `stamp_bins` leaves `doc_type` untouched, so a
   cell's telemetry keeps the native document type alongside the manual `bin_label` (both
   were already in `ResultRow`; confirmed populated end to end).
+
+## Full G1-G3 doc_type-sampled Kaya submission (2026-07-10)
+
+Autonomous session driving the HANDOFF.md build to submission. Deviations, one line each:
+
+- **G2 scope split confirmed with the user (2026-07-10).** The reasoner *inference*
+  k-sweep uses bm25 (text) + colqwen2.5 (vision) + their free union only; the full
+  six-method ladder is the accuracy-only side-artifact (no reasoner). This matches pivot 7
+  (Scorer A vs Scorer B) and corrects the handoff's "sweep all 6 through the reasoner"
+  wording. Affected `matched_cross_sweep_cells`, `G2_retrieval`, `write_retrieval_eval`.
+- **JointTopK conditioner added (2026-07-10).** `pipeline/conditioner.py` gains `JointTopK`
+  (free deduped union of two retrievers' top-k via `retrievers/joint.union`, name
+  `retrieved_joint_k{k}` so the reporting regex buckets it as modality `joint`). Additive,
+  frozen cache key unchanged. Fed to the reasoner as bm25 u colqwen2.5 at joint k in {1,3,5}.
+- **G2 inference reps = TLV and V (2026-07-10).** `matched_cross_sweep_cells` now sweeps a
+  `representations` iterable instead of pinning TLV; `G2_retrieval` reads
+  `config.representations ∩ {TLV,V}` (default both). `build_retrievers` stays bm25 +
+  colqwen2.5 (all inference needs); `Retrievers` stays the 2-slot dataclass (the 6-method
+  ladder builds its own retrievers in the side-artifact), so G3 (`retrievers.text` = bm25)
+  is untouched. Adding the V rows is additive to cache.
+- **Retrieval cost telemetry, full rigor (2026-07-10, locked decision).** `RetrievalEvalRow`
+  gains additive `retrieval_latency_s` + `index_build_amortized_s`; `score_retrieval` takes
+  them as kwargs. Each concrete retriever (bm25 got a per-doc index cache, dense, vision)
+  now times its per-doc index/embed build (`index_build_s`, cumulative) separately from the
+  per-query score (`last_query_s`). `write_retrieval_eval` reads these: per-query latency on
+  each row, and the method's total build time stamped as the amortized value on every row
+  for that method (pivot 6.3 "once per method x corpus").
+- **Six-method side-artifact, robust per-method (2026-07-10).** `write_retrieval_eval`
+  rewritten from a `pairs` list to score all 6 methods + 3 matched-tier joints
+  (bm25 u colmodernvbert, bge-m3 u colqwen2.5, qwen3-embedding u colqwen3) at single k /
+  joint k, building each via `get_text_retriever`/`get_vision_retriever`. Each method is
+  built+ranked in its own try/except with `free_gpu()` after, so a big-model V100 OOM
+  (qwen3-embedding-4B, colqwen3-4B) loses only that method's rows. Reasoner is already freed
+  before `run_side`, so the warm has the GPU to itself.
+- **Vision loader dispatches per rung; failed load errors, no silent garbage (2026-07-10,
+  best-effort per decision 2).** `ColVisionRetriever._load` now tries a per-subclass
+  `model_classes` list of same-family (model_cls, processor_cls) candidate names from
+  `colpali_engine.models`, raising a clear error if none load (rather than forcing every
+  rung through ColQwen2_5). The side-artifact builds vision rungs with
+  `allow_text_fallback=False` so a load failure is an honest miss, not a degraded ranking.
+  **Unvalidated offline:** colmodernvbert (`ColModernVBert*`) and colqwen3 (`ColQwen3*`)
+  class names are best-guess; if the installed colpali_engine lacks them those two rungs
+  error out in the benchmark (run continues). Confirm on the first Kaya run.
+- **G3 `none` prompt restored + full pool (2026-07-10).** `config.G3_PROMPT_MODES` back to
+  `(none, generic, targeted)`; the stale `test_g3_prompt_modes_drop_none` was rewritten to
+  assert all three (pivot 7 needs the unprompted baseline). G3 runs the full unanswerable
+  pool via a per-run `corpus: {sampling: full}` spec override (verified it clears the base
+  `per_doc_type`). No G3 code change (it already sweeps `G3_PROMPT_MODES` and uses bm25).
+- **Specs rewritten (2026-07-10).** `kaya.yaml` run_tags -> g1-doctype50 / g2-doctype50 /
+  g3-full, G2 reps [TLV,V], G3 `sampling: full`. `kaya_smoke.yaml` fixed to distinct
+  `*-smoke` run_tags (it wrongly reused the real tags), 2B, per_doc_type 1, G3 limit 4.
+- **Env: rebuilt core + parse-paddleocrvl, then prestaged (2026-07-10).** Per the user's
+  choice. `build_env` skips `conda create` when the prefix exists, so the "rebuild" was an
+  idempotent pip re-verify (both pip-check clean; paddle 3.3.1 confirmed). Prestage staged
+  all 5 retriever models + 2 reasoners + PaddleOCR-VL + the paddlex pdx cache against
+  `config_minimal.json`; mmlongbench already present. Did NOT `--env all` (mineru/unlimited
+  are broken and unused).
+- **Cron wake mechanism caveat (2026-07-10).** The requested 01:15 wake is a session-only
+  CronCreate job (in-memory, fires only while this REPL is alive+idle, auto-expires in 7
+  days). It re-enters this plan + HANDOFF and reconstructs state from git + Kaya + this log,
+  since a literal same-session resume is not guaranteed once usage resets.
+- **pytest 179/179 green (2026-07-10)** after the changes (added 4 per_doc_type tests,
+  updated the G3 prompt-mode test).
+- **BLOCKED on Kaya connectivity at submit (2026-07-10 ~01:52 UTC).** The smoke submit
+  failed at the push step: `kaya.hpc.uwa.edu.au` no longer resolves and no VPN interface is
+  up (general internet is fine). The UWA HPC tunnel/VPN that was up when Task A ran (16:16
+  UTC) dropped overnight; it can't be restored autonomously (needs the user's VPN
+  credentials/2FA). Code + tests + specs are fully ready. **To finish, once the UWA VPN is
+  reconnected, run:**
+  `python3 -m ops.kaya.kaya submit --gres gpu:1 --mem 48G --time 00:30:00 ops/generate.py -- --spec ops/specs/kaya_smoke.yaml`
+  then `python3 -m ops.kaya.kaya pull` + `python3 -m ops.scripts.check_run --spec ops/specs/kaya_smoke.yaml`;
+  fix any failures; then the real run:
+  `python3 -m ops.kaya.kaya submit --gres gpu:2 --mem 64G --time 08:00:00 ops/generate.py -- --spec ops/specs/kaya.yaml`.
+  A recurring connectivity-poll cron was added to auto-run this the moment Kaya resolves.
+- **Manual annotations made optional, not required (2026-07-10, user decision).** The first
+  smoke on Kaya (job 1026030) failed in 20s at `stamp_bins`: the sheet labels 107/135 docs
+  and the `require_complete=True` guard stopped the run on the 28 unlabelled. The user
+  decided to abandon the manual annotation pass for now and make `doc_labels.csv` an optional
+  enrichment. Flipped `data/binning.stamp_bins` default to `require_complete=False` (partial
+  or absent sheet runs; uncovered docs keep blank bins -> `(unlabeled)` in reporting; sampling
+  is by native `doc_type` so it is unaffected). `ops/generate.py`: default is now permissive;
+  added opt-in `--require-complete-annotations` for strictness, and kept `--allow-unlabelled`
+  as a deprecated no-op so `final_probe.py` / `local_test.yaml` still parse. This reverses the
+  2026-07-09 "annotation table treated as authoritative" strictness default (the reader still
+  validates columns and skips blank rows; only the completeness gate is now opt-in). Tests
+  179/179 green.
+- **Smoke resized to a fixed limit:2; render cost flagged (2026-07-10).** Smoke 1026049 hit
+  the 30-min TIMEOUT (not a code error): `per_doc_type:1` resolved to 39 questions, and the
+  G1 pre-pass spent ~27 min rendering ~77 gold pages to PNG (~21s/page) before the parser
+  even loaded. Renders cache to disk (`.cache/renders/<pdf>__dpi{dpi}/page_NNNN.png`, guarded
+  by exists), so it is a one-time amortized cost (the slow `/group` network FS, not a bug),
+  but it means the real run needs generous walltime. Changed `kaya_smoke.yaml` to a fixed
+  `limit:2` per task (2 questions, a few page renders) and bumped smoke walltime to 50 min so
+  the six-method side-artifact's model loads (incl. the 4B retrievers, where the
+  colmodernvbert/colqwen3 class-name guesses get validated) fit. The real run keeps
+  per_doc_type:50 and will get an 8h walltime.
+- **Target YAML architecture proposed, awaiting user reaction (2026-07-10).** Wrote
+  `ops/specs/target_architecture.yaml` (a mock-up, not wired): each main task gets a `base` +
+  named per-axis sub-sweeps (G1: size/family/quantization/resolution/parser/dataset; G2 split
+  into `retrieval:` 6-method x k and `inference:` chosen-retrievers x TLV/V; G3: prompt),
+  each independently collapsible. Chose independent per-axis sweeps over a full cross-product
+  (coupled axes + combinatorial blowup). Implementation deferred until the user confirms.

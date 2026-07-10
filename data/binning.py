@@ -34,16 +34,16 @@ def stamp_bins(
     questions: Sequence[Question],
     table: Mapping[str, DocLabel] | None = None,
     *,
-    require_complete: bool = True,
+    require_complete: bool = False,
 ) -> list[Question]:
     """Return copies of the questions with bin_label/scan_label filled from the table.
 
-    `doc_type` is left untouched, so a cell keeps the native document type on top
-    of its manual bin. When the table is empty (no annotation sheet yet) every
-    question keeps blank labels, so an unlabelled corpus still loads while the
-    labelling pass is in progress. Once the sheet exists it is treated as
-    complete: with `require_complete`, any question whose document is not labelled
-    raises, so a partial sheet stops the run instead of silently binning blank.
+    The manual annotation table is an optional enrichment: `doc_type` is left
+    untouched (a cell always keeps its native document type), and any document the
+    table does not cover just keeps blank bin/scan labels, which reporting buckets
+    as `(unlabeled)`. So a partial or absent sheet still runs. Opt in to
+    `require_complete` to instead raise when the sheet exists but misses some docs
+    (useful once you intend the annotation to be final).
     """
 
     labels = table if table is not None else load_annotations()

@@ -1,5 +1,5 @@
 """Resolution is a per-cell key axis, --failed-only retries only failed cells, and
-G3 no longer sweeps the 'none' prompt."""
+G3 sweeps all three prompt conditions (none / generic / targeted)."""
 from __future__ import annotations
 
 import json
@@ -63,7 +63,8 @@ def test_merge_failed_only_upgrades_in_place():
     assert [m["status"] for m in merged] == ["ok", "ok"]
 
 
-def test_g3_prompt_modes_drop_none():
+def test_g3_prompt_modes_sweep_all_three():
+    # The prompting comparison (pivot 7) needs the unprompted 'none' baseline
+    # alongside the generic and abstention-targeted arms.
     modes = require("config", "G3_PROMPT_MODES")
-    assert tuple(modes) == ("generic", "targeted")
-    assert "none" not in modes
+    assert tuple(modes) == ("none", "generic", "targeted")

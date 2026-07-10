@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 
 from retrievers import (
@@ -40,6 +41,10 @@ class ColVisionRetriever(Retriever):
 
     modality = "vision"
     model_id = ""
+    # colpali_engine (model_cls, processor_cls) candidates for this rung, tried in
+    # order. Same-family names only (naming-convention variants), never a different
+    # architecture, so a wrong class raises rather than producing garbage rankings.
+    model_classes: tuple[tuple[str, str], ...] = (("ColQwen2_5", "ColQwen2_5_Processor"),)
 
     def __init__(self, *, data_dir: Path | None = None, cache_dir: Path | None = None, dpi: int = 96,
                  model_id: str | None = None,
@@ -57,25 +62,45 @@ class ColVisionRetriever(Retriever):
         # embeddings on CPU so the k-sweep and a document's questions reuse one
         # image forward pass instead of re-embedding every page per question.
         self._page_emb: "OrderedDict[tuple[str, int], Any]" = OrderedDict()
+        # Retrieval cost (pivot 6.3): cumulative page-embed build time, last query time.
+        self.index_build_s = 0.0
+        self.last_query_s = 0.0
 
     def _load(self) -> tuple[Any, Any]:
-        """Load the ColPali-family model/processor for `model_id` (GPU node)."""
+        """Load the ColPali-family model/processor for `model_id` (GPU node).
+
+        Dispatches to the rung's `model_classes` in colpali_engine. A rung whose
+        class is absent in the installed colpali_engine raises (rather than silently
+        loading a wrong architecture); the retrieval side-artifact catches that and
+        records an honest miss for that method.
+        """
 
         if self._model is not None and self._processor is not None:
             return self._model, self._processor
+        import colpali_engine.models as cem
         import torch
-        from colpali_engine.models import ColQwen2_5, ColQwen2_5_Processor
 
         cuda = bool(torch.cuda.is_available())
         kwargs: dict[str, Any] = {
             "torch_dtype": torch.bfloat16 if cuda else torch.float32,
             "device_map": "cuda:0" if cuda else "cpu",
         }
-        # The exact model/processor class per repo is confirmed during GPU
-        # bring-up; ColQwen2.5 is the one already validated here.
-        self._model = ColQwen2_5.from_pretrained(self.model_id, **kwargs).eval()
-        self._processor = ColQwen2_5_Processor.from_pretrained(self.model_id)
-        return self._model, self._processor
+        errors: list[str] = []
+        for model_cls_name, proc_cls_name in self.model_classes:
+            model_cls = getattr(cem, model_cls_name, None)
+            proc_cls = getattr(cem, proc_cls_name, None)
+            if model_cls is None or proc_cls is None:
+                errors.append(f"{model_cls_name}/{proc_cls_name}: not in colpali_engine")
+                continue
+            try:
+                self._model = model_cls.from_pretrained(self.model_id, **kwargs).eval()
+                self._processor = proc_cls.from_pretrained(self.model_id)
+                return self._model, self._processor
+            except Exception as exc:  # noqa: BLE001 - try the next candidate name
+                errors.append(f"{model_cls_name}/{proc_cls_name}: {type(exc).__name__}: {exc}")
+        raise RuntimeError(
+            f"no colpali_engine class loaded {self.model_id!r} ({self.name}); tried " + "; ".join(errors)
+        )
 
     def unload(self) -> None:
         """Drop the weights/processor so they free the GPU."""
@@ -98,10 +123,12 @@ class ColVisionRetriever(Retriever):
         images = [Image.open(page.image_path).convert("RGB") for page in pages if page.image_path]
         if len(images) != len(pages):
             raise ValueError("all pages need image_path for vision retrieval")
+        start = perf_counter()
         batch_images = processor.process_images(images).to(model.device)
         with torch.no_grad():
             embeddings = model(**batch_images)
         embeddings = embeddings.to("cpu")
+        self.index_build_s += perf_counter() - start
         self._page_emb[key] = embeddings
         while len(self._page_emb) > PAGE_EMBED_CACHE_DOCS:
             self._page_emb.popitem(last=False)
@@ -111,11 +138,15 @@ class ColVisionRetriever(Retriever):
         import torch
 
         model, processor = self._load()
+        # Page-embed build is timed inside _page_embeddings (index cost); the query
+        # timer below covers only the query encode + multi-vector scoring.
         image_embeddings = self._page_embeddings(question, pages).to(model.device)
+        start = perf_counter()
         batch_queries = processor.process_queries([question.question]).to(model.device)
         with torch.no_grad():
             query_embeddings = model(**batch_queries)
         scores = processor.score_multi_vector(query_embeddings, image_embeddings)
+        self.last_query_s = perf_counter() - start
         try:
             row = scores[0].tolist()
         except Exception:
@@ -130,13 +161,21 @@ class ColVisionRetriever(Retriever):
         pages = render_document_pages(question, page_count, data_dir=self.data_dir,
                                       cache_dir=self.cache_dir, dpi=self.dpi, render_images=True)
         if not pages:
+            self.last_query_s = 0.0
             return ()
         try:
-            raw = list(self.scorer(question, pages)) if self.scorer is not None else self._model_scores(question, pages)
+            if self.scorer is not None:
+                start = perf_counter()
+                raw = list(self.scorer(question, pages))
+                self.last_query_s = perf_counter() - start
+            else:
+                raw = self._model_scores(question, pages)  # sets last_query_s
         except Exception:
             if not self.allow_text_fallback:
                 raise
+            start = perf_counter()
             raw = self._fallback_scores(question, pages)
+            self.last_query_s = perf_counter() - start
         return rank_pages(normalise_scores(raw), page_count)
 
     def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
@@ -148,6 +187,11 @@ class ColModernVbertRetriever(ColVisionRetriever):
 
     name = "colmodernvbert"
     model_id = COLMODERNVBERT_MODEL_ID
+    model_classes = (
+        ("ColModernVBert", "ColModernVBertProcessor"),
+        ("ColModernVBERT", "ColModernVBERTProcessor"),
+        ("ColModernBert", "ColModernBertProcessor"),
+    )
 
 
 class ColQwen25Retriever(ColVisionRetriever):
@@ -155,6 +199,7 @@ class ColQwen25Retriever(ColVisionRetriever):
 
     name = "colqwen2.5"
     model_id = COLQWEN25_MODEL_ID
+    model_classes = (("ColQwen2_5", "ColQwen2_5_Processor"),)
 
 
 class ColQwen3Retriever(ColVisionRetriever):
@@ -162,6 +207,10 @@ class ColQwen3Retriever(ColVisionRetriever):
 
     name = "colqwen3"
     model_id = COLQWEN3_MODEL_ID
+    model_classes = (
+        ("ColQwen3", "ColQwen3Processor"),
+        ("ColQwen3", "ColQwen3_Processor"),
+    )
 
 
 VISION_RETRIEVERS = {

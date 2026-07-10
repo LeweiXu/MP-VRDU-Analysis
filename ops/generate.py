@@ -43,8 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--failed-only", action="store_true",
                         help="re-run only the cells that failed (status != ok) in a previous run, "
                              "upgrading them in place; ok cells and side artifacts are left alone")
+    parser.add_argument("--require-complete-annotations", action="store_true",
+                        help="stop if the annotation sheet exists but misses some corpus docs; "
+                             "default is to allow blank bins (annotations are an optional enrichment)")
     parser.add_argument("--allow-unlabelled", action="store_true",
-                        help="don't require every doc to be binned (smoke/probe only; real runs stay strict)")
+                        help="deprecated no-op: unlabelled docs are allowed by default now")
     parser.add_argument("--verbose", action="store_true")
     return parser
 
@@ -76,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     first_config = runs[0][0]
     ensure_cache_env(first_config)
     questions = stamp_bins(load_mmlongbench(first_config.paths.data_dir),
-                           require_complete=not args.allow_unlabelled)
+                           require_complete=args.require_complete_annotations)
     for config, selector, limit in runs:
         if config.run_tag:
             log.info("run_tag=%s | task=%s", config.run_tag, selector)
