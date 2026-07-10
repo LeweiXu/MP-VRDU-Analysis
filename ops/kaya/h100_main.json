@@ -18,6 +18,9 @@
   "parsers": {
     "paddleocrvl": "PaddlePaddle/PaddleOCR-VL"
   },
+  "parser_aux_models": {
+    "paddleocrvl": ["PaddlePaddle/PP-DocLayoutV2"]
+  },
   "datasets": {
     "mmlongbench": "yubo2333/MMLongBench-Doc"
   }

@@ -24,6 +24,7 @@ ALLOWED_KEYS = {
     "k_values",
     "judge_spec",
     "classifier",
+    "dataset",
     "run_tag",
 }
 
@@ -34,7 +35,12 @@ class SpecError(ValueError):
 
 @dataclass(frozen=True)
 class Spec:
-    """A parsed generation spec: which task runs, over what grid and corpus."""
+    """A parsed generation spec: which task runs, over what grid and corpus.
+
+    A flat spec maps 1:1 to a run. The nested `base` + `sweeps` (and G2
+    `retrieval` / `inference`) form is expanded into several of these at parse
+    time, one per sweep, each with its own `run_tag`.
+    """
 
     task: str
     representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
@@ -50,7 +56,19 @@ class Spec:
     k_values: tuple[int, ...] = ()
     judge_spec: str | None = None
     classifier: str | None = None
+    dataset: str | None = None
     run_tag: str | None = None
+    # G3 abstention-prompt modes (run as cells within the one G3 run).
+    prompt_modes: tuple[str, ...] = ()
+    # G2 retrieval-benchmark method sets + inference-stage picks.
+    text_retrievers: tuple[str, ...] = ()
+    vision_retrievers: tuple[str, ...] = ()
+    joints: Any = None
+    joint_k_values: tuple[int, ...] = ()
+    inference_text_retriever: str | None = None
+    inference_vision_retriever: str | None = None
+    inference_joint: bool | None = None
+    inference_representations: tuple[str, ...] = ()
 
 
 def parse_spec(raw: Mapping[str, Any]) -> Spec:
@@ -81,20 +99,33 @@ def parse_spec(raw: Mapping[str, Any]) -> Spec:
         k_values=tuple(raw.get("k_values") or ()),
         judge_spec=raw.get("judge_spec"),
         classifier=raw.get("classifier"),
+        dataset=raw.get("dataset"),
         run_tag=raw.get("run_tag"),
     )
+
+
+# A run entry is "nested" (needs the expander) if it carries any of these blocks.
+_NESTED_KEYS = ("base", "sweeps", "retrieval", "inference")
+# Sweep axes that live in the cache key (reasoner spec incl. quant suffix, and
+# visual_resolution), so a whole sweep runs under ONE run_tag as a list the driver
+# loops. Axes NOT in the key (parser, dataset) get one run_tag per value instead.
+_DEFAULT_REPS = ("T", "TL", "TLV", "V")
+
+
+def _is_bf16(value: Any) -> bool:
+    """A quantization value that means the unquantized baseline (no suffix)."""
+
+    return not value or (isinstance(value, str) and value.strip().lower() in ("bf16", "none", ""))
 
 
 def parse_specs(raw: Mapping[str, Any]) -> list[Spec]:
     """Parse a spec file into one or more runs.
 
-    A flat mapping (with a `task`) is a single run. A mapping with a `runs` list
-    is several runs: each run entry is merged over an optional shared `base`
-    block, so a file can hold, say, a G1 size sweep and one G1 run per resolution
-    plus G3 and G4, each isolated by its own `run_tag`. Splitting a task across
-    machines is just which runs each machine's file carries; there is no machine
-    field. Every run in a multi-run file must set a unique `run_tag` (its cache
-    namespace), so the runs never write over each other.
+    A flat mapping (with a `task`) is a single run. A mapping with a `runs` list is
+    several runs, each merged over an optional shared `base` block. A run entry that
+    carries a nested `base` / `sweeps` block (or G2's `retrieval` / `inference`) is
+    expanded here into one flat `Spec` per sweep, each with its own `run_tag`, so the
+    driver still runs one pass per spec. Every emitted run needs a unique `run_tag`.
     """
 
     if not isinstance(raw, Mapping):
@@ -105,8 +136,8 @@ def parse_specs(raw: Mapping[str, Any]) -> list[Spec]:
     unknown_top = set(raw) - {"base", "runs"}
     if unknown_top:
         raise SpecError(f"with `runs`, the only top-level keys are base/runs; unknown: {sorted(unknown_top)}")
-    base = raw.get("base") or {}
-    if not isinstance(base, Mapping):
+    file_base = raw.get("base") or {}
+    if not isinstance(file_base, Mapping):
         raise SpecError("base must be a mapping")
     runs = raw["runs"]
     if not isinstance(runs, list) or not runs:
@@ -116,7 +147,10 @@ def parse_specs(raw: Mapping[str, Any]) -> list[Spec]:
     for entry in runs:
         if not isinstance(entry, Mapping):
             raise SpecError(f"each run must be a mapping, got {type(entry).__name__}")
-        specs.append(parse_spec({**base, **entry}))
+        if any(key in entry for key in _NESTED_KEYS):
+            specs.extend(_expand_run(file_base, entry))
+        else:
+            specs.append(parse_spec({**file_base, **entry}))
 
     tags = [spec.run_tag for spec in specs]
     if any(tag is None for tag in tags):
@@ -124,6 +158,153 @@ def parse_specs(raw: Mapping[str, Any]) -> list[Spec]:
     if len(set(tags)) != len(tags):
         raise SpecError(f"run_tag must be unique across runs; got {tags}")
     return specs
+
+
+def _expand_run(file_base: Mapping[str, Any], entry: Mapping[str, Any]) -> list[Spec]:
+    """Expand one nested run entry into its flat per-sweep `Spec`s."""
+
+    task = str(entry.get("task") or "").strip()
+    run_tag = entry.get("run_tag")
+    if not task:
+        raise SpecError("nested run must name a task")
+    if not run_tag:
+        raise SpecError(f"nested run {task!r} must set run_tag")
+    if "retrieval" in entry or "inference" in entry:
+        return [_g2_spec(file_base, entry, task, run_tag)]
+    return _expand_reasoner_run(file_base, entry, task, run_tag)
+
+
+def _baseline_spec(file_base, task_base, task, run_tag, *, prompt_modes) -> Spec:
+    """The `base` run: file-level base overlaid by the task base (task wins).
+
+    Unknown task-base keys (e.g. G3's informational `retriever` / `similarity_k` /
+    singular `representation`) are ignored; only mapped axes take effect.
+    """
+
+    merged = {**file_base, **task_base}
+    quant = None if _is_bf16(merged.get("quantization")) else merged.get("quantization")
+    return Spec(
+        task=task,
+        run_tag=run_tag,
+        representations=tuple(merged.get("representations") or _DEFAULT_REPS),
+        corpus=dict(merged.get("corpus") or {"sampling": "full"}),
+        reasoner_spec=merged.get("reasoner_spec"),
+        parser=merged.get("parser"),
+        quantization=quant,
+        visual_resolution=merged.get("visual_resolution"),
+        dpi=merged.get("dpi"),
+        k_values=tuple(merged.get("k_values") or ()),
+        judge_spec=merged.get("judge_spec"),
+        classifier=merged.get("classifier"),
+        dataset=merged.get("dataset"),
+        prompt_modes=tuple(prompt_modes or ()),
+    )
+
+
+def _expand_reasoner_run(file_base, entry, task, run_tag) -> list[Spec]:
+    """G1/G3-style: a base run plus one Spec (or run_tag) per enabled sweep."""
+
+    from dataclasses import replace
+
+    task_base = entry.get("base") or {}
+    if not isinstance(task_base, Mapping):
+        raise SpecError(f"{run_tag}: base must be a mapping")
+    sweeps = entry.get("sweeps") or {}
+    if not isinstance(sweeps, Mapping):
+        raise SpecError(f"{run_tag}: sweeps must be a mapping")
+
+    # A `prompt_mode` sweep configures the single G3 run (its modes run as cells),
+    # so fold it into the base rather than emitting a separate run_tag.
+    prompt_modes = None
+    for sweep in sweeps.values():
+        if isinstance(sweep, Mapping) and "prompt_mode" in sweep:
+            prompt_modes = tuple(sweep["prompt_mode"])
+    baseline = _baseline_spec(file_base, task_base, task, run_tag, prompt_modes=prompt_modes)
+
+    specs = [baseline]
+    for name, sweep in sweeps.items():
+        if not sweep or (isinstance(sweep, Mapping) and sweep.get("enabled") is False):
+            continue
+        if not isinstance(sweep, Mapping):
+            raise SpecError(f"{run_tag}: sweep {name!r} must be a mapping")
+        axes = [k for k in sweep if k not in ("representations", "enabled")]
+        if len(axes) != 1:
+            raise SpecError(f"{run_tag}: sweep {name!r} must vary exactly one axis, got {axes}")
+        axis = axes[0]
+        if axis == "prompt_mode":
+            continue  # already folded into the base run
+        values = list(sweep[axis])
+        if not values:
+            continue
+        reps = {"representations": tuple(sweep["representations"])} if sweep.get("representations") else {}
+        specs.extend(_emit_sweep(baseline, replace, run_tag, name, axis, values, reps))
+    return specs
+
+
+def _emit_sweep(baseline, replace, run_tag, name, axis, values, reps) -> list[Spec]:
+    """One sweep -> its Spec(s), per the run_tag strategy (see module docs)."""
+
+    if axis == "reasoner_spec":  # size and family sweeps both vary this axis
+        if len(values) == 1 and values[0] == baseline.reasoner_spec:
+            return []
+        return [replace(baseline, run_tag=f"{run_tag}-{name}", reasoner_specs=tuple(values), **reps)]
+    if axis == "quantization":
+        if len(values) == 1 and _is_bf16(values[0]) and baseline.quantization is None:
+            return []
+        from config import DEFAULT_REASONER_SPEC
+        base_reasoner = baseline.reasoner_spec or DEFAULT_REASONER_SPEC
+        rspecs = tuple(base_reasoner if _is_bf16(v) else f"{base_reasoner}-{v}" for v in values)
+        return [replace(baseline, run_tag=f"{run_tag}-{name}", reasoner_specs=rspecs, quantization=None, **reps)]
+    if axis == "visual_resolution":
+        if len(values) == 1 and values[0] == baseline.visual_resolution:
+            return []
+        return [replace(baseline, run_tag=f"{run_tag}-{name}", visual_resolutions=tuple(values), **reps)]
+    if axis in ("parser", "dataset"):
+        # Not in the cache key: each value needs its own run_tag namespace.
+        return [replace(baseline, run_tag=f"{run_tag}-{name}-{v}", **{axis: v}, **reps) for v in values]
+    raise SpecError(f"{run_tag}: sweep {name!r} varies unknown axis {axis!r}")
+
+
+def _g2_spec(file_base, entry, task, run_tag) -> Spec:
+    """G2: one Spec carrying the retrieval-benchmark method sets and the inference
+    picks. Inference retrievers must be a subset of the benchmark lists (they reuse
+    the stage-1 cached rankings)."""
+
+    retrieval = entry.get("retrieval") or {}
+    inference = entry.get("inference") or {}
+    if not isinstance(retrieval, Mapping) or not isinstance(inference, Mapping):
+        raise SpecError(f"{run_tag}: retrieval/inference must be mappings")
+
+    text_list = tuple(retrieval.get("text_retrievers") or ())
+    vision_list = tuple(retrieval.get("vision_retrievers") or ())
+    inf_text = inference.get("text_retriever")
+    inf_vision = inference.get("vision_retriever")
+    if inf_text and text_list and inf_text not in text_list:
+        raise SpecError(f"{run_tag}: inference text_retriever {inf_text!r} not in retrieval set {text_list}")
+    if inf_vision and vision_list and inf_vision not in vision_list:
+        raise SpecError(f"{run_tag}: inference vision_retriever {inf_vision!r} not in retrieval set {vision_list}")
+
+    k_values = tuple(inference.get("k_values") or retrieval.get("k_values") or ())
+    joint_ks = tuple(inference.get("joint_k_values") or retrieval.get("joint_k_values") or ())
+    return Spec(
+        task=task,
+        run_tag=run_tag,
+        corpus=dict(file_base.get("corpus") or {"sampling": "full"}),
+        dataset=file_base.get("dataset"),
+        parser=file_base.get("parser"),
+        judge_spec=file_base.get("judge_spec"),
+        reasoner_spec=inference.get("reasoner_spec"),
+        visual_resolution=inference.get("visual_resolution"),
+        k_values=k_values,
+        text_retrievers=text_list,
+        vision_retrievers=vision_list,
+        joints=retrieval.get("joints", "matched"),
+        joint_k_values=joint_ks,
+        inference_text_retriever=inf_text,
+        inference_vision_retriever=inf_vision,
+        inference_joint=bool(inference.get("joint", True)),
+        inference_representations=tuple(inference.get("representations") or ("TLV", "V")),
+    )
 
 
 def load_yaml_spec(path: Path) -> Spec:
@@ -178,6 +359,29 @@ def config_from_spec(spec: Spec, *, smoke: bool = False):
         kwargs["conditions"] = spec.conditions
     if spec.dpi is not None:
         kwargs["dpi"] = int(spec.dpi)
+
+    # Only override an ExperimentConfig default when the spec actually set the field,
+    # so a plain run keeps the class defaults for every axis it does not name.
+    if spec.dataset:
+        kwargs["dataset"] = spec.dataset
+    if spec.prompt_modes:
+        kwargs["prompt_modes"] = spec.prompt_modes
+    if spec.text_retrievers:
+        kwargs["text_retrievers"] = spec.text_retrievers
+    if spec.vision_retrievers:
+        kwargs["vision_retrievers"] = spec.vision_retrievers
+    if spec.joints is not None:
+        kwargs["joints"] = spec.joints
+    if spec.joint_k_values:
+        kwargs["joint_k_values"] = spec.joint_k_values
+    if spec.inference_text_retriever:
+        kwargs["inference_text_retriever"] = spec.inference_text_retriever
+    if spec.inference_vision_retriever:
+        kwargs["inference_vision_retriever"] = spec.inference_vision_retriever
+    if spec.inference_joint is not None:
+        kwargs["inference_joint"] = spec.inference_joint
+    if spec.inference_representations:
+        kwargs["inference_representations"] = spec.inference_representations
 
     return ExperimentConfig(
         smoke=smoke,

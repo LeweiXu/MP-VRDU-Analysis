@@ -204,6 +204,19 @@ class Qwen3EmbeddingRetriever(DenseTextRetriever):
     def _load_embedder(self) -> Any:
         from sentence_transformers import SentenceTransformer
 
+        # 4B in fp32 (SentenceTransformer's default) needs ~16 GB and OOMs a V100;
+        # load in fp16 on GPU so it fits, and fall back to a plain CPU load if
+        # CUDA is absent (e.g. a login-node smoke).
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return SentenceTransformer(
+                    self.model_id, device="cuda",
+                    model_kwargs={"torch_dtype": torch.float16},
+                )
+        except Exception:
+            pass
         return SentenceTransformer(self.model_id)
 
 

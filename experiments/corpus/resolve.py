@@ -79,13 +79,23 @@ def sample_per_bin(corpus: Sequence[Any], per_bin: int | None, seed: int = 0) ->
 
 
 def sample_per_doc_type(corpus: Sequence[Any], per_doc_type: int | None, seed: int = 0) -> list[Any]:
-    """Subset to about `per_doc_type` questions per doc_type by drawing whole documents.
+    """Subset to EXACTLY `per_doc_type` questions per doc_type label.
 
-    Same document-coherent draw as `sample_per_bin`, but grouped by the native
-    `doc_type` label instead of `bin_label`. Within each doc_type, documents are
-    shuffled by `seed` and taken whole until the group reaches `per_doc_type`
-    questions; the returned list preserves the original corpus order.
+    Documents are shuffled by `seed` and taken whole (the doc-coherent draw shared
+    with `sample_per_bin`) until the group reaches `per_doc_type` questions, then the
+    group is capped to exactly that many (in corpus order). So `per_doc_type: 1` runs
+    one question per label (seven labels -> seven questions), which the doc-coherent
+    draw alone could not do (it keeps whole documents, usually several questions). A
+    label with fewer than `per_doc_type` questions is kept whole. The returned list
+    preserves the original corpus order.
+
+    The exact cap can slice the last drawn document (a partial document), which the
+    plain whole-document draw never does; keep that in mind for the doc-level
+    bootstrap on small `per_doc_type`.
     """
+
+    if per_doc_type is None:
+        return list(corpus)
 
     grouped: dict[str, list[Any]] = {}
     for question in corpus:
@@ -93,7 +103,9 @@ def sample_per_doc_type(corpus: Sequence[Any], per_doc_type: int | None, seed: i
 
     keep_ids: set[str] = set()
     for group in grouped.values():
-        keep_ids |= _draw_documents(group, per_doc_type, seed)
+        drawn_ids = _draw_documents(group, per_doc_type, seed)
+        drawn = [question for question in group if question.id in drawn_ids]  # corpus order
+        keep_ids |= {question.id for question in drawn[:per_doc_type]}
 
     return [question for question in corpus if question.id in keep_ids]
 

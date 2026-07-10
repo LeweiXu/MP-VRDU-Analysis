@@ -111,16 +111,17 @@ def matched_cross_sweep_cells(
     ks: Sequence[int],
     joint_ks: Sequence[int] = (1, 3, 5),
     representations: Sequence[Modality] = ("TLV",),
+    include_joint: bool = True,
 ) -> list[Cell]:
     """Matched (vision-retrieval), cross (text-retrieval), and joint (free union)
     cells swept over k, at each representation rung.
 
-    This is the reasoner-inference sweep: bm25 (text) + colqwen2.5 (vision) + their
-    post-hoc union (joint), fed to the reasoner at every rung in `representations`
-    (TLV and V). The full six-method accuracy ladder lives in the retrieval
-    side-artifact, not here. Question-major; the `retrieved_{modality}_k{k}`
-    conditioner name carries the modality and k, so each (modality, k, rung) lands
-    in its own prediction-cache row.
+    This is the reasoner-inference sweep: the chosen text + vision arms plus their
+    post-hoc union (when `include_joint`), fed to the reasoner at every rung in
+    `representations` (default TLV and V). The full six-method accuracy ladder lives
+    in the retrieval side-artifact, not here. Question-major; the
+    `retrieved_{modality}_k{k}` conditioner name carries the modality and k, so each
+    (modality, k, rung) lands in its own prediction-cache row.
     """
 
     single = [
@@ -133,7 +134,7 @@ def matched_cross_sweep_cells(
     joint = [
         JointTopK(retrievers.text, retrievers.vision, k, name=f"retrieved_joint_k{k}")
         for k in joint_ks
-    ]
+    ] if include_joint else []
     cells: list[Cell] = []
     for question in questions:
         for rep in representations:

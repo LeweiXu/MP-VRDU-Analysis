@@ -1,0 +1,25 @@
+# Fresh cache namespaces for the setup and prestage offline acceptance run.
+
+base:
+  corpus: {sampling: {limit: 2}}
+  parser: paddleocrvl
+  judge_spec: stub
+
+runs:
+  - task: G1_oracle_ladder
+    run_tag: offline-contract-g1-smoke
+    reasoner_specs: [qwen3vl-2b-local]
+    visual_resolution: med
+    representations: [T, TL, TLV, V]
+
+  - task: G2_retrieval
+    run_tag: offline-contract-g2-smoke
+    reasoner_spec: qwen3vl-2b-local
+    visual_resolution: med
+    representations: [TLV, V]
+    k_values: [1, 3, 5]
+
+  - task: G3_hallucination
+    run_tag: offline-contract-g3-smoke
+    reasoner_spec: qwen3vl-2b-local
+    visual_resolution: med

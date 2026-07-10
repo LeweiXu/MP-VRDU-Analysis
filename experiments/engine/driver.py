@@ -108,23 +108,22 @@ log = logging.getLogger("mpvrdu.driver")
 
 
 def build_retrievers(config):
-    """The text + vision retrievers a run may need, memoized and lazily loaded."""
+    """The text + vision retrievers the inference stage feeds the reasoner, memoized
+    and lazily loaded. Which arm is which comes from the spec
+    (`inference_text_retriever` / `inference_vision_retriever`, default bm25 /
+    colqwen2.5); the full six-method benchmark lives in the retrieval side-artifact.
+    """
 
     from experiments.tasks.base import Retrievers
     from retrievers import MemoizedRetriever
-    from retrievers.text import Bm25Retriever
-    from retrievers.vision import ColQwen25Retriever
+    from retrievers.text import get_text_retriever
+    from retrievers.vision import get_vision_retriever
 
     persist_dir = config.paths.cache_dir / "retrieval"
+    kwargs = dict(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)
     return Retrievers(
-        text=MemoizedRetriever(
-            Bm25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi),
-            persist_dir=persist_dir,
-        ),
-        vision=MemoizedRetriever(
-            ColQwen25Retriever(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi),
-            persist_dir=persist_dir,
-        ),
+        text=MemoizedRetriever(get_text_retriever(config.inference_text_retriever, **kwargs), persist_dir=persist_dir),
+        vision=MemoizedRetriever(get_vision_retriever(config.inference_vision_retriever, **kwargs), persist_dir=persist_dir),
     )
 
 
@@ -154,6 +153,16 @@ def _warm_parser_cache(config, pages) -> None:
         log.info("parser warm: %s over %d pages", config.parser_tool, len(pages))
     except Exception as exc:  # noqa: BLE001 - a cold parser cache is a cell miss, not a task crash
         log.warning("parser warm (%s) failed over %d pages: %s", config.parser_tool, len(pages), exc)
+
+
+def _warm_parser_after_retrieval(config, pages, retrievers, free_gpu) -> None:
+    """Unload retrieval models before the isolated parser process takes the GPU."""
+
+    retrievers.text.unload()
+    retrievers.vision.unload()
+    free_gpu()
+    _warm_parser_cache(config, pages)
+    free_gpu()
 
 
 def _failed_result_row(orchestrator, cell, exc, machine):
@@ -292,10 +301,7 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
                 if key not in seen_pages:
                     seen_pages.add(key)
                     parser_pages.append(page)
-        _warm_parser_cache(config, parser_pages)
-        retrievers.text.unload()
-        retrievers.vision.unload()
-        free_gpu()
+        _warm_parser_after_retrieval(config, parser_pages, retrievers, free_gpu)
 
         # Reasoner loads once per spec; each resolution just changes the per-page
         # vision-token budget (a processor-side downscale), so we reuse the loaded

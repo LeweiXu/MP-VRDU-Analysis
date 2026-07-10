@@ -8,7 +8,7 @@ MMLongBench-Doc; the primary reasoner is Qwen3-VL.
 
 This README is the definitive guide to the **experiment**: what a cell is, the
 representation ladder, how documents are binned, the retrieval and prompting
-sweeps, the telemetry, and the four generation tasks. It describes the system **as
+sweeps, the telemetry, and the three generation tasks. It describes the system **as
 it is now**; the history of how it got here (pivots, superseded designs) lives in
 `docs/DECISIONS.md`. The coding agent's reference for code structure and frozen
 contracts is `docs/AGENT_GUIDE.md`. Cluster operations are in
@@ -92,7 +92,7 @@ mpvrdu/
 │   └── agreement.py          judge-human Cohen's kappa
 │
 ├── experiments/              what runs, how, and on what
-│   ├── tasks/                the four G[num]_[name] generation tasks + the base ABC
+│   ├── tasks/                the three G[num]_[name] generation tasks + the base ABC
 │   ├── engine/               driver (generate/judge loop, robustness, failed-only),
 │   │                         side-artifact writers, cache/table paths + cell keys
 │   ├── corpus/               question-set resolver + sampling, YAML spec loader

@@ -56,24 +56,24 @@ def test_full_mode_returns_everything() -> None:
     assert len(got) == len(_corpus())
 
 
-def test_per_doc_type_is_document_coherent() -> None:
+def test_per_doc_type_caps_to_exact_count_per_label() -> None:
     sample_per_doc_type = require("experiments.corpus.resolve", "sample_per_doc_type")
     kept = sample_per_doc_type(_corpus(), per_doc_type=1, seed=0)
-    for doc in {q.doc_id for q in kept}:
-        picked = {q.id for q in kept if q.doc_id == doc}
-        allq = {q.id for q in _corpus() if q.doc_id == doc}
-        assert picked == allq, "must sample whole documents, not questions"
-
-
-def test_per_doc_type_draws_one_document_per_doc_type() -> None:
-    sample_per_doc_type = require("experiments.corpus.resolve", "sample_per_doc_type")
-    kept = sample_per_doc_type(_corpus(), per_doc_type=1, seed=0)
-    # Both native doc_types are represented, one whole doc each (docs are 2 q), so 4 q.
+    # Exactly one question per doc_type label (report, manual) -> 2 total, even though
+    # each document holds 2 questions (the last drawn document is sliced to hit N).
     assert {q.doc_type for q in kept} == {"report", "manual"}
     for doc_type in ("report", "manual"):
-        docs = {q.doc_id for q in kept if q.doc_type == doc_type}
-        assert len(docs) == 1, f"per_doc_type=1 keeps one document for {doc_type}"
-    assert len(kept) == 4
+        n = len([q for q in kept if q.doc_type == doc_type])
+        assert n == 1, f"per_doc_type=1 keeps exactly one question for {doc_type}, got {n}"
+    assert len(kept) == 2
+
+
+def test_per_doc_type_cap_spans_documents_and_keeps_small_labels_whole() -> None:
+    sample_per_doc_type = require("experiments.corpus.resolve", "sample_per_doc_type")
+    # report has 3 docs x 2 q = 6 q -> capped to exactly 3; manual has only 2 q -> kept whole.
+    kept = sample_per_doc_type(_corpus(), per_doc_type=3, seed=0)
+    assert len([q for q in kept if q.doc_type == "report"]) == 3
+    assert len([q for q in kept if q.doc_type == "manual"]) == 2
 
 
 def test_per_doc_type_deterministic_under_seed() -> None:
@@ -86,7 +86,7 @@ def test_per_doc_type_deterministic_under_seed() -> None:
 def test_per_doc_type_mode_resolves_via_corpus() -> None:
     resolve_corpus = require("experiments.corpus.resolve", "resolve_corpus")
     got = list(resolve_corpus({"sampling": {"per_doc_type": 1, "seed": 0}}, _corpus()))
-    assert len(got) == 4
+    assert len(got) == 2
 
 
 def test_answerable_pool_is_bound_by_task() -> None:

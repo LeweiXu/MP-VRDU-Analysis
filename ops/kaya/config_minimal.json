@@ -59,12 +59,22 @@
     ],
     "vision": [
       "ModernVBERT/colmodernvbert",
+      "ModernVBERT/colmodernvbert-base",
       "vidore/colqwen2.5-v0.2",
+      "vidore/colqwen2.5-base",
       "OpenSearch-AI/Ops-Colqwen3-4B"
+    ]
+  },
+  "retrieval_model_dependencies": {
+    "ModernVBERT/colmodernvbert-base": [
+      "google/siglip2-base-patch16-512"
     ]
   },
   "parsers": {
     "paddleocrvl": "PaddlePaddle/PaddleOCR-VL"
+  },
+  "parser_aux_models": {
+    "paddleocrvl": ["PaddlePaddle/PP-DocLayoutV2"]
   },
   "datasets": {
     "mmlongbench": "yubo2333/MMLongBench-Doc"

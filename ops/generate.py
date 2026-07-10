@@ -8,12 +8,29 @@ import os
 
 from config import DEPLOYMENT_RESOLUTION, ExperimentConfig, hf_cache_environ
 from data.binning import stamp_bins
-from data.loader import load_mmlongbench
+from data.loader import load_longdocurl, load_mmlongbench
 from experiments.engine.driver import generate
 from experiments.engine.paths import configure_logging
 from experiments.registry import resolve
 
 log = logging.getLogger("mpvrdu.generate")
+
+# Which loader stages each dataset the `dataset` axis can select.
+DATASET_LOADERS = {
+    "mmlongbench": load_mmlongbench,
+    "longdocurl": load_longdocurl,
+}
+
+
+def load_corpus(dataset: str, data_dir, *, require_complete: bool, cache: dict) -> list:
+    """Load (and bin) a dataset's questions once, memoized per dataset name."""
+
+    if dataset not in cache:
+        loader = DATASET_LOADERS.get(dataset)
+        if loader is None:
+            raise ValueError(f"unknown dataset {dataset!r}; choose from {sorted(DATASET_LOADERS)}")
+        cache[dataset] = stamp_bins(loader(data_dir), require_complete=require_complete)
+    return cache[dataset]
 
 
 def ensure_cache_env(config: ExperimentConfig) -> None:
@@ -74,15 +91,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         runs = [(config, args.task, args.limit)]
 
-    # The dataset and HF cache location are the same across runs (run_tag only
-    # nests the results cache), so load questions and set the cache env once.
-    first_config = runs[0][0]
-    ensure_cache_env(first_config)
-    questions = stamp_bins(load_mmlongbench(first_config.paths.data_dir),
-                           require_complete=args.require_complete_annotations)
+    # The HF cache location is the same across runs (run_tag only nests the results
+    # cache), so set the cache env once. Each run's corpus is loaded per its dataset
+    # and memoized, so a dataset sweep reloads each dataset at most once.
+    ensure_cache_env(runs[0][0])
+    corpus_cache: dict[str, list] = {}
     for config, selector, limit in runs:
+        questions = load_corpus(config.dataset, config.paths.data_dir,
+                                require_complete=args.require_complete_annotations, cache=corpus_cache)
         if config.run_tag:
-            log.info("run_tag=%s | task=%s", config.run_tag, selector)
+            log.info("run_tag=%s | task=%s | dataset=%s", config.run_tag, selector, config.dataset)
         for task in resolve(selector):
             generate(config, task, questions, limit=limit, failed_only=args.failed_only)
     return 0

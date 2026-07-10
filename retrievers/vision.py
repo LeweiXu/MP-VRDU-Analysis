@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Sequence
+import json
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
@@ -21,6 +22,7 @@ from retrievers import (
 from schema import Question
 
 COLMODERNVBERT_MODEL_ID = "ModernVBERT/colmodernvbert"
+COLMODERNVBERT_BASE_MODEL_ID = "ModernVBERT/colmodernvbert-base"
 COLQWEN25_MODEL_ID = "vidore/colqwen2.5-v0.2"
 COLQWEN3_MODEL_ID = "OpenSearch-AI/Ops-Colqwen3-4B"
 
@@ -85,6 +87,7 @@ class ColVisionRetriever(Retriever):
             "torch_dtype": torch.bfloat16 if cuda else torch.float32,
             "device_map": "cuda:0" if cuda else "cpu",
         }
+        kwargs.update(self.model_load_kwargs())
         errors: list[str] = []
         for model_cls_name, proc_cls_name in self.model_classes:
             model_cls = getattr(cem, model_cls_name, None)
@@ -101,6 +104,11 @@ class ColVisionRetriever(Retriever):
         raise RuntimeError(
             f"no colpali_engine class loaded {self.model_id!r} ({self.name}); tried " + "; ".join(errors)
         )
+
+    def model_load_kwargs(self) -> dict[str, Any]:
+        """Extra model configuration needed by a specific ColPali family."""
+
+        return {}
 
     def unload(self) -> None:
         """Drop the weights/processor so they free the GPU."""
@@ -192,6 +200,34 @@ class ColModernVbertRetriever(ColVisionRetriever):
         ("ColModernVBERT", "ColModernVBERTProcessor"),
         ("ColModernBert", "ColModernBertProcessor"),
     )
+
+    def model_load_kwargs(self) -> dict[str, Any]:
+        """Use the full text config embedded in the published base checkpoint."""
+
+        from colpali_engine.models.modernvbert.configuration_modernvbert import ModernVBertConfig
+
+        config = ModernVBertConfig.from_pretrained(
+            COLMODERNVBERT_BASE_MODEL_ID,
+            cache_dir=self.cache_dir,
+            local_files_only=True,
+        )
+        config.freeze_config = {"freeze_text_layers": False}
+
+        # colpali-engine 0.3.13 discards the checkpoint's nested ModernBERT
+        # config and reopens its 50,368-token default backbone. The published
+        # checkpoint contains a 50,408-token embedding and its complete text
+        # config, so expose that nested config as a local AutoConfig directory.
+        text_config_dir = self.cache_dir / "mpvrdu" / "colmodernvbert-text-config"
+        text_config_dir.mkdir(parents=True, exist_ok=True)
+        text_config = config.text_config.to_dict()
+        text_config["model_type"] = "modernbert"
+        (text_config_dir / "config.json").write_text(
+            json.dumps(text_config, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        config.text_config.text_model_name = str(text_config_dir.resolve())
+
+        return {"config": config, "local_files_only": True}
 
 
 class ColQwen25Retriever(ColVisionRetriever):

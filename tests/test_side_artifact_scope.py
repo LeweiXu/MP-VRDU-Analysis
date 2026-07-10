@@ -72,7 +72,7 @@ def test_g3_classifier_respects_smoke_limit(tmp_path, monkeypatch) -> None:
 def test_g2_retrieval_side_refilters_to_answerable(tmp_path, monkeypatch) -> None:
     captured: dict = {}
 
-    def fake_write(config, questions, side_dir, *, single_ks, joint_ks, filename):
+    def fake_write(config, questions, side_dir, *, single_ks, joint_ks, filename, **kwargs):
         captured["docs"] = list(questions)
 
     monkeypatch.setattr("experiments.tasks.G2_retrieval.write_retrieval_eval", fake_write)

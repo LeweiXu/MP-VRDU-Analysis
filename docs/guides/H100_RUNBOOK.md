@@ -28,7 +28,7 @@ builds a core reasoning env plus one isolated env per PDF parser, all inside the
 checkout at `envs/`, which is where the code looks for them.
 
 ```bash
-python -m ops.scripts.setup_env --machine supervisor --env all --local
+python -m ops.scripts.setup_env --machine H100 --env all --local
 ```
 
 Notes:
@@ -118,7 +118,7 @@ it. The usual culprit is `ParserCacheMiss` on the TL/TLV cells, which means the
 ## If the check finds errors
 
 1. Read the reason it printed. `ParserCacheMiss` -> the parser env is the problem;
-   rebuild it with `python -m ops.scripts.setup_env --machine supervisor --env parse-paddleocrvl --local` and confirm it `pip check`s clean.
+   rebuild it with `python -m ops.scripts.setup_env --machine H100 --env parse-paddleocrvl --local` and confirm it `pip check`s clean.
 2. Fix the cause, then retry just the failed cells:
 
    ```bash

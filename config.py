@@ -145,6 +145,27 @@ class ExperimentConfig:
     conditions: tuple[str, ...] = ("oracle", "retrieved", "full", "similarity")
     k_values: tuple[int, ...] = (1, 3, 5, 7, 10)
 
+    # G2 retrieval benchmark: the text/vision methods scored into the side-artifact
+    # (cost-ordered cheap -> expensive) and the joint unions. `joints` is "matched"
+    # (auto cheap|cheap, mid|mid, expensive|expensive by list position) or an explicit
+    # tuple of (text, vision) pairs, or () to skip joints. These lists are consumed
+    # within one run (like k_values), so a failed method just skips its own rows.
+    text_retrievers: tuple[str, ...] = ("bm25", "bge-m3", "qwen3-embedding")
+    vision_retrievers: tuple[str, ...] = ("colmodernvbert", "colqwen2.5", "colqwen3")
+    joints: object = "matched"
+    joint_k_values: tuple[int, ...] = (1, 3, 5)
+
+    # G2 inference stage: which single retriever arm feeds the reasoner (a subset of
+    # the benchmark lists), whether to also feed the joint union, and at which rungs.
+    inference_text_retriever: str = "bm25"
+    inference_vision_retriever: str = "colqwen2.5"
+    inference_joint: bool = True
+    inference_representations: tuple[str, ...] = ("TLV", "V")
+
+    # G3 abstention-prompt sweep: the instruction preambles run as separate cells in
+    # one run. Defaults to the three-mode comparison.
+    prompt_modes: tuple[str, ...] = G3_PROMPT_MODES
+
     # Representation ladder (cost-ordered; names historical, mechanism in tools/).
     representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
 
@@ -167,10 +188,10 @@ class ExperimentConfig:
     # for the doc-level bootstrap CIs. Set to 0/None to run the whole corpus.
     per_bin_sample: int | None = 100
     sample_seed: int = 0
-    # Per-doc_type document-level subset: whole documents are drawn per native
-    # doc_type label until it reaches this many questions (same doc-coherent draw
-    # as per_bin_sample). Set via a spec's {sampling: {per_doc_type: N, seed: S}};
-    # None runs the whole pool.
+    # Per-doc_type subset: whole documents are drawn per native doc_type label, then
+    # capped to EXACTLY this many questions per label (so per_doc_type: 1 -> one
+    # question per label). The exact cap can slice the last drawn document. Set via a
+    # spec's {sampling: {per_doc_type: N, seed: S}}; None runs the whole pool.
     per_doc_type_sample: int | None = None
     # Optional bitsandbytes quantization for the local reasoner: None (bf16),
     # "4bit", or "8bit". When set it is appended to `reasoner_spec` as a
@@ -198,6 +219,11 @@ class ExperimentConfig:
             object.__setattr__(self, "classifier_spec", None)
         object.__setattr__(self, "representations", tuple(self.representations))
         object.__setattr__(self, "reasoner_specs", tuple(self.reasoner_specs))
+        for name in ("text_retrievers", "vision_retrievers", "joint_k_values",
+                     "inference_representations", "prompt_modes"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        if isinstance(self.joints, list):
+            object.__setattr__(self, "joints", tuple(tuple(pair) for pair in self.joints))
         if self.smoke:
             object.__setattr__(self, "reasoner_spec", SMOKE_REASONER_SPEC)
             object.__setattr__(self, "reasoner_specs", ())  # smoke never sweeps

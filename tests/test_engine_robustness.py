@@ -56,3 +56,22 @@ def test_failed_only_upgrades_in_place() -> None:
     assert merged["a"]["text"] == "keep", "ok rows must not be re-run"
     assert merged["b"]["status"] == "ok" and merged["b"]["text"] == "recovered"
     assert len(merged) == 2, "no duplicate rows after upgrade"
+
+
+def test_parser_warm_unloads_retrievers_first(monkeypatch) -> None:
+    driver = __import__("experiments.engine.driver", fromlist=["unused"])
+    events = []
+
+    class Retriever:
+        def __init__(self, name):
+            self.name = name
+
+        def unload(self):
+            events.append(f"unload-{self.name}")
+
+    retrievers = type("Retrievers", (), {"text": Retriever("text"), "vision": Retriever("vision")})()
+    monkeypatch.setattr(driver, "_warm_parser_cache", lambda _config, _pages: events.append("parser"))
+
+    driver._warm_parser_after_retrieval(None, [object()], retrievers, lambda: events.append("free"))
+
+    assert events == ["unload-text", "unload-vision", "free", "parser", "free"]

@@ -53,19 +53,12 @@ def test_reasoner_specs_drives_a_size_sweep() -> None:
     assert len(get_task("G1_oracle_ladder").model_specs(single)) == 1
 
 
-# The per-sweep design mock-up: nested base/sweeps/retrieval/inference that the
-# flat parser does not yet expand. It ships as a commented reference; the expander
-# that makes it parse (and this exclusion) lands later.
-_UNWIRED_SPECS = {"target_architecture.yaml"}
-
-
 def test_shipped_specs_load() -> None:
-    # Every checked-in spec parses (flat or multi-run) and builds a config per run.
+    # Every checked-in spec parses (flat, multi-run, or the nested base/sweeps form)
+    # and builds a config per expanded run.
     load_yaml_specs = require("experiments.corpus.yaml_spec", "load_yaml_specs")
     config_from_spec = require("experiments.corpus.yaml_spec", "config_from_spec")
     for path in sorted((ROOT / "ops" / "specs").glob("*.yaml")):
-        if path.name in _UNWIRED_SPECS:
-            continue
         specs = load_yaml_specs(path)
         assert specs, f"{path.name} produced no runs"
         for spec in specs:
@@ -108,3 +101,116 @@ def test_flat_spec_is_a_single_run() -> None:
     parse_specs = require("experiments.corpus.yaml_spec", "parse_specs")
     specs = parse_specs({"task": "G1_oracle_ladder"})
     assert len(specs) == 1 and specs[0].task == "G1_oracle_ladder"
+
+
+# -- the nested base/sweeps + retrieval/inference expander --------------------
+
+def _g1_nested() -> dict:
+    return {
+        "base": {"corpus": {"sampling": {"per_doc_type": 50, "seed": 0}},
+                 "parser": "paddleocrvl", "dataset": "mmlongbench"},
+        "runs": [
+            {"task": "G1_oracle_ladder", "run_tag": "g1",
+             "base": {"reasoner_spec": "qwen3vl-8b-local", "quantization": "bf16",
+                      "visual_resolution": "med", "representations": ["T", "TL", "TLV", "V"]},
+             "sweeps": {
+                 "size": {"reasoner_spec": ["qwen3vl-2b-local", "qwen3vl-8b-local"]},
+                 "quantization": {"quantization": ["bf16", "4bit"]},
+                 "resolution": {"visual_resolution": ["low", "med", "high"],
+                                "representations": ["TLV", "V"]},
+                 "parser": {"parser": ["paddleocrvl", "mineru"], "representations": ["TL", "TLV"]},
+                 "dataset": {"dataset": ["mmlongbench", "longdocurl"]},
+             }},
+        ],
+    }
+
+
+def test_expander_g1_sweeps_run_tags_and_axes() -> None:
+    parse_specs = require("experiments.corpus.yaml_spec", "parse_specs")
+    specs = {s.run_tag: s for s in parse_specs(_g1_nested())}
+    assert set(specs) == {
+        "g1", "g1-size", "g1-quantization", "g1-resolution",
+        "g1-parser-paddleocrvl", "g1-parser-mineru",
+        "g1-dataset-mmlongbench", "g1-dataset-longdocurl",
+    }
+    # bf16 base -> unquantized; file+task base merged onto every spec.
+    assert specs["g1"].quantization is None
+    assert specs["g1"].reasoner_spec == "qwen3vl-8b-local"
+    assert specs["g1"].dataset == "mmlongbench"
+    # size sweep -> a reasoner_specs list under one run_tag (axis is in the cache key).
+    assert specs["g1-size"].reasoner_specs == ("qwen3vl-2b-local", "qwen3vl-8b-local")
+    # quant sweep -> reasoner_specs carry the -4bit suffix, bf16 stays bare.
+    assert specs["g1-quantization"].reasoner_specs == ("qwen3vl-8b-local", "qwen3vl-8b-local-4bit")
+    assert specs["g1-quantization"].quantization is None
+    # resolution sweep -> a visual_resolutions list + the coupled reps override.
+    assert specs["g1-resolution"].visual_resolutions == ("low", "med", "high")
+    assert specs["g1-resolution"].representations == ("TLV", "V")
+    # parser sweep -> one run_tag PER value (parser is not in the cache key).
+    assert specs["g1-parser-mineru"].parser == "mineru"
+    assert specs["g1-parser-mineru"].representations == ("TL", "TLV")
+    assert specs["g1-dataset-longdocurl"].dataset == "longdocurl"
+
+
+def test_expander_collapses_single_value_sweep() -> None:
+    parse_specs = require("experiments.corpus.yaml_spec", "parse_specs")
+    raw = _g1_nested()
+    # A size sweep of just the base value contributes nothing beyond the base run.
+    raw["runs"][0]["sweeps"] = {"size": {"reasoner_spec": ["qwen3vl-8b-local"]}}
+    tags = {s.run_tag for s in parse_specs(raw)}
+    assert tags == {"g1"}
+
+
+def test_expander_g3_prompt_sweep_folds_into_single_run() -> None:
+    parse_specs = require("experiments.corpus.yaml_spec", "parse_specs")
+    raw = {"runs": [
+        {"task": "G3_hallucination", "run_tag": "g3",
+         "base": {"reasoner_spec": "qwen3vl-8b-local", "corpus": {"sampling": "full"}},
+         "sweeps": {"prompt": {"prompt_mode": ["none", "generic", "targeted"]}}},
+    ]}
+    specs = parse_specs(raw)
+    assert [s.run_tag for s in specs] == ["g3"]  # no extra run_tag for the prompt sweep
+    assert specs[0].prompt_modes == ("none", "generic", "targeted")
+
+
+def test_expander_g2_retrieval_inference_and_subset_check() -> None:
+    parse_specs = require("experiments.corpus.yaml_spec", "parse_specs")
+    SpecError = require("experiments.corpus.yaml_spec", "SpecError")
+    good = {"runs": [
+        {"task": "G2_retrieval", "run_tag": "g2",
+         "retrieval": {"text_retrievers": ["bm25", "bge-m3"], "vision_retrievers": ["colqwen2.5"],
+                       "joints": "matched", "k_values": [1, 3], "joint_k_values": [1]},
+         "inference": {"reasoner_spec": "qwen3vl-8b-local", "text_retriever": "bm25",
+                       "vision_retriever": "colqwen2.5", "joint": False,
+                       "representations": ["TLV", "V"], "k_values": [1, 3]}},
+    ]}
+    (spec,) = parse_specs(good)
+    assert spec.text_retrievers == ("bm25", "bge-m3")
+    assert spec.inference_text_retriever == "bm25"
+    assert spec.inference_joint is False
+    assert spec.inference_representations == ("TLV", "V")
+
+    bad = {"runs": [
+        {"task": "G2_retrieval", "run_tag": "g2",
+         "retrieval": {"text_retrievers": ["bm25"], "vision_retrievers": ["colqwen2.5"]},
+         "inference": {"text_retriever": "bge-m3", "vision_retriever": "colqwen2.5"}},
+    ]}
+    with pytest.raises(SpecError):
+        parse_specs(bad)
+
+
+def test_expander_config_from_spec_maps_g2_fields() -> None:
+    parse_specs = require("experiments.corpus.yaml_spec", "parse_specs")
+    config_from_spec = require("experiments.corpus.yaml_spec", "config_from_spec")
+    raw = {"runs": [
+        {"task": "G2_retrieval", "run_tag": "g2",
+         "retrieval": {"text_retrievers": ["bm25", "bge-m3"], "vision_retrievers": ["colqwen2.5"],
+                       "joints": "matched", "k_values": [1, 3], "joint_k_values": [1]},
+         "inference": {"text_retriever": "bm25", "vision_retriever": "colqwen2.5",
+                       "joint": True, "representations": ["V"], "k_values": [1, 3]}},
+    ]}
+    (spec,) = parse_specs(raw)
+    config = config_from_spec(spec)
+    assert config.text_retrievers == ("bm25", "bge-m3")
+    assert config.inference_text_retriever == "bm25"
+    assert config.inference_representations == ("V",)
+    assert config.joint_k_values == (1,)

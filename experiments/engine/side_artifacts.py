@@ -13,11 +13,27 @@ from schema import Question
 
 log = logging.getLogger("mpvrdu.side_artifacts")
 
-# The RQ2 accuracy ladder: text and vision cost rungs (cheap -> expensive) plus the
-# three matched-tier joint unions (pivot 4, 4.1). No reasoner touches these.
+# The RQ2 accuracy ladder defaults: text and vision cost rungs (cheap -> expensive)
+# plus the matched-tier joint unions (pivot 4, 4.1). A spec overrides these via the
+# G2 `retrieval` block; no reasoner touches them.
 _TEXT_METHODS = ("bm25", "bge-m3", "qwen3-embedding")
 _VISION_METHODS = ("colmodernvbert", "colqwen2.5", "colqwen3")
 _JOINT_PAIRS = (("bm25", "colmodernvbert"), ("bge-m3", "colqwen2.5"), ("qwen3-embedding", "colqwen3"))
+
+
+def resolve_joints(joints, text_methods: Sequence[str], vision_methods: Sequence[str]) -> tuple[tuple[str, str], ...]:
+    """Turn a `joints` spec into explicit (text, vision) pairs.
+
+    `"matched"` auto-pairs the two method lists by cost-rung position (cheap|cheap,
+    mid|mid, expensive|expensive). An explicit list of pairs is used as-is; `()`/None
+    skips joints.
+    """
+
+    if joints == "matched":
+        return tuple(zip(tuple(text_methods), tuple(vision_methods)))
+    if not joints:
+        return ()
+    return tuple((str(t), str(v)) for t, v in joints)
 
 
 def _build_retriever(config: ExperimentConfig, name: str, kind: str):
@@ -43,16 +59,19 @@ def write_retrieval_eval(
     *,
     single_ks: Sequence[int],
     joint_ks: Sequence[int] = (1, 3, 5),
+    text_methods: Sequence[str] = _TEXT_METHODS,
+    vision_methods: Sequence[str] = _VISION_METHODS,
+    joint_pairs: Sequence[tuple[str, str]] = _JOINT_PAIRS,
     filename: str = "retrieval.jsonl",
 ) -> None:
     """Write the RQ2 retrieval-accuracy ladder (page P/R/F1 + cost), no reasoner.
 
-    Scores all six methods (three text, three vision cost rungs) at `single_ks`,
-    plus the three matched-tier joint unions at `joint_ks`, one row per (question,
-    method, k). Each row carries the per-query `retrieval_latency_s` and the
-    method's amortized `index_build_amortized_s`. Each method is built and scored
-    independently so a big-model OOM (Qwen3-Embedding-4B, ColQwen3-4B on a V100)
-    loses only that method's rows, not the whole artifact.
+    Scores every method in `text_methods` + `vision_methods` at `single_ks`, plus the
+    `joint_pairs` unions at `joint_ks`, one row per (question, method, k). Each row
+    carries the per-query `retrieval_latency_s` and the method's amortized
+    `index_build_amortized_s`. Each method is built and scored independently so a
+    big-model OOM (Qwen3-Embedding-4B, ColQwen3-4B on a V100) loses only that method's
+    rows, not the whole artifact.
     """
 
     from data.loader import resolve_pdf
@@ -61,6 +80,9 @@ def write_retrieval_eval(
     from retrievers.joint import union
     from scoring.retrieval import score_retrieval
 
+    text_methods = tuple(text_methods)
+    vision_methods = tuple(vision_methods)
+    joint_pairs = tuple(joint_pairs)
     single_ks = tuple(int(k) for k in single_ks)
     joint_ks = tuple(int(k) for k in joint_ks)
     page_counts = {q.id: pdf_page_count(resolve_pdf(q.doc_id, config.paths.data_dir)) for q in questions}
@@ -70,9 +92,9 @@ def write_retrieval_eval(
     rankings: dict[str, dict[str, tuple[int, ...]]] = {}
     latency: dict[str, dict[str, float]] = {}
     index_build: dict[str, float] = {}
-    modalities = {**{n: "text" for n in _TEXT_METHODS}, **{n: "vision" for n in _VISION_METHODS}}
+    modalities = {**{n: "text" for n in text_methods}, **{n: "vision" for n in vision_methods}}
 
-    for name, kind in [*((n, "text") for n in _TEXT_METHODS), *((n, "vision") for n in _VISION_METHODS)]:
+    for name, kind in [*((n, "text") for n in text_methods), *((n, "vision") for n in vision_methods)]:
         try:
             retriever = _build_retriever(config, name, kind)
             rmap: dict[str, tuple[int, ...]] = {}
@@ -99,7 +121,7 @@ def write_retrieval_eval(
 
     side_dir.mkdir(parents=True, exist_ok=True)
     with (side_dir / filename).open("w") as handle:
-        for name in (*_TEXT_METHODS, *_VISION_METHODS):
+        for name in (*text_methods, *vision_methods):
             if name not in rankings:
                 continue
             idx = index_build.get(name, 0.0)
@@ -110,7 +132,7 @@ def write_retrieval_eval(
                     _emit(handle, score_retrieval(
                         q, ranking[:k], retriever=name, modality=modalities[name], k=k,
                         retrieval_latency_s=lat, index_build_amortized_s=idx))
-        for tname, vname in _JOINT_PAIRS:
+        for tname, vname in joint_pairs:
             if tname not in rankings or vname not in rankings:
                 continue
             idx = index_build.get(tname, 0.0) + index_build.get(vname, 0.0)

@@ -1,0 +1,14 @@
+# Focused offline contract check for real vision retrieval and parser isolation.
+
+base:
+  corpus: {sampling: {limit: 1}}
+  parser: paddleocrvl
+  judge_spec: stub
+
+runs:
+  - task: G2_retrieval
+    run_tag: offline-retrieval-fixed-smoke
+    reasoner_spec: qwen3vl-2b-local
+    visual_resolution: med
+    representations: [TLV]
+    k_values: [1]

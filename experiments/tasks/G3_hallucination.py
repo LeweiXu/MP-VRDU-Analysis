@@ -32,7 +32,7 @@ class G3Hallucination(GenerationTask):
         retriever_name = getattr(retrievers.text, "name", "text")
         base = f"similarity_{retriever_name}_k{SIMILARITY_K}"
         cells: list[Cell] = []
-        for mode in G3_PROMPT_MODES:
+        for mode in (tuple(config.prompt_modes) or G3_PROMPT_MODES):
             conditioner = SimilarityTopK(retrievers.text, k=SIMILARITY_K, name=f"{base}_prompt-{mode}")
             cells += [Cell(question, conditioner, REPRESENTATION, prompt_mode=mode) for question in questions]
         return cells

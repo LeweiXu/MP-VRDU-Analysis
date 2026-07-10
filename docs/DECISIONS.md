@@ -10,6 +10,69 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**Per-sweep YAML expander wired (2026-07-10).** The nested `base` + `sweeps` (and G2
+`retrieval` / `inference`) form in `ops/specs/target_architecture.yaml` is now
+expanded end to end by `experiments/corpus/yaml_spec.py`: one flat `Spec` per sweep at
+parse time, so the driver is unchanged. One name per axis (scalar in `base`, list in a
+sweep); precedence sweep > task `base` > file `base`.
+- **run_tag strategy is dictated by the frozen cache key.** Axes in the key (reasoner
+  spec incl. quant suffix, `visual_resolution`) sweep under ONE run_tag as a
+  driver-looped list; axes NOT in the key (`parser`, `dataset`) get one run_tag per
+  value (`<base>-<sweep>-<value>`). This is a deliberate deviation from the HANDOFF's
+  `parsers:`/`datasets:` list idea, forced by the frozen key (parser/dataset are not
+  in it, so a shared run_tag would collide / mix corpora). Quant folds into
+  `reasoner_specs` suffixes (`bf16` = no suffix); a G3 `prompt` sweep folds into the
+  single run's cells (no extra run_tag).
+- **Config-driven, no longer hardcoded:** G2 benchmark method sets
+  (`text_retrievers` / `vision_retrievers` / `joints`, `joints: matched` = zip of the
+  two lists), the inference retriever picks (`driver.build_retrievers` via the
+  registries) validated as a subset of the benchmark lists, `inference_representations`
+  / joint on-off / `joint_k_values`, G3 `prompt_modes`, and the `dataset` -> loader map
+  in `ops/generate.py` (mmlongbench / longdocurl). Flat specs (`kaya*.yaml`) are
+  unchanged: `matched` reproduces the old joint tier-pairs and the inference defaults
+  match the old module constants. Cache keys untouched (additive config only).
+- **`per_doc_type: N` now means EXACTLY N questions per doc_type label** (seven labels,
+  so `per_doc_type: 1` = seven questions). Previously the doc-coherent draw kept whole
+  documents and overshot N. The draw still selects whole documents, then caps to
+  exactly N, which can slice the last drawn document — a partial-document break the
+  plain draw never did. Kept for the exact-count requirement; **caveat for the
+  doc-level bootstrap on small N** (flagged for confirmation).
+
+**Vision fixes validated; persist-cache poisoning found (2026-07-10).** Re-smoke (job
+1026235, 5 min) after staging the colpali bases + the fp16 fix: the retrieval
+side-artifact now writes real rows for `colqwen2.5`, `qwen3-embedding` (fp16, no OOM),
+`bm25`, `bge-m3`, and the mid joint `bge-m3|colqwen2.5` (4/6 methods + 1/3 joints).
+Two follow-ups: (a) `colmodernvbert` still fails with its base staged: its adapter repo
+does carry processor/tokenizer files, but the base is a custom `modernvbert` model_type
+whose text_config points at `ettin-encoder-150m`, so `from_pretrained` still reaches for
+an uncached repo offline (tracked in the env/prestage handoff). (b) **MemoizedRetriever
+persist-cache poisoning:** the pre-fix run 1026182 persisted colqwen2.5 *fallback*
+rankings to `results/cache/g2-doctype50-smoke/retrieval/colqwen2.5__dpi200.jsonl`; the
+re-smoke read those back (cache hit) instead of recomputing, so the smoke's G2 inference
+vision cells still used stale fallback pages (only k=1 matched the fresh benchmark
+ranking). The real run's `g2-doctype50` retrieval cache is separate and empty, so it will
+compute real colqwen2.5 rankings. Cleared the smoke's poisoned retrieval cache to avoid
+confusion. Underlying design risk (persisting a silent fallback ranking indistinguishably
+from a real one) is noted for the fallback fix in the handoff.
+
+**Kaya smoke diagnosis + vision-retriever fixes (2026-07-10).** First full smoke
+(job 1026182, limit:2, 2B) passed the health gate (G1 18 / G2 36 / G3 6 cells ok, 0
+failures), but the six-method retrieval side-artifact only produced bm25 + bge-m3.
+Root causes found in the job log: (1) the ColPali vision rungs are PEFT **adapters**
+whose **base models were never prestaged** — `vidore/colqwen2.5-base` and
+`ModernVBERT/colmodernvbert-base` — so `from_pretrained` failed offline for both
+colqwen2.5 and colmodernvbert (and colqwen2.5 silently fell back to text/order in the
+inference pre-pass, so the G2 vision arm was bogus too); (2) `qwen3-embedding-4B` OOM'd
+a 16 GB V100 because SentenceTransformer loads fp32; (3) `colqwen3` (Ops-Colqwen3-4B)
+has **no class in the installed colpali_engine** (only ColPali/ColQwen2/ColQwen2_5/
+ColModernVBert/ColIdefics3 exist). Fixes: added the two base models to
+`config_minimal.json` and re-staged; load Qwen3-Embedding in fp16 on CUDA
+(`retrievers/text.py`). colqwen3 is left to fail-fast-and-skip (needs a colpali_engine
+upgrade or a compatible repo) — the ladder keeps 5/6 methods (both cheap+mid vision
+rungs, all three text rungs) and the cheap+mid joints; the expensive-vision rung and
+expensive joint are dropped for now. My colmodernvbert/colqwen2.5 class-name guesses
+were correct; only colqwen3's was not (no such class).
+
 **Docs consolidated to three (2026-07-10).** Reduced the authored docs to
 `README.md` (user + experiment), `docs/AGENT_GUIDE.md` (agent: structure, frozen
 interfaces, implementation reference), and this changelog. The former

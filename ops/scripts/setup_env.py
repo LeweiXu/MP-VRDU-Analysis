@@ -1,19 +1,7 @@
-"""Build the MP-VRDU conda environments for one target machine.
+"""Build and validate the isolated conda environments for a V100 or H100 machine.
 
-Creates the isolated env partition (core reasoning env + one env per parser) at
-`<root>/envs/<name>`, installs the framework build (torch or PaddlePaddle) from
-the machine's CUDA wheel index, installs the env's requirements from
-`docs/requirements/`, and runs `pip check`. Model and dataset downloads are not
-here; they live in `prestage.py`.
-
-Run one env or all four on Kaya (via the login-node runner):
-    python -m ops.kaya.kaya run ops/scripts/setup_env.py -- --machine kaya --env core
-    python -m ops.kaya.kaya run ops/scripts/setup_env.py -- --machine kaya --env all
-
-Or run it directly on the machine you are on (e.g. the H100 supervisor), building
-the envs inside this checkout at `envs/<name>` where the rest of the code looks
-for them:
-    python -m ops.scripts.setup_env --machine supervisor --env all --local
+Each environment gets one clean retry after a failed build, then the command reports
+all passes and failures together.
 """
 
 # kaya: target=login
@@ -23,6 +11,8 @@ for them:
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -45,19 +35,62 @@ ENVS: dict[str, dict] = {
     "parse-paddleocrvl": {"req": "parse-paddleocrvl.txt", "framework": "paddle", "paddle": "3.3.1"},
 }
 
-# The three machine configurations. Only the CUDA wheel index and a few
-# framework versions differ; the requirements files are shared.
+# The two deployment machine configurations. Only the CUDA wheel index and
+# flash-attn support differ; the requirements files are shared.
 MACHINES: dict[str, dict] = {
-    "kaya": {"cuda": "cu126", "flash_attn": False, "torch_overrides": {}},
-    "local": {"cuda": "cu128", "flash_attn": False,
-              "torch_overrides": {"core": ("2.8.0", "0.23.0"), "parse-mineru": ("2.8.0", "0.23.0")}},
-    "supervisor": {"cuda": "cu126", "flash_attn": True, "torch_overrides": {}},
+    "V100": {"cuda": "cu126", "flash_attn": False, "torch_overrides": {}},
+    "H100": {"cuda": "cu126", "flash_attn": True, "torch_overrides": {}},
 }
 
 
 def run(command: list[str]) -> None:
     print("[setup_env]", " ".join(command), flush=True)
     subprocess.run(command, check=True)
+
+
+def prepare_package_cache_env(root: Path) -> Path:
+    """Point conda and pip caches inside the target checkout."""
+
+    cache = root / ".cache"
+    locations = {
+        "CONDA_PKGS_DIRS": cache / "conda-pkgs",
+        "PIP_CACHE_DIR": cache / "pip",
+        "XDG_CACHE_HOME": cache / "xdg",
+    }
+    for name, path in locations.items():
+        path.mkdir(parents=True, exist_ok=True)
+        os.environ[name] = str(path)
+    return locations["CONDA_PKGS_DIRS"]
+
+
+def remove_env_prefix(prefix: Path) -> None:
+    """Remove an environment prefix left incomplete by a failed build."""
+
+    if prefix.exists():
+        print(f"[setup_env] removing incomplete env prefix {prefix}", flush=True)
+        shutil.rmtree(prefix)
+
+
+def prefix_is_usable(prefix: Path) -> bool:
+    """Return whether an existing conda prefix can run its Python."""
+
+    if not (prefix / "conda-meta").is_dir():
+        return False
+    result = subprocess.run(
+        ["conda", "run", "-p", str(prefix), "python", "-c", "import sys; print(sys.executable)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def clear_conda_package_cache(cache_dir: Path) -> None:
+    """Clear shared conda packages before retrying a failed environment."""
+
+    print(f"[setup_env] clearing conda package cache {cache_dir}", flush=True)
+    shutil.rmtree(cache_dir, ignore_errors=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
 
 def env_prefix(config, name: str, *, local: bool = False) -> Path:
@@ -90,7 +123,9 @@ def build_env(config, machine: str, env_name: str, python_version: str, *, skip_
     prefix.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\n[setup_env] ==== {env_name} on {machine} ({machine_cfg['cuda']}) ====", flush=True)
-    if not (prefix / "conda-meta").is_dir():
+    if prefix.exists() and not prefix_is_usable(prefix):
+        remove_env_prefix(prefix)
+    if not prefix.exists():
         run(["conda", "create", "-p", str(prefix), f"python={python_version}", "-y"])
     python = ["conda", "run", "--no-capture-output", "-p", str(prefix), "python"]
 
@@ -124,7 +159,7 @@ def build_env(config, machine: str, env_name: str, python_version: str, *, skip_
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--machine", choices=sorted(MACHINES), default="kaya")
+    parser.add_argument("--machine", choices=sorted(MACHINES), default="V100")
     parser.add_argument("--env", choices=[*sorted(ENVS), "all"], default="all")
     parser.add_argument("--python", help="python version for new envs (default from config)")
     parser.add_argument("--skip-pip-check", action="store_true")
@@ -139,11 +174,37 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(ROOT / "ops" / "kaya" / "config.json")
     python_version = args.python or str(config.raw.get("python_version", "3.11"))
     names = list(ENVS) if args.env == "all" else [args.env]
+    root = ROOT if args.local else Path(config.remote_root)
+    package_cache = prepare_package_cache_env(root)
+    passed: list[str] = []
+    failed: dict[str, str] = {}
     for name in names:
-        build_env(config, args.machine, name, python_version,
-                  skip_pip_check=args.skip_pip_check, local=args.local)
-    print(f"\n[setup_env] done: {', '.join(names)} on {args.machine}"
-          f"{' (local checkout)' if args.local else ''}", flush=True)
+        prefix = env_prefix(config, name, local=args.local)
+        for attempt in (1, 2):
+            try:
+                build_env(config, args.machine, name, python_version,
+                          skip_pip_check=args.skip_pip_check, local=args.local)
+            except Exception as exc:
+                remove_env_prefix(prefix)
+                if attempt == 1:
+                    print(f"[setup_env] {name} failed: {exc}", flush=True)
+                    clear_conda_package_cache(package_cache)
+                    print(f"[setup_env] retrying {name} from a clean prefix", flush=True)
+                    continue
+                failed[name] = str(exc)
+                print(f"[setup_env] FAILED {name}: {exc}", flush=True)
+            else:
+                passed.append(name)
+            break
+
+    location = "local checkout" if args.local else str(root)
+    print(f"\n[setup_env] summary for {args.machine} at {location}", flush=True)
+    print(f"[setup_env] passed: {', '.join(passed) or '(none)'}", flush=True)
+    if failed:
+        for name, reason in failed.items():
+            print(f"[setup_env] failed: {name}: {reason}", flush=True)
+        return 1
+    print("[setup_env] all requested environments are ready", flush=True)
     return 0
 
 

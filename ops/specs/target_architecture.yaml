@@ -1,6 +1,7 @@
-# TARGET ARCHITECTURE PROPOSAL (not wired yet) - full per-sweep control of every
-# generation task. This is a design mock-up to react to; nothing reads these new
-# fields until we implement the loader/driver changes.
+# Full per-sweep control of every generation task: the reference spec for the nested
+# `base` + `sweeps` (and G2 `retrieval` / `inference`) form. The loader expands each
+# nested block into one flat run per sweep at parse time, so the driver still runs one
+# pass per spec. See AGENT_GUIDE "Per-sweep expander" for the run_tag strategy.
 #
 # Governing idea: our pipeline is a document-understanding pipeline. A "sweep" is
 # just the independent variable we change while holding everything else fixed.

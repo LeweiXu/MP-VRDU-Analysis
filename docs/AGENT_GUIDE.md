@@ -132,9 +132,24 @@ repeat the generate flags.
   Specs support arbitrary ordered channel combinations over `T`/`L`/`V`, but the
   paper experiments use the rung set `[T, TL, TLV, V]` only. Cache dirs are
   `results/cache/<run-tag>/<smoke|full>/<run-name>/`.
-- **Bridge.** `experiments/corpus/yaml_spec.py` loads YAML into dynamic
-  `GenerationTask` objects; `experiments/engine/` owns the generate loop,
-  reasoner / retriever construction, the parse pre-pass, and cache writes.
+- **Bridge.** `experiments/corpus/yaml_spec.py` loads YAML into flat `Spec`s and
+  `experiments/engine/` owns the generate loop, reasoner / retriever construction,
+  the parse pre-pass, and cache writes.
+- **Per-sweep expander.** A run entry may be flat, or nested as a `base:` (baseline
+  scalar per axis) plus named `sweeps:` (and, for G2, `retrieval:` / `inference:`
+  blocks). The loader expands the nested form into one flat `Spec` per sweep at parse
+  time, so the driver still runs one pass per spec. One name per axis: scalar in
+  `base`, list in a sweep; precedence is sweep value, then task `base`, then the
+  file-level `base`. The **run_tag strategy is set by the frozen cache key**: axes in
+  the key (reasoner spec incl. the quant suffix, and `visual_resolution`) sweep under
+  ONE run_tag as a driver-looped list (`reasoner_specs` / `visual_resolutions`); axes
+  NOT in the key (`parser`, `dataset`) get one run_tag per value
+  (`<base>-<sweep>-<value>`). A `quantization` sweep folds into `reasoner_specs`
+  suffixes (`bf16` = no suffix); a G3 `prompt` sweep folds into the single run's
+  cells. G2's `inference` retriever picks must be a subset of the `retrieval`
+  benchmark lists (validated: `SpecError`), and `joints: matched` auto-pairs the two
+  method lists by cost position. The `dataset` axis selects the corpus loader in
+  `ops/generate.py` (`DATASET_LOADERS`).
 - **Shared side-artifact writers.** The retrieval and classifier side artifacts
   have one implementation in `experiments/engine/` so the fixed tasks and the
   dynamic YAML tasks cannot drift; each caller passes the ordered `(modality, k)`
@@ -152,10 +167,12 @@ repeat the generate flags.
 
 **Sampling for full runs.** A full MMLongBench run resolves its corpus from the
 YAML `corpus:` scope: `full` (all 1091), `per_bin: N` (draw **whole documents** per
-bin to N — doc-coherent, so the doc-level bootstrap CIs stay valid), or a
-`limit` / id-list for smoke. The answerable pool is bound by the task (G1/G2
-answerable, G3 unanswerable), enforced in `experiments/corpus/resolve.py` so a spec
-cannot cross-contaminate. ⚠ PENDING v5: which experiments require the full corpus
+bin to N — doc-coherent, so the doc-level bootstrap CIs stay valid), `per_doc_type: N`
+(draw whole documents per native `doc_type`, then cap to **exactly N questions per
+label** — so `per_doc_type: 1` runs one question per label; the exact cap can slice
+the last drawn document), or a `limit` / id-list for smoke. The answerable pool is
+bound by the task (G1/G2 answerable, G3 unanswerable), enforced in
+`experiments/corpus/resolve.py` so a spec cannot cross-contaminate. ⚠ PENDING v5: which experiments require the full corpus
 (binning-dependent) vs a frozen random subset is being finalised — see README §3
 and `docs/DECISIONS.md`.
 
@@ -225,7 +242,8 @@ The frozen contracts are above; this is the "how each layer behaves" reference.
 - **`TLV`/`V` — image.** `tools/visual.py` builds page-image parts and estimates
   vision tokens from the resolution preset.
 - **Prestage.** `ops/scripts/prestage.py [--smoke]` stages the reasoner weights,
-  the retrievers, and each parser env (idempotent, offline-probing).
+  retrievers and adapter bases, parser weights, Paddle's separate pipeline cache,
+  and MMLongBench (idempotent, with local-cache probing).
 
 ## Evaluation
 
@@ -259,12 +277,11 @@ The frozen contracts are above; this is the "how each layer behaves" reference.
 
 ## Environment and dependencies
 
-Cluster env: `envs/mpvrdu` (Python 3.11, `requirements.txt`). Local RTX 5070
-(Blackwell, sm_120) env: `envs/mpvrdu-local-gpu` (`requirements-local-rtx5070.txt`,
-torch 2.8+cu128, no vLLM) because the cluster torch wheel has no sm_120 kernels.
-Each reasoner-independent parser runs in its **own isolated env** behind the parser
-disk cache, so a parser's dependency stack never has to co-exist with the reasoner
-stack. Every env is `pip check` clean.
+The core environment is `envs/core` (Python 3.11). Each parser runs in its own
+`envs/parse-*` environment behind the parser disk cache, so parser dependency
+stacks never share an environment with the reasoner. `setup_env.py --machine
+{V100,H100}` installs the matching framework wheels and checks every environment
+with `pip check`.
 
 ⚠ PENDING v5 — the dependency set is being re-examined (evaluating dropping vLLM,
 which exact-pins torch and caps `openai`; stripping stacks the v4 ladder no longer
