@@ -25,11 +25,44 @@ authored docs, single-source-of-truth per fact, and history confined to this fil
 not the working default (see the 2026-07-10 entry below); the direction is to bin
 by representative document domains or by `evidence_source`, and to define which
 experiments need the full corpus vs a frozen random subset. (b) **G4 / routing** —
-G4 collapses: routing becomes fully build-time over G1, and the classifier reduces
-to an optional one-shot prediction pass. (c) **Dependencies** — evaluating the
+LANDED 2026-07-10 (entry below): G4 is removed as a task, routing is fully
+build-time over G1, and the classifier is folded into G3 as an optional one-shot
+side artifact. Still open: predicted-domain *routing accuracy* (routing uses the
+classifier only for its latency price so far). (c) **Dependencies** — evaluating the
 remaining strip (the vLLM-drop verdict is already recorded below). These are
 tracked here; the two authored docs describe only shipped behaviour and mark these
 spots `⚠ PENDING v5`.
+
+---
+
+## G4 folded into G3 (2026-07-10)
+
+**G4 removed as a generation task; the classifier becomes G3's optional side
+artifact; routing stays fully build-time.** Routing accuracy needs no inference of
+its own — every policy (uniform-cheapest/strongest, oracle, type-aware) is a
+selection over G1's already-cached ladder rows — so the only GPU work routing ever
+needed was the modality-bin classifier. That one-shot pass now rides on G3 (a small
+reasoner task with a spare `run_side` slot) instead of a standalone
+`G4_classifier_pricing` task.
+
+- **Task set is now G1/G2/G3** (`experiments/registry.py`);
+  `experiments/tasks/G4_classifier_pricing.py` deleted. `reporting/build.py` reads
+  `classifier.jsonl` from G3's side dir, and G3 feeds the `routing` table.
+- **Classifier scope.** It prices G1's answerable doc set (answerable pool +
+  `per_doc_type` sample), not G3's unanswerable cells, because routing only ever
+  routes G1's documents. New `config.classifier_spec` (spec key `classifier`)
+  enables it; `none`/unset skips it and routing reports the gold-bin ceiling only.
+- **Driver change.** `run_side` now receives the full corpus + the smoke `limit`
+  (was: the task's pool), so a side writer whose scope differs from its task's cells
+  can resolve its own set. `G2_retrieval.run_side` re-filters to its answerable pool
+  so the retrieval benchmark stays answerable-only (pivot_v4 §3.3).
+- **Deviation from the G4 pivot note.** The pivot intent floated putting the
+  classifier under `ops/scripts/`; the merge decision puts it on G3 instead (smaller
+  surface, one fewer entry point). That pivot intent is folded into this entry.
+- **Still open (⚠ PENDING):** predicted-domain *routing accuracy* (routing uses the
+  classifier only for its latency price, not to re-route by predicted bin); and the
+  per-sweep YAML expander (`ops/specs/target_architecture.yaml`), deferred to a
+  separate change.
 
 ---
 

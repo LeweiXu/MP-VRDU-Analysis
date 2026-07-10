@@ -84,8 +84,15 @@ class GenerationTask(ABC):
 
         return []
 
-    def run_side(self, config: ExperimentConfig, questions: Sequence[Question], side_dir: Path) -> None:
-        """Optional extra GPU work (retrieval diagnostics, classifier)."""
+    def run_side(
+        self, config: ExperimentConfig, questions: Sequence[Question], side_dir: Path, *, limit: int | None = None
+    ) -> None:
+        """Optional extra GPU work (retrieval diagnostics, classifier).
+
+        `questions` is the full corpus (not the task's pool), so a side writer that
+        needs a different scope than the task's cells can resolve it itself. `limit`
+        is the smoke cap: a writer applies it after resolving its own scope.
+        """
 
         return None
 

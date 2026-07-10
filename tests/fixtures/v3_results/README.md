@@ -26,9 +26,10 @@ Reference commit for this snapshot is recorded in `docs/DECISIONS.md`.
 | `yaml-g1-g2-g5-rerun/` | G1_sufficiency, G2_family | covers the G2 shape |
 
 Note the v3 task names (`G1_sufficiency`, `G2_family`, `G3_dataset`,
-`G5_retrieval`, `G6_classifier`) are the **old** naming. v4 renames to
-`G1_oracle_ladder` / `G2_retrieval` / `G3_hallucination` / `G4_classifier_pricing`.
-The fixtures keep their original v3 names on purpose (they are a v3 snapshot).
+`G5_retrieval`, `G6_classifier`) are the **old** naming. The current tasks are
+`G1_oracle_ladder` / `G2_retrieval` / `G3_hallucination` (the modality-bin
+classifier is now a G3 side artifact, not its own task). The fixtures keep their
+original v3 names on purpose (they are a v3 snapshot).
 
 Per-file kinds:
 - `predictions.jsonl` — per-cell prediction record (no judge)

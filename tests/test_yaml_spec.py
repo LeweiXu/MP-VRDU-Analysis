@@ -53,11 +53,19 @@ def test_reasoner_specs_drives_a_size_sweep() -> None:
     assert len(get_task("G1_oracle_ladder").model_specs(single)) == 1
 
 
+# The per-sweep design mock-up: nested base/sweeps/retrieval/inference that the
+# flat parser does not yet expand. It ships as a commented reference; the expander
+# that makes it parse (and this exclusion) lands later.
+_UNWIRED_SPECS = {"target_architecture.yaml"}
+
+
 def test_shipped_specs_load() -> None:
     # Every checked-in spec parses (flat or multi-run) and builds a config per run.
     load_yaml_specs = require("experiments.corpus.yaml_spec", "load_yaml_specs")
     config_from_spec = require("experiments.corpus.yaml_spec", "config_from_spec")
     for path in sorted((ROOT / "ops" / "specs").glob("*.yaml")):
+        if path.name in _UNWIRED_SPECS:
+            continue
         specs = load_yaml_specs(path)
         assert specs, f"{path.name} produced no runs"
         for spec in specs:

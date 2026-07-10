@@ -49,7 +49,7 @@ agent-facing view: which file owns which paper-facing responsibility.
 | `pipeline/judge.py` | Stage D: `StubJudge`, `GeminiJudge`, `GPT4oMiniJudge`. |
 | `pipeline/orchestrator.py` | Composes A→D per cell; owns the two cache layers + telemetry capture. |
 | `scoring/*` | `accuracy` (doc-level CI), `cost`, `frontier`, `retrieval`, `abstention`, `agreement` (judge-human κ). |
-| `experiments/tasks/` | The four `G[num]_[name]` generation tasks + the base ABC. |
+| `experiments/tasks/` | The three `G[num]_[name]` generation tasks + the base ABC. |
 | `experiments/engine/` | The generate/judge driver (robustness, `--failed-only`), side-artifact writers, cache/table paths + cell keys. |
 | `experiments/corpus/` | Question-set resolver + sampling; YAML spec loader. |
 | `experiments/registry.py` | Task name → task. |
@@ -251,9 +251,9 @@ The frozen contracts are above; this is the "how each layer behaves" reference.
   (text / table / chart / figure / layout, summing to 1).
 - **Classifier (routing side tool).** `models/classifier.py` renders the first
   pages, builds `TLV`, and asks the small reasoner for a bin; routing counts the
-  classifier's own latency. ⚠ PENDING v5 — routing is moving fully to build-time
-  over G1 and the classifier to an optional one-shot prediction pass (README §11,
-  `docs/DECISIONS.md`).
+  classifier's own latency. It is G3's optional one-shot side artifact
+  (`classifier.jsonl`, priced over G1's answerable docs when `classifier_spec` is
+  set); routing is a pure build-time assembly over G1's rows (README §11).
 
 ---
 

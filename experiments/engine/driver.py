@@ -334,5 +334,9 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
         # no per-cell status) are regenerated wholesale on a normal run.
         return
     log.info("generate %s: side work", task.name)
-    task.run_side(config, task_questions, paths.side_dir)
+    # Side writers get the full corpus (not the task pool) and the smoke limit, so a
+    # writer whose scope differs from the task's cells (e.g. G3's classifier, which
+    # prices G1's answerable docs while G3's cells run the unanswerable pool) can
+    # resolve its own set. Each writer re-filters to keep its scope correct.
+    task.run_side(config, questions, paths.side_dir, limit=limit)
     free_gpu()

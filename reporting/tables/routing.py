@@ -1,5 +1,5 @@
 """Routing-policy comparison, assembled at build time from G1's ladder rows plus
-the G4 classifier's price (routing is not itself a generation task)."""
+G3's classifier price (routing is not itself a generation task)."""
 
 from __future__ import annotations
 
@@ -59,5 +59,5 @@ def build(rows: Sequence[Any], classifier_rows: Sequence[Any] = (), *, margin_po
         title="Routing policies: accuracy vs latency",
         columns=columns,
         rows=table_rows,
-        note="assembled from G1 ladder rows + G4 classifier price",
+        note="assembled from G1 ladder rows + G3 classifier price",
     )

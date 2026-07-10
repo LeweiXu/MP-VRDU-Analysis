@@ -163,7 +163,9 @@ Both files share one schema across every task, so a G2 row looks like a G1 row.
 What changes per task is the cells plus the **side artifacts**: a benchmark file
 that never touches the reasoner, written *last*, after all reasoner cells. G2
 writes **`retrieval.jsonl`** (page precision/recall/F1 per question x retriever x
-k) and G4 writes `classifier.jsonl`. For G2 the retrieval *rankings* are computed
+k) and G3 writes `classifier.jsonl` (the modality-bin classifier priced once over
+G1's answerable docs, when a classifier is configured). For G2 the retrieval
+*rankings* are computed
 once in a pre-pass and cached (`results/cache/<run_tag>/retrieval/`), then reused
 both to pick the reasoner's pages and to score `retrieval.jsonl`, so that file is
 a parallel output, not an input to the predictions.
@@ -328,9 +330,9 @@ fusion. Single-method k sweeps `{1,3,5,7,10}`; joint uses `{1,3,5}` per method s
 the union stays under 10 pages. With no input cap, a high-k accuracy drop is an
 honest distractor effect, not a truncation artifact.
 
-## 11. The four generation tasks
+## 11. The three generation tasks
 
-Consolidated to four (the parser, resolution, family, dataset, quantization, and
+Three reasoner tasks (the parser, resolution, family, dataset, quantization, and
 model-size "experiments" are YAML runs over `G1`, not new tasks). Each keeps the
 `G[num]_[name]` handle; the name states the mechanism, not an RQ or table number.
 
@@ -343,13 +345,14 @@ model-size "experiments" are YAML runs over `G1`, not new tasks). Each keeps the
   pre-pass feeds two scorers: the reasoner (matched-vs-cross, k-depth) and the
   page-F1 side artifact (the retrieval benchmark, every method).
 - **`G3_hallucination`**: unanswerable-only x similarity pages x `TLV` x the three
-  prompt modes. Correct = abstention; no oracle arm exists.
-- **`G4_classifier_pricing`**: a side-only task that prices the modality-bin
-  classifier (first pages, small model): its latency and VRAM. Routing itself is
-  not a task; the routing table is assembled at **build time** from G1's ladder
-  rows plus this classifier price. *(⚠ PENDING v5 — G4 is being collapsed: routing
-  is fully build-time over G1, and the classifier reduces to an optional one-shot
-  prediction pass. See `docs/DECISIONS.md` when landed.)*
+  prompt modes. Correct = abstention; no oracle arm exists. G3 also carries the
+  optional one-shot modality-bin classifier as its side artifact (`classifier.jsonl`):
+  when a classifier is configured it prices one first-pages pass per distinct
+  document over G1's answerable doc set (latency + VRAM), else it is skipped.
+
+Routing is not a task: the routing table is assembled at **build time** from G1's
+ladder rows plus G3's classifier price (gold-bin ceiling when the classifier is
+skipped).
 
 ## 12. Research questions
 

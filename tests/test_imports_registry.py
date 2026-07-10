@@ -22,7 +22,7 @@ SPINE_MODULES = [
     "experiments.registry",
     "experiments.tasks.base",
     "experiments.tasks.G1_oracle_ladder", "experiments.tasks.G2_retrieval",
-    "experiments.tasks.G3_hallucination", "experiments.tasks.G4_classifier_pricing",
+    "experiments.tasks.G3_hallucination",
     "experiments.engine.driver", "experiments.engine.side_artifacts",
     "experiments.engine.artifacts", "experiments.engine.paths",
     "experiments.corpus.resolve", "experiments.corpus.smoke",
@@ -36,7 +36,7 @@ SPINE_MODULES = [
 ]
 
 EXPECTED_TASKS = {
-    "G1_oracle_ladder", "G2_retrieval", "G3_hallucination", "G4_classifier_pricing",
+    "G1_oracle_ladder", "G2_retrieval", "G3_hallucination",
 }
 
 
@@ -45,8 +45,8 @@ def test_spine_module_imports(mod: str) -> None:
     importlib.import_module(mod)
 
 
-def test_registry_lists_the_four_tasks() -> None:
-    # The registry maps task name -> task collection. All four G-tasks resolve;
+def test_registry_lists_the_three_tasks() -> None:
+    # The registry maps task name -> task collection. All three G-tasks resolve;
     # no RQ/table numbers, only the G[num]_[name] handles.
     get = require("experiments.registry", "get_task")
     for name in EXPECTED_TASKS:

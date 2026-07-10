@@ -23,6 +23,7 @@ ALLOWED_KEYS = {
     "dpi",
     "k_values",
     "judge_spec",
+    "classifier",
     "run_tag",
 }
 
@@ -48,6 +49,7 @@ class Spec:
     dpi: int | None = None
     k_values: tuple[int, ...] = ()
     judge_spec: str | None = None
+    classifier: str | None = None
     run_tag: str | None = None
 
 
@@ -78,6 +80,7 @@ def parse_spec(raw: Mapping[str, Any]) -> Spec:
         dpi=raw.get("dpi"),
         k_values=tuple(raw.get("k_values") or ()),
         judge_spec=raw.get("judge_spec"),
+        classifier=raw.get("classifier"),
         run_tag=raw.get("run_tag"),
     )
 
@@ -188,5 +191,6 @@ def config_from_spec(spec: Spec, *, smoke: bool = False):
         k_values=spec.k_values or (1, 3, 5, 7, 10),
         run_tag=spec.run_tag,
         parser_tool=spec.parser or "paddleocrvl",
+        classifier_spec=spec.classifier,
         **kwargs,
     )

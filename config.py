@@ -136,6 +136,11 @@ class ExperimentConfig:
     reasoner_specs: tuple[str, ...] = ()
     judge_spec: str = "stub"
 
+    # The document-classifier model for predicted-domain routing, priced once as a
+    # side-artifact by G3. None (or "none") skips it, so routing reports only the
+    # gold-bin ceiling. The classifier itself is a small first-N-pages pass.
+    classifier_spec: str | None = None
+
     # Input conditions and the top-k depths swept for retrieved conditions.
     conditions: tuple[str, ...] = ("oracle", "retrieved", "full", "similarity")
     k_values: tuple[int, ...] = (1, 3, 5, 7, 10)
@@ -189,6 +194,8 @@ class ExperimentConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "bins", tuple(self.bins))
+        if isinstance(self.classifier_spec, str) and self.classifier_spec.strip().lower() in ("", "none"):
+            object.__setattr__(self, "classifier_spec", None)
         object.__setattr__(self, "representations", tuple(self.representations))
         object.__setattr__(self, "reasoner_specs", tuple(self.reasoner_specs))
         if self.smoke:

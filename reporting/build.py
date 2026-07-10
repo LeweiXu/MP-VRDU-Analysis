@@ -52,13 +52,12 @@ def load_result_rows(path: str | Path) -> list[dict[str, Any]]:
 
 # Which task(s) feed which content-named table. Routing is explicit so one task
 # can feed several tables; the routing table itself is assembled at build time
-# from G1's ladder rows plus the G4 classifier price. The per-table builders in
+# from G1's ladder rows plus G3's classifier price. The per-table builders in
 # `reporting.tables` consume the grouped rows.
 TASK_TO_TABLES: Mapping[str, tuple[str, ...]] = {
     "G1_oracle_ladder": ("headline", "parser", "resolution", "scale", "composition", "routing"),
     "G2_retrieval": ("matched_cross", "kdepth", "retrieval_accuracy"),
-    "G3_hallucination": ("hallucination",),
-    "G4_classifier_pricing": ("routing",),
+    "G3_hallucination": ("hallucination", "routing"),
 }
 
 
@@ -105,7 +104,7 @@ def assemble_tables(task_paths: Mapping[str, Any], *, config: Any = None, margin
     """Build every table its inputs are available for, across tasks.
 
     `task_paths` maps a task name to its `ExperimentPaths`. Routing is assembled
-    once from G1's ladder rows plus the G4 classifier price; the rest read a single
+    once from G1's ladder rows plus G3's classifier price; the rest read a single
     task's results or side-artifact. Missing inputs yield an empty table, not a
     crash.
     """
@@ -125,7 +124,7 @@ def assemble_tables(task_paths: Mapping[str, Any], *, config: Any = None, margin
     g2 = results("G2_retrieval")
     g2_retrieval = side("G2_retrieval", "retrieval.jsonl")
     g3 = results("G3_hallucination")
-    g4_classifier = side("G4_classifier_pricing", "classifier.jsonl")
+    classifier_rows = side("G3_hallucination", "classifier.jsonl")
 
     candidates: list[Table | None] = []
     if g1:
@@ -135,7 +134,7 @@ def assemble_tables(task_paths: Mapping[str, Any], *, config: Any = None, margin
             _safe(resolution.build, g1, resolution_label=resolution_label, margin_points=margin_points),
             _safe(scale.build, g1),
             _safe(composition.build, g1),
-            _safe(routing.build, g1, g4_classifier, margin_points=margin_points),
+            _safe(routing.build, g1, classifier_rows, margin_points=margin_points),
         ]
     if g2:
         candidates += [_safe(matched_cross.build, g2), _safe(kdepth.build, g2)]

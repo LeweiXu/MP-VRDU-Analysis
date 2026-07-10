@@ -116,7 +116,7 @@ runs:
   # ever needed was the one-shot domain classifier. That classifier now rides
   # along with G3: G3 is already a small reasoner task, and the classifier is one
   # cheap forward pass per distinct document, so folding it in is practically
-  # free. See docs/G4.md.
+  # free. See the "G4 folded into G3" entry in docs/DECISIONS.md.
   - task: G3_hallucination
     run_tag: g3
     base:

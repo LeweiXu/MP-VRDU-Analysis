@@ -239,13 +239,13 @@ def _tasks_output():
         rows = [__import__("json").loads(l) for l in (base / task / "results.jsonl").read_text().splitlines() if l.strip()]
         counts = Counter(r["status"] for r in rows)
         status.append(f"{task}={len(rows)}rows{dict(counts)}")
-    if not (base / "G4_classifier_pricing" / "classifier.jsonl").exists():
-        raise RuntimeError("G4 classifier.jsonl missing")
-    status.append("G4=classifier.jsonl ok")
+    if not (base / "G3_hallucination" / "classifier.jsonl").exists():
+        raise RuntimeError("G3 classifier.jsonl missing")
+    status.append("classifier.jsonl ok")
     return " | ".join(status)
 
 
-run_cmd("tasks.all(G1-G4)", ["ops.generate", "--spec", "ops/specs/kaya_probe.yaml", "--allow-unlabelled"], _tasks_output)
+run_cmd("tasks.all(G1-G3)", ["ops.generate", "--spec", "ops/specs/kaya_probe.yaml", "--allow-unlabelled"], _tasks_output)
 
 
 # -- resolution robustness (min vs full; distinct run_tags so they don't collide) --

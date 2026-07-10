@@ -36,17 +36,23 @@ class G2Retrieval(GenerationTask):
             representations=self._representations(config),
         )
 
-    def run_side(self, config, questions, side_dir: Path) -> None:
+    def run_side(self, config, questions, side_dir: Path, *, limit: int | None = None) -> None:
         """Score the full six-method + three-joint retrieval-accuracy ladder.
 
         This is the RQ2 accuracy benchmark (no reasoner): every text and vision
         method plus the three matched-tier joint unions, per bin, with retrieval
         cost. It is a separate experiment from the reasoner k-sweep above.
+
+        `questions` is the full corpus, so re-resolve G2's own scope (answerable
+        pool + per_doc_type sample) before scoring, and apply the smoke `limit`.
         """
 
+        pool = list(self.resolve_questions(config, questions))
+        if limit is not None:
+            pool = pool[:limit]
         write_retrieval_eval(
             config,
-            questions,
+            pool,
             side_dir,
             single_ks=self._k_values(config),
             joint_ks=JOINT_K_VALUES,
