@@ -5,7 +5,7 @@ corpus: {scan: any, pool: unanswerable, sampling: full}
 parser_dpi: 200
 parser: [paddleocrvl]
 retrieval_representation: [T]
-text_retrievers: []
+text_retrievers: [bm25]
 vision_retrievers: []
 joints: []
 k_values: [3]

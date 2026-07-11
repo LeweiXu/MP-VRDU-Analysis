@@ -1,5 +1,19 @@
 # Handoff (2026-07-11): flat-spec refactor done, smokes green, experiments ready
 
+## Update (2026-07-11): G2/G3 specs corrected, README run-times refreshed
+
+Fixed mistakes in the two full specs and updated the README Kaya table to match:
+
+- **G2 (`kaya_g2_full.yaml`):** reasoner is now `qwen3vl-8b-local` (was 2B),
+  `k_values` [1,3] → [1,3,5,7,10], `joint_k_values` [1,3] → [1,3,5]. Since inference
+  loops over `k_values` (task.py), the reasoner cell count jumped ~9.6k → ~24k, and 8B
+  means it now needs **2 V100s** (was 1). README row updated to
+  `--gres gpu:v100:2 --time 72:00:00`; that walltime will hit the partition cap, so
+  expect to submit at the cap and resume from cache across submissions.
+- **G3 (`kaya_g3_full.yaml`):** `text_retrievers` [] → [bm25] so the T-representation
+  arm actually retrieves. Reasoner is unchanged (8B), so its GPU/walltime row in the
+  README is unchanged.
+
 Everything below is implemented and pytest is green (204). Nothing is git-committed
 yet: the whole refactor + the new specs live in the working tree. The three Kaya
 smokes passed end to end. The six real experiment specs are written and verified.

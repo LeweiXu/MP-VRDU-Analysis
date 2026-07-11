@@ -80,7 +80,7 @@ questions (7 doc_types → `per_doc_type: 80` ≈ 560).
 | `kaya_g1_resolution_full.yaml` | resolution low/med/high at TLV/V, 8B | 800×2×3 ≈ 4.8k | `--gres gpu:v100:2 --time 28:00:00` |
 | `kaya_g1_reasoner_per_doc_type_80.yaml` | reasoner 2B / 4B / InternVL3-8B | 560×4×3 ≈ 6.7k | `--gres gpu:v100:2 --time 30:00:00` |
 | `kaya_g1_quantization_per_doc_type_80.yaml` | quantization (only bf16 now; `[bf16, 8bit, 4bit]` triples it) | 560×4 ≈ 2.2k | `--gres gpu:v100:2 --time 14:00:00` |
-| `kaya_g2_full.yaml` | retrieval benchmark + inference (6 methods, 2B) | 800×2×3×2 ≈ 9.6k + stage-1 | `--gres gpu:v100:1 --time 30:00:00` |
+| `kaya_g2_full.yaml` | retrieval benchmark + inference (6 methods, 8B, k∈{1,3,5,7,10}) | 800×2×3×5 ≈ 24k + stage-1 | `--gres gpu:v100:2 --time 72:00:00` |
 | `kaya_g3_full.yaml` | hallucination prompts + classifier, 8B, ~250 unanswerable | 250×4×3 ≈ 3.0k | `--gres gpu:v100:2 --time 20:00:00` |
 
 If the partition caps walltime below these, submit at the cap: a timeout writes
