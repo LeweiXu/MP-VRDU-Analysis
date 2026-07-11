@@ -77,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         from experiments.corpus.yaml_spec import config_from_spec, corpus_limit, load_yaml_specs
 
         runs = [
-            (config_from_spec(spec), spec.task,
+            (config_from_spec(spec), spec.task_name,
              args.limit if args.limit is not None else corpus_limit(spec))
             for spec in load_yaml_specs(args.spec)
         ]

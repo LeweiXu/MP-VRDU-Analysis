@@ -141,6 +141,13 @@ class ExperimentConfig:
     # gold-bin ceiling. The classifier itself is a small first-N-pages pass.
     classifier_spec: str | None = None
 
+    # The answerable/unanswerable pool this run draws from (spec `corpus.pool`).
+    pool: str = "answerable"
+    # How pages are selected for the reasoner, in the T/TL/TLV/V vocabulary the
+    # retriever ranks over: ("oracle",) = gold pages; ("T",)/("V",)/("T","V") =
+    # text (PyMuPDF) / vision (image) retrieval arms.
+    retrieval_representation: tuple[str, ...] = ("oracle",)
+
     # Input conditions and the top-k depths swept for retrieved conditions.
     conditions: tuple[str, ...] = ("oracle", "retrieved", "full", "similarity")
     k_values: tuple[int, ...] = (1, 3, 5, 7, 10)
@@ -220,7 +227,7 @@ class ExperimentConfig:
         object.__setattr__(self, "representations", tuple(self.representations))
         object.__setattr__(self, "reasoner_specs", tuple(self.reasoner_specs))
         for name in ("text_retrievers", "vision_retrievers", "joint_k_values",
-                     "inference_representations", "prompt_modes"):
+                     "inference_representations", "prompt_modes", "retrieval_representation"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if isinstance(self.joints, list):
             object.__setattr__(self, "joints", tuple(tuple(pair) for pair in self.joints))

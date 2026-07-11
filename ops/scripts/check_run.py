@@ -123,10 +123,11 @@ def main(argv: list[str] | None = None) -> int:
     for spec in specs:
         config = config_from_spec(spec)
         limit = corpus_limit(spec)
-        for task in resolve(spec.task):
+        for task in resolve(spec.task_name):
             paths = experiment_paths(config, task.name)
             model_specs = task.model_specs(config)
-            side_name = getattr(task, "side_artifact", None)
+            side_name = ("retrieval.jsonl" if config.text_retrievers
+                         else "classifier.jsonl" if config.classifier_spec else None)
 
             expected = None
             if questions is not None and model_specs:

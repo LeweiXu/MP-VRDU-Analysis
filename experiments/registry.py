@@ -1,42 +1,36 @@
-"""Maps a task name to its task collection."""
+"""Resolves a task_name label to the single spec-driven generation task.
+
+Task names are just labels (cache namespace + parallel job); every one runs the
+same `Task`, whose behavior comes from the config.
+"""
 
 from __future__ import annotations
 
 from experiments.tasks.base import GenerationTask
-from experiments.tasks.G1_oracle_ladder import G1OracleLadder
-from experiments.tasks.G2_retrieval import G2Retrieval
-from experiments.tasks.G3_hallucination import G3Hallucination
+from experiments.tasks.task import Task
 
-
-_TASKS: tuple[GenerationTask, ...] = (
-    G1OracleLadder(),
-    G2Retrieval(),
-    G3Hallucination(),
-)
-
-TASKS: dict[str, GenerationTask] = {task.name: task for task in _TASKS}
-ORDER: tuple[str, ...] = tuple(task.name for task in _TASKS)
+# The canonical experiment labels. Any label is valid (it only names a cache dir);
+# these are the ones the groups below expand to.
+CANONICAL: tuple[str, ...] = ("G1_oracle_ladder", "G2_retrieval", "G3_hallucination")
 
 GROUPS: dict[str, tuple[str, ...]] = {
-    "all": ORDER,
-    # The three reasoner tasks. Same set as `all` now that the classifier is a G3
-    # side-artifact rather than its own task; kept as a stable selector name.
-    "reasoners": ("G1_oracle_ladder", "G2_retrieval", "G3_hallucination"),
+    "all": CANONICAL,
+    "reasoners": CANONICAL,
 }
 
+# The canonical labels mapped to their task, for selectors/tooling that enumerate
+# them. Any other label is still valid; it just names a different cache dir.
+TASKS: dict[str, GenerationTask] = {name: Task(name) for name in CANONICAL}
 
-def get_task(name: str) -> GenerationTask | None:
-    """Return the task registered under a name, or None."""
 
-    return TASKS.get(name)
+def get_task(name: str) -> GenerationTask:
+    """Return the spec-driven task under a name (the name is its cache namespace)."""
+
+    return Task(name)
 
 
 def resolve(selector: str) -> list[GenerationTask]:
-    """Expand a selector to generation tasks, in registry order, de-duplicated.
-
-    A selector is a task name, a group (`all`, `reasoners`), or a comma-separated
-    list of either, so an ad-hoc subset runs as one job.
-    """
+    """Expand a selector (task_name label, a group, or a comma-separated list) to tasks."""
 
     names: list[str] = []
     for token in selector.split(","):
@@ -45,11 +39,12 @@ def resolve(selector: str) -> list[GenerationTask]:
             continue
         if key in GROUPS:
             names.extend(GROUPS[key])
-        elif key in TASKS:
-            names.append(key)
         else:
-            raise ValueError(
-                f"unknown generation task/group {key!r}; choose from {sorted(TASKS)} or groups {sorted(GROUPS)}"
-            )
-    ordered = [name for name in ORDER if name in set(names)]
-    return [TASKS[name] for name in ordered]
+            names.append(key)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return [Task(name) for name in ordered]

@@ -115,25 +115,30 @@ def build_retrievers(config):
     """
 
     from experiments.tasks.base import Retrievers
-    from retrievers import MemoizedRetriever
+    from retrievers import MemoizedRetriever, StubRetriever
     from retrievers.text import get_text_retriever
     from retrievers.vision import get_vision_retriever
 
     persist_dir = config.paths.cache_dir / "retrieval"
     kwargs = dict(data_dir=config.paths.data_dir, cache_dir=config.paths.cache_dir, dpi=config.dpi)
-    text_kwargs = dict(kwargs)
-    if config.inference_text_retriever != "bm25":
-        text_kwargs["allow_bm25_fallback"] = False
-    vision_kwargs = {**kwargs, "allow_text_fallback": False}
+
+    def _text_arm():
+        # A run with no text arm (oracle-only, e.g. G1) gets a stub that is never fed.
+        if str(config.inference_text_retriever).lower() in ("none", ""):
+            return StubRetriever()
+        text_kwargs = dict(kwargs)
+        if config.inference_text_retriever != "bm25":
+            text_kwargs["allow_bm25_fallback"] = False
+        return get_text_retriever(config.inference_text_retriever, **text_kwargs)
+
+    def _vision_arm():
+        if str(config.inference_vision_retriever).lower() in ("none", ""):
+            return StubRetriever()
+        return get_vision_retriever(config.inference_vision_retriever, allow_text_fallback=False, **kwargs)
+
     return Retrievers(
-        text=MemoizedRetriever(
-            get_text_retriever(config.inference_text_retriever, **text_kwargs),
-            persist_dir=persist_dir,
-        ),
-        vision=MemoizedRetriever(
-            get_vision_retriever(config.inference_vision_retriever, **vision_kwargs),
-            persist_dir=persist_dir,
-        ),
+        text=MemoizedRetriever(_text_arm(), persist_dir=persist_dir),
+        vision=MemoizedRetriever(_vision_arm(), persist_dir=persist_dir),
     )
 
 
@@ -279,12 +284,12 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
     # the rankings to the shared retrieval memo, which the inference retrievers below
     # reuse instead of ranking the shared methods a second time. So run it before the
     # reasoner cells (GPU free, no reasoner resident). On a failed-only retry the memo
-    # already exists from the first run, so skip it. Only the task that declares the
-    # retrieval benchmark side-artifact runs here; other tasks keep post-loop side work.
-    retrieval_stage_first = getattr(task, "side_artifact", None) == "retrieval.jsonl" and not failed_only
+    # already exists from the first run, so skip it. A run with configured benchmark
+    # method lists is the one that has this stage; others just have post-loop side work.
+    retrieval_stage_first = bool(config.text_retrievers) and not failed_only
     if retrieval_stage_first:
         log.info("generate %s: retrieval stage-1 (before inference)", task.name)
-        task.run_side(config, questions, paths.side_dir, limit=limit)
+        task.run_retrieval_benchmark(config, questions, paths.side_dir, limit=limit)
         free_gpu()
 
     retrievers = build_retrievers(config)
@@ -361,9 +366,6 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
     if failed_only:
         # A failed-only re-run retries reasoner cells; side artifacts (which have
         # no per-cell status) are regenerated wholesale on a normal run.
-        return
-    if retrieval_stage_first:
-        # Already ran as stage 1 before inference; nothing left to write here.
         return
     log.info("generate %s: side work", task.name)
     # Side writers get the full corpus (not the task pool) and the smoke limit, so a
