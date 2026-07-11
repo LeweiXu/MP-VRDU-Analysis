@@ -49,10 +49,10 @@ agent-facing view: which file owns which paper-facing responsibility.
 | `pipeline/judge.py` | Stage D: `StubJudge`, `GeminiJudge`, `GPT4oMiniJudge`. |
 | `pipeline/orchestrator.py` | Composes A→D per cell; owns the two cache layers + telemetry capture. |
 | `scoring/*` | `accuracy` (doc-level CI), `cost`, `frontier`, `retrieval`, `abstention`, `agreement` (judge-human κ). |
-| `experiments/tasks/` | The three `G[num]_[name]` generation tasks + the base ABC. |
+| `experiments/tasks/` | The single spec-driven `Task` + the base ABC; `task_name` is a label, not a type. |
 | `experiments/engine/` | The generate/judge driver (robustness, `--failed-only`), side-artifact writers, cache/table paths + cell keys. |
-| `experiments/corpus/` | Question-set resolver + sampling; YAML spec loader. |
-| `experiments/registry.py` | Task name → task. |
+| `experiments/corpus/` | Question-set resolver + sampling; flat YAML spec loader. |
+| `experiments/registry.py` | Any `task_name` label → the unified `Task`. |
 | `reporting/build.py` | Task → table routing, cell grouping, build-time routing assembly; writes CSV + `.md`. |
 | `reporting/tables/` | Content-named table builders (headline, parser, resolution, matched_cross, kdepth, retrieval_accuracy, hallucination, routing, scale, composition). |
 | `ops/{generate,judge,build}.py` | The three role entry points. |
@@ -102,8 +102,8 @@ InternVL / GPT / Gemini backend is a new registry entry, no pipeline change.
 
 Rules that make the two-machine model and the sweeps work:
 
-- **`k` is encoded in the conditioner name** (`retrieved_k3`), not a separate key
-  field.
+- **`k` and the prompt mode are encoded in the conditioner name**
+  (`retrieved_text_k3__none`, `oracle__none`), not separate key fields.
 - **`model_spec` and `visual_resolution` are in both keys**, so scaling / family /
   quantization / resolution sweeps produce distinct, mergeable rows in a single run.
 - **`dpi` is *not* in the cell key** — it keys the render / parser disk caches
@@ -128,32 +128,34 @@ all run config. Judge and build are **artifact-driven**: they read
 manifests / predictions / results / side artifacts under a run tag, so they never
 repeat the generate flags.
 
-- **Specs.** `ops/specs/full_generation.yaml` and `ops/specs/smoke_generation.yaml`.
-  Specs support arbitrary ordered channel combinations over `T`/`L`/`V`, but the
-  paper experiments use the rung set `[T, TL, TLV, V]` only. Cache dirs are
-  `results/cache/<run-tag>/<smoke|full>/<run-name>/`.
+- **Specs.** `ops/specs/template.yaml` is the reference menu plus the three worked
+  tasks; `kaya.yaml` / `h100_main.yaml` are the real runs and
+  `kaya_smoke_g{1,2,3}.yaml` the per-task smokes. Cache dirs are
+  `results/cache/<run-tag>/<smoke|full>/<task>/`.
 - **Bridge.** `experiments/corpus/yaml_spec.py` loads YAML into flat `Spec`s and
   `experiments/engine/` owns the generate loop, reasoner / retriever construction,
   the parse pre-pass, and cache writes.
-- **Per-sweep expander.** A run entry may be flat, or nested as a `base:` (baseline
-  scalar per axis) plus named `sweeps:` (and, for G2, `retrieval:` / `inference:`
-  blocks). The loader expands the nested form into one flat `Spec` per sweep at parse
-  time, so the driver still runs one pass per spec. One name per axis: scalar in
-  `base`, list in a sweep; precedence is sweep value, then task `base`, then the
-  file-level `base`. The **run_tag strategy is set by the frozen cache key**: axes in
-  the key (reasoner spec incl. the quant suffix, and `visual_resolution`) sweep under
-  ONE run_tag as a driver-looped list (`reasoner_specs` / `visual_resolutions`); axes
-  NOT in the key (`parser`, `dataset`) get one run_tag per value
-  (`<base>-<sweep>-<value>`). A `quantization` sweep folds into `reasoner_specs`
-  suffixes (`bf16` = no suffix); a G3 `prompt` sweep folds into the single run's
-  cells. G2's `inference` retriever picks must be a subset of the `retrieval`
-  benchmark lists (validated: `SpecError`), and `joints: matched` auto-pairs the two
-  method lists by cost position. The `dataset` axis selects the corpus loader in
-  `ops/generate.py` (`DATASET_LOADERS`).
+- **Flat spec format.** Every run lists the full variable set explicitly under a
+  `task_name` — there is no `base`, no `sweeps`, and no `task` type. A list-valued
+  axis is the set of values to run over (cross-product). `dataset` and `parser`
+  expand to one run_tag each (`<run_tag>-<dataset>-<parser>`); `reasoner_spec` x
+  `quantization` fold into the driver-looped `reasoner_specs` (`bf16` = no suffix);
+  `visual_resolution` becomes `visual_resolutions`; `reasoner_representations` /
+  `k_values` / `joint_k_values` / `prompt_modes` / `retrieval_representation` are
+  cell/benchmark sets within the one run. `retrieval_representation` is `oracle`
+  (gold pages) or the reps the retriever ranks over (`T` = PyMuPDF text, `V` = page
+  image). Benchmark method lists (`text_retrievers` / `vision_retrievers` / `joints`,
+  `joints: matched` = zip of the two lists) are top-level; a run with a non-empty
+  benchmark must include `bge-m3` + `colqwen2.5`, and the inference picks
+  (`inference_text_retriever` / `inference_vision_retriever`) must be benchmarked
+  methods (`SpecError`). `config_from_spec` maps a `Spec` to `ExperimentConfig`;
+  `parser_dpi` is the render/parser DPI (keys the render cache, not the cell).
 - **Shared side-artifact writers.** The retrieval and classifier side artifacts
-  have one implementation in `experiments/engine/` so the fixed tasks and the
-  dynamic YAML tasks cannot drift; each caller passes the ordered `(modality, k)`
-  pairs it wants scored. `run_side` is not a frozen interface.
+  have one implementation in `experiments/engine/`; each caller passes the method
+  sets it wants scored. The retrieval benchmark runs as **stage 1 before** the
+  reasoner cells (gated on `config.text_retrievers`), persisting rankings the
+  inference arms reuse; the classifier runs after inference. `run_side` /
+  `run_retrieval_benchmark` are not frozen interfaces.
 - **Table routing.** `reporting/build.py`'s routing registry declares each table's
   source task(s); routing is a build-time assembly over G1's rows (plus the
   classifier price). A table is only correct when handed exactly its source tasks'
@@ -170,9 +172,10 @@ YAML `corpus:` scope: `full` (all 1091), `per_bin: N` (draw **whole documents** 
 bin to N — doc-coherent, so the doc-level bootstrap CIs stay valid), `per_doc_type: N`
 (draw whole documents per native `doc_type`, then cap to **exactly N questions per
 label** — so `per_doc_type: 1` runs one question per label; the exact cap can slice
-the last drawn document), or a `limit` / id-list for smoke. The answerable pool is
-bound by the task (G1/G2 answerable, G3 unanswerable), enforced in
-`experiments/corpus/resolve.py` so a spec cannot cross-contaminate. ⚠ PENDING v5: which experiments require the full corpus
+the last drawn document), or a `limit` / id-list for smoke. The pool is declared by
+the spec (`corpus.pool`: answerable / unanswerable), applied by
+`experiments/corpus/resolve.py::filter_by_pool` — it is a run variable now, not
+keyed off the task name. ⚠ PENDING v5: which experiments require the full corpus
 (binning-dependent) vs a frozen random subset is being finalised — see README §3
 and `docs/DECISIONS.md`.
 
@@ -201,8 +204,9 @@ The frozen contracts are above; this is the "how each layer behaves" reference.
   and each `<image>` placeholder becomes an image block in page order. Decoding is
   greedy (`do_sample=False`, capped `max_new_tokens`).
 - **Prompt modes.** The instruction preamble is swappable (`config.PROMPT_MODES`):
-  `none` / `generic` / `targeted`. Answerable cells use `targeted`; the
-  hallucination task sweeps all three. The mode is part of cell identity.
+  `none` / `generic` / `targeted`. Answerable runs set `prompt_modes: [none]`; the
+  hallucination run sweeps all three. The mode rides the conditioner name (the
+  prediction key has no prompt field), so each mode is its own cell.
 - **Accounting** per `Prediction`: `input_text_tokens` (image placeholders
   stripped), `input_visual_tokens` (vision-token estimate), `output_tokens`, the
   `prefill` / `decode` latency split and end-to-end `latency_s` (batch=1), peak

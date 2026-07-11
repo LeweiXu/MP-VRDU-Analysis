@@ -7,7 +7,7 @@ runs:
   - task_name: G1_oracle_ladder
     run_tag: g1
     dataset: [mmlongbench]
-    corpus: {pool: answerable, sampling: {per_doc_type: 50, seed: 0}}
+    corpus: {scan: any, pool: answerable, sampling: {per_doc_type: 100, seed: 0}}
     parser_dpi: 200
     parser: [paddleocrvl]
     retrieval_representation: [oracle]
@@ -30,7 +30,7 @@ runs:
   - task_name: G2_retrieval
     run_tag: g2
     dataset: [mmlongbench]
-    corpus: {pool: answerable, sampling: {per_doc_type: 50, seed: 0}}
+    corpus: {scan: any, pool: answerable, sampling: {per_doc_type: 100, seed: 0}}
     parser_dpi: 200
     parser: [paddleocrvl]
     retrieval_representation: [T, V]
@@ -53,7 +53,7 @@ runs:
   - task_name: G3_hallucination
     run_tag: g3
     dataset: [mmlongbench]
-    corpus: {pool: unanswerable, sampling: full}
+    corpus: {scan: any, pool: unanswerable, sampling: full}
     parser_dpi: 200
     parser: [paddleocrvl]
     retrieval_representation: [T]

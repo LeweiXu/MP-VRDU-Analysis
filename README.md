@@ -20,20 +20,75 @@ contracts is `docs/AGENT_GUIDE.md`. Cluster operations are in
 # tests (CPU, fast)
 envs/mpvrdu/bin/python -m pytest -q
 
-# generate (GPU) -> judge (needs a Gemini/OpenAI key in .env) -> build tables
-envs/mpvrdu/bin/python -m ops.generate --task all --reasoner-spec qwen3vl-8b-local
+# generate (GPU, spec-driven) -> judge (needs a Gemini/OpenAI key in .env) -> build
+envs/mpvrdu/bin/python -m ops.generate --spec ops/specs/kaya.yaml
 envs/mpvrdu/bin/python -m ops.judge    --task all --judge-spec gemini-flash
 envs/mpvrdu/bin/python -m ops.build    --task all
 
-# tiny local smoke (a few questions, small model, min resolution)
-HF_HOME=$PWD/.cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-  envs/mpvrdu-local-gpu/bin/python -m ops.generate --task all --limit 2 \
-  --reasoner-spec qwen3vl-2b-local --quantization 4bit --visual-resolution min
+# tiny smoke: one question per doc_type, 2B model, one task (spec-driven)
+envs/mpvrdu/bin/python -m ops.generate --spec ops/specs/kaya_smoke_g1.yaml
 ```
 
 The three phases split on purpose: **generate** is GPU-only and offline (runs on
 the cluster), **judge** and **build** are local and need API keys. Everything is
 cached and resumable, so a re-run only fills missing cells.
+
+## Corpus selection: scan → pool → sampling
+
+A run narrows the corpus in three ordered stages (`corpus:` in the spec):
+
+1. **`scan`** (document-level): `any` (no filter), `digital`, or `scanned`. When set,
+   each document is labelled by PyMuPDF auto-detection (cached to
+   `annotations/auto_scan.csv`), and only documents of that kind — with all their
+   questions — pass on.
+2. **`pool`** (question-level): `answerable`, `unanswerable`, or `all` (both).
+3. **`sampling`** (over what survives 1–2):
+   - **`full`** — every remaining question.
+   - **`{per_doc_type: N, seed: S}`** — draw whole documents per native `doc_type`
+     (shuffled by seed) then cap to **exactly N questions per doc_type** (so
+     `per_doc_type: 1` = one question per label; the exact cap can slice the last
+     drawn document).
+   - **`{per_bin: N, seed: S}`** — draw whole documents per `bin_label` until the bin
+     reaches **about N** questions (never slices a document, so the doc-level
+     bootstrap stays valid).
+   - **`{limit: N}`** — the first N questions (a fast smoke slice).
+   - **`{ids: [q1, q2, …]}`** — exactly those question ids.
+
+   `per_doc_type` caps to *exactly* N (can slice a document); `per_bin` keeps *whole*
+   documents to *about* N. Both draw whole documents so document-level CIs stay valid.
+
+## Running the experiments on Kaya
+
+Each experiment is one spec under `ops/specs/`. Submit generation to SLURM
+(non-blocking with `--no-wait`); 8B needs two V100s, 2B fits one. Tune `--time` to
+the corpus size (first-time page rasterization is slow, then cached).
+
+```bash
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --no-wait \
+  --gres gpu:v100:<N> --time <HH:MM:SS> ops/generate.py -- --spec ops/specs/<spec>.yaml
+```
+
+Walltimes below use the observed rate ~18 s per reasoner cell (300 questions × 4
+rungs ≈ 1200 cells took ~6 h on Kaya) and **overestimate on purpose**. Real runs are
+faster: 2B/4B are quicker than 8B, OOM cells fail fast, and page rendering only pays
+its cost on the first pass then caches. Cell counts assume ~800 digital+answerable
+questions (7 doc_types → `per_doc_type: 80` ≈ 560).
+
+| Spec | Varies | ≈ reasoner cells | Suggested |
+|---|---|---|---|
+| `kaya_g1_representation_full.yaml` | the T/TL/TLV/V ladder (headline), 8B, ~800 digital | 800×4 ≈ 3.2k | `--gres gpu:v100:2 --time 20:00:00` |
+| `kaya_g1_resolution_full.yaml` | resolution low/med/high at TLV/V, 8B | 800×2×3 ≈ 4.8k | `--gres gpu:v100:2 --time 28:00:00` |
+| `kaya_g1_reasoner_per_doc_type_80.yaml` | reasoner 2B / 4B / InternVL3-8B | 560×4×3 ≈ 6.7k | `--gres gpu:v100:2 --time 30:00:00` |
+| `kaya_g1_quantization_per_doc_type_80.yaml` | quantization (only bf16 now; `[bf16, 8bit, 4bit]` triples it) | 560×4 ≈ 2.2k | `--gres gpu:v100:2 --time 14:00:00` |
+| `kaya_g2_full.yaml` | retrieval benchmark + inference (6 methods, 2B) | 800×2×3×2 ≈ 9.6k + stage-1 | `--gres gpu:v100:1 --time 30:00:00` |
+| `kaya_g3_full.yaml` | hallucination prompts + classifier, 8B, ~250 unanswerable | 250×4×3 ≈ 3.0k | `--gres gpu:v100:2 --time 20:00:00` |
+
+If the partition caps walltime below these, submit at the cap: a timeout writes
+partial results and **resubmitting the same spec resumes from cache** (skips done
+cells) — as the G2 smoke did. Cells that OOM on a V100 write `oom` rows and the job
+keeps going; complete those on the supervisor by re-submitting with `--failed-only`
+(§13). After a run, `kaya.py pull`, then judge + build locally (`ops.judge` /
+`ops.build`).
 
 ---
 
@@ -92,11 +147,11 @@ mpvrdu/
 │   └── agreement.py          judge-human Cohen's kappa
 │
 ├── experiments/              what runs, how, and on what
-│   ├── tasks/                the three G[num]_[name] generation tasks + the base ABC
+│   ├── tasks/                the single spec-driven Task + the base ABC (task_name is a label)
 │   ├── engine/               driver (generate/judge loop, robustness, failed-only),
 │   │                         side-artifact writers, cache/table paths + cell keys
-│   ├── corpus/               question-set resolver + sampling, YAML spec loader
-│   └── registry.py           task name -> task
+│   ├── corpus/               question-set resolver + sampling, flat YAML spec loader
+│   └── registry.py           any task_name label -> the unified Task
 │
 ├── reporting/                judged rows -> tables
 │   ├── build.py              task->table routing, cell grouping, build-time routing assembly
@@ -159,16 +214,17 @@ Each task writes two jsonl files under `results/cache/<run_tag>/<mode>/<task>/`:
   one row, marked `oom` or `error`). This is the file `check_run` and the table
   builders read.
 
-Both files share one schema across every task, so a G2 row looks like a G1 row.
-What changes per task is the cells plus the **side artifacts**: a benchmark file
-that never touches the reasoner, written *last*, after all reasoner cells. G2
-writes **`retrieval.jsonl`** (page precision/recall/F1 per question x retriever x
-k) and G3 writes `classifier.jsonl` (the modality-bin classifier priced once over
-G1's answerable docs, when a classifier is configured). For G2 the retrieval
-*rankings* are computed
-once in a pre-pass and cached (`results/cache/<run_tag>/retrieval/`), then reused
-both to pick the reasoner's pages and to score `retrieval.jsonl`, so that file is
-a parallel output, not an input to the predictions.
+Both files share one schema across every run, so a G2 row looks like a G1 row.
+What changes per run is the cells plus the **side artifacts** the run's config asks
+for: benchmark files that never touch the reasoner. A run with retrieval methods
+configured writes **`retrieval.jsonl`** (page precision/recall/F1 per question x
+retriever x k) as **stage 1, before** the reasoner cells: it ranks every method
+once, persists the rankings to `results/cache/<run_tag>/retrieval/`, and the
+inference arms reuse those rankings to pick the reasoner's pages — so
+`retrieval.jsonl` and the predictions share one ranking instead of computing it
+twice. A run with a classifier configured writes `classifier.jsonl` after inference
+(the modality-bin classifier priced once over the answerable docs). In the
+canonical runs those are G2 (retrieval) and G3 (classifier).
 
 The **stub judge** (`judge_spec: stub`) is a cheap offline scorer, not a no-op: it
 counts a cell correct when the gold answer appears (case-insensitively) in the
@@ -245,8 +301,10 @@ resumed.
   study where there is no oracle arm (unanswerable questions have zero gold pages).
 - **full** feeds every page (the feed-everything baseline).
 
-The conditioner name carries its parameter (e.g. `retrieved_vision_k5`), so each k
-lands in its own cached cell.
+Oracle is also available as a `Retriever` (`retrievers/oracle.py`) for uniformity,
+though the reasoner's oracle cells select via the conditioner (all gold pages). The
+conditioner name carries its parameters (e.g. `retrieved_vision_k5__none` — the k
+and the prompt mode), so each (k, prompt) lands in its own cached cell.
 
 ## 5. Visual resolution
 
@@ -275,8 +333,9 @@ Anything that still OOMs a small GPU is completed on the bigger one via the retr
 
 The reasoner prompt has a swappable instruction preamble (`config.PROMPT_MODES`):
 `none` (no guidance), `generic`, or `targeted` (abstention-targeted). Answerable
-cells use `targeted`; the hallucination task sweeps all three. The mode rides on
-the cell identity, so each prompt condition is its own cached cell.
+runs set `prompt_modes: [none]`; the hallucination run sweeps all three. The mode
+rides on the conditioner name (the prediction key has no prompt field), so each
+prompt condition is its own cached cell.
 
 ## 8. Judging, and the answerable / unanswerable split
 
@@ -286,9 +345,9 @@ is an independent scorer for the kappa >= 0.75 validation gate; `StubJudge` keep
 offline tests runnable. Of the 1091 questions, ~250 are **unanswerable**. They are
 removed from RQ1/RQ2 (so those accuracies are cleanly "accuracy on answerable
 questions") and used **only** in the RQ3 hallucination study, where correct
-behaviour is abstention. A task draws only from its pool: G1/G2 answerable, G3
-unanswerable, enforced in `experiments/corpus/resolve.py` so a spec cannot
-cross-contaminate.
+behaviour is abstention. Each run declares its pool as a spec variable
+(`corpus.pool`: answerable / unanswerable) — the G1/G2 runs answerable, G3
+unanswerable — applied in `experiments/corpus/resolve.py::filter_by_pool`.
 
 ## 9. Telemetry (fixed schema, collected every run)
 
@@ -330,11 +389,14 @@ fusion. Single-method k sweeps `{1,3,5,7,10}`; joint uses `{1,3,5}` per method s
 the union stays under 10 pages. With no input cap, a high-k accuracy drop is an
 honest distractor effect, not a truncation artifact.
 
-## 11. The three generation tasks
+## 11. One pipeline, three canonical runs
 
-Three reasoner tasks (the parser, resolution, family, dataset, quantization, and
-model-size "experiments" are YAML runs over `G1`, not new tasks). Each keeps the
-`G[num]_[name]` handle; the name states the mechanism, not an RQ or table number.
+There is **one** generation pipeline (§1). A run is defined entirely by its config,
+and `task_name` is just a label (the cache namespace + parallel job), not a
+different mechanism — the parser, resolution, family, dataset, quantization, and
+model-size "experiments" are list-valued axes of a run, not new tasks. The three
+canonical labels below are the same pipeline with different variable values; each
+keeps a `G[num]_[name]` handle stating the mechanism, not an RQ or table number.
 
 - **`G1_oracle_ladder`**: oracle pages x `{T,TL,TLV,V}`, answerable-only, primary
   reasoner. Feeds the cost-ordered headline and the per-bin frontier. Its YAML

@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
 """Print Kaya GPU partition node, memory, queue, and start-estimate status.
 
-Purpose:
-    Gives a quick read-only status view for deciding what SLURM resources to
-    request before submitting MP-VRDU generation jobs.
-
-Pipeline role:
-    Operational helper only. It does not touch project caches, results, or Kaya
-    jobs; it shells out through SSH and reads SLURM state.
-
-CLI:
-    `python scripts/kaya_status.py [options]`
-
-Arguments:
-    --config PATH: Kaya config JSON path (default: kaya/config.json).
-    --ssh-alias HOST: SSH host override; defaults to config `ssh_alias`.
-    --partition NAME: SLURM partition to inspect (default: gpu).
-    --user NAME: user for the "Your Jobs" section; defaults to remote whoami.
-    --limit N: maximum queue rows per section (default: 25).
-    --json: emit machine-readable JSON instead of text.
-    --no-start: skip `squeue --start` estimates.
+This is a read-only operational helper that gets SLURM state over SSH.
 """
 
 from __future__ import annotations
@@ -68,6 +50,9 @@ class QueueRow:
     nodes: str
     gres: str
     reason_or_nodelist: str
+    submitted: str
+    started: str
+    queue_wait: str
 
 
 @dataclass(frozen=True)
@@ -80,8 +65,8 @@ class StartEstimate:
     state: str
     start_time_raw: str
     start_time_scheduler: str
-    start_time_local: str
     wait: str
+    wait_seconds: int | None
     reason_or_nodelist: str
 
 
@@ -93,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssh-alias", help="SSH host override; defaults to kaya/config.json")
     parser.add_argument("--partition", default="gpu")
     parser.add_argument("--user", help="user for the 'Your Jobs' section; defaults to remote whoami")
-    parser.add_argument("--limit", type=int, default=25, help="maximum rows for queue/start sections")
+    parser.add_argument("--limit", type=int, default=25, help="maximum rows in the Your Jobs section")
     parser.add_argument("--json", action="store_true", help="emit JSON")
     parser.add_argument("--no-start", action="store_true", help="skip squeue --start estimates")
     return parser
@@ -259,26 +244,64 @@ def parse_tres_mem(tres: str) -> int:
     return parse_mem_mb(match.group(1)) if match else 0
 
 
-def parse_queue(output: str) -> list[QueueRow]:
+def parse_slurm_time(value: str, scheduler_tz: tzinfo) -> datetime | None:
+    """Parse a SLURM ISO timestamp, returning None for unavailable values."""
+
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=scheduler_tz)
+    except ValueError:
+        return None
+
+
+def queue_wait(
+    *, submitted: str, started: str, state: str, scheduler_tz: tzinfo, now: datetime
+) -> str:
+    """Return time spent queued for a running or pending job."""
+
+    submitted_at = parse_slurm_time(submitted, scheduler_tz)
+    if submitted_at is None:
+        return "unknown"
+    started_at = parse_slurm_time(started, scheduler_tz) if state == "R" else None
+    return format_wait((started_at or now) - submitted_at)
+
+
+def parse_queue(output: str, *, scheduler_tz: tzinfo, now: datetime | None = None) -> list[QueueRow]:
     """Parse pipe-delimited squeue output."""
 
     rows: list[QueueRow] = []
+    current_time = now or datetime.now(scheduler_tz)
     for line in output.splitlines():
         if not line.strip() or line.startswith("JOBID|"):
             continue
-        parts = line.split("|", 8)
-        if len(parts) == 9:
-            rows.append(QueueRow(*parts))
+        parts = line.split("|", 10)
+        if len(parts) == 11:
+            rows.append(
+                QueueRow(
+                    *parts,
+                    queue_wait=queue_wait(
+                        submitted=parts[9],
+                        started=parts[10],
+                        state=parts[3],
+                        scheduler_tz=scheduler_tz,
+                        now=current_time,
+                    ),
+                )
+            )
     return rows
 
 
-def load_queue(ssh_alias: str, partition: str, *, user: str | None = None) -> list[QueueRow]:
+def load_queue(
+    ssh_alias: str, partition: str, *, scheduler_tz: tzinfo, user: str | None = None
+) -> list[QueueRow]:
     """Load running/pending queue rows."""
 
     user_arg = f"-u {shlex.quote(user)} " if user else ""
-    fmt = "%i|%j|%u|%t|%M|%l|%D|%b|%R"
-    command = f"squeue {user_arg}-p {shlex.quote(partition)} -h -o {shlex.quote(fmt)}"
-    return parse_queue(remote(ssh_alias, command))
+    fmt = "%i|%j|%u|%t|%M|%l|%D|%b|%R|%V|%S"
+    command = (
+        f"squeue {user_arg}-p {shlex.quote(partition)} -t RUNNING,PENDING "
+        f"-h -o {shlex.quote(fmt)}"
+    )
+    return parse_queue(remote(ssh_alias, command), scheduler_tz=scheduler_tz)
 
 
 def parse_start_estimates(
@@ -286,12 +309,12 @@ def parse_start_estimates(
     *,
     scheduler_tz: tzinfo,
     scheduler_tz_name: str,
-    local_tz: tzinfo,
+    now: datetime | None = None,
 ) -> list[StartEstimate]:
     """Parse pipe-delimited `squeue --start` output."""
 
     rows: list[StartEstimate] = []
-    now = datetime.now(local_tz)
+    current_time = now or datetime.now(scheduler_tz)
     for line in output.splitlines():
         if not line.strip() or line.startswith("JOBID|"):
             continue
@@ -299,27 +322,24 @@ def parse_start_estimates(
         if len(parts) == 6:
             raw_start = parts[4]
             if raw_start == "N/A":
-                rows.append(StartEstimate(*parts[:4], raw_start, "N/A", "N/A", "N/A", parts[5]))
+                rows.append(StartEstimate(*parts[:4], raw_start, "N/A", "N/A", None, parts[5]))
                 continue
-            try:
-                scheduler_start = datetime.strptime(raw_start, "%Y-%m-%dT%H:%M:%S").replace(
-                    tzinfo=scheduler_tz
-                )
-            except ValueError:
-                rows.append(StartEstimate(*parts[:4], raw_start, raw_start, raw_start, "unknown", parts[5]))
+            scheduler_start = parse_slurm_time(raw_start, scheduler_tz)
+            if scheduler_start is None:
+                rows.append(StartEstimate(*parts[:4], raw_start, raw_start, "unknown", None, parts[5]))
                 continue
-            local_start = scheduler_start.astimezone(local_tz)
+            wait_seconds = max(0, int((scheduler_start - current_time).total_seconds()))
             rows.append(
                 StartEstimate(
                     *parts[:4],
                     raw_start,
                     format_dt(scheduler_start, scheduler_tz_name),
-                    format_dt(local_start),
-                    format_wait(local_start - now),
+                    format_wait(timedelta(seconds=wait_seconds)),
+                    wait_seconds,
                     parts[5],
                 )
             )
-    return rows
+    return sorted(rows, key=lambda row: (row.wait_seconds is None, row.wait_seconds or 0))
 
 
 def load_start_estimates(
@@ -328,17 +348,18 @@ def load_start_estimates(
     *,
     scheduler_tz: tzinfo,
     scheduler_tz_name: str,
-    local_tz: tzinfo,
 ) -> list[StartEstimate]:
-    """Load scheduler start estimates for pending/running jobs."""
+    """Load scheduler start estimates for pending jobs."""
 
     fmt = "%i|%j|%u|%t|%S|%R"
-    command = f"squeue -p {shlex.quote(partition)} --start -h -o {shlex.quote(fmt)}"
+    command = (
+        f"squeue -p {shlex.quote(partition)} -t PENDING "
+        f"--start -h -o {shlex.quote(fmt)}"
+    )
     return parse_start_estimates(
         remote(ssh_alias, command),
         scheduler_tz=scheduler_tz,
         scheduler_tz_name=scheduler_tz_name,
-        local_tz=local_tz,
     )
 
 
@@ -413,27 +434,26 @@ def print_text(
     )
     print()
     print("Running/Pending Jobs")
-    print_queue(queue[:limit])
+    print_queue(queue)
     print()
     print("Your Jobs")
-    print_queue(mine[:limit])
+    print_queue(mine[:limit], show_queue_time=True)
     if starts:
         print()
         print("Scheduler Start Estimates")
         print_table(
-            ["job_id", "state", "scheduler_time", "local_time", "wait", "name", "user", "reason/nodelist"],
+            ["job_id", "state", "scheduler_time", "wait", "name", "user", "reason/nodelist"],
             [
                 [
                     row.job_id,
                     row.state,
                     row.start_time_scheduler,
-                    row.start_time_local,
                     row.wait,
                     row.name,
                     row.user,
                     row.reason_or_nodelist,
                 ]
-                for row in starts[:limit]
+                for row in starts
             ],
         )
         print()
@@ -444,29 +464,33 @@ def print_text(
         )
 
 
-def print_queue(rows: list[QueueRow]) -> None:
+def print_queue(rows: list[QueueRow], *, show_queue_time: bool = False) -> None:
     """Print queue rows or an empty message."""
 
     if not rows:
         print("(none)")
         return
-    print_table(
-        ["job_id", "state", "elapsed", "limit", "nodes", "gres", "name", "user", "reason/nodelist"],
-        [
-            [
-                row.job_id,
-                row.state,
-                row.elapsed,
-                row.time_limit,
-                row.nodes,
-                row.gres,
-                row.name,
-                row.user,
-                row.reason_or_nodelist,
-            ]
-            for row in rows
-        ],
-    )
+    headers = ["job_id", "state", "elapsed", "limit", "nodes", "gres", "name", "user"]
+    if show_queue_time:
+        headers.extend(["submitted", "queue_wait"])
+    headers.append("reason/nodelist")
+    table_rows: list[list[object]] = []
+    for row in rows:
+        values: list[object] = [
+            row.job_id,
+            row.state,
+            row.elapsed,
+            row.time_limit,
+            row.nodes,
+            row.gres,
+            row.name,
+            row.user,
+        ]
+        if show_queue_time:
+            values.extend([row.submitted, row.queue_wait])
+        values.append(row.reason_or_nodelist)
+        table_rows.append(values)
+    print_table(headers, table_rows)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -475,10 +499,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     ssh_alias = load_ssh_alias(args.config, args.ssh_alias)
     nodes = load_nodes(ssh_alias, args.partition)
-    queue = load_queue(ssh_alias, args.partition)
-    user = remote_user(ssh_alias, args.user)
-    mine = load_queue(ssh_alias, args.partition, user=user) if user else []
     scheduler_tz, scheduler_tz_name = remote_timezone(ssh_alias)
+    queue = load_queue(ssh_alias, args.partition, scheduler_tz=scheduler_tz)
+    user = remote_user(ssh_alias, args.user)
+    mine = (
+        load_queue(ssh_alias, args.partition, scheduler_tz=scheduler_tz, user=user)
+        if user
+        else []
+    )
     local_tz = datetime.now().astimezone().tzinfo or timezone.utc
     starts = (
         []
@@ -488,7 +516,6 @@ def main(argv: list[str] | None = None) -> int:
             args.partition,
             scheduler_tz=scheduler_tz,
             scheduler_tz_name=scheduler_tz_name,
-            local_tz=local_tz,
         )
     )
 

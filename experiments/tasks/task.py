@@ -11,7 +11,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from config import DEFAULT_PROMPT_MODE, ExperimentConfig
-from experiments.corpus.resolve import filter_by_pool, sample_per_doc_type
+from experiments.corpus.resolve import (
+    filter_by_pool,
+    filter_by_scan,
+    resolve_corpus,
+    sample_per_doc_type,
+)
 from experiments.engine.side_artifacts import (
     resolve_joints,
     write_classifier_eval,
@@ -44,10 +49,15 @@ class Task(GenerationTask):
         return tuple(config.reasoner_specs) or (config.reasoner_spec,)
 
     def resolve_questions(self, config: ExperimentConfig, questions: Sequence[Question]) -> Sequence[Question]:
-        pool = filter_by_pool(questions, config.pool)
-        if config.per_doc_type_sample:
-            pool = sample_per_doc_type(pool, config.per_doc_type_sample, config.sample_seed)
-        return pool
+        # Scan filter (digital/scanned) comes first, before the pool and sampling.
+        qs: Sequence[Question] = questions
+        if getattr(config, "scan_filter", "any") not in ("any", None, ""):
+            qs = filter_by_scan(qs, config.scan_filter, data_dir=config.paths.data_dir,
+                                annotations_dir=config.paths.root / "annotations")
+        pool = filter_by_pool(qs, config.pool)
+        # Sampling (full / per_doc_type / per_bin / limit / ids) runs last, over the
+        # scan- and pool-filtered subset.
+        return resolve_corpus({"sampling": config.sampling}, pool)
 
     def generation_cells(self, config, questions, *, retrievers: Retrievers) -> list[Cell]:
         reps = tuple(config.representations)

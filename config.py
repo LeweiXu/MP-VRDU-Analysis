@@ -141,8 +141,16 @@ class ExperimentConfig:
     # gold-bin ceiling. The classifier itself is a small first-N-pages pass.
     classifier_spec: str | None = None
 
-    # The answerable/unanswerable pool this run draws from (spec `corpus.pool`).
+    # Document scan filter applied BEFORE the pool + sampling (spec `corpus.scan`):
+    # "any" (no filter), "digital", or "scanned". When set, documents are labelled by
+    # PyMuPDF auto-detection, cached to annotations/auto_scan.csv.
+    scan_filter: str = "any"
+    # The question pool this run draws from (spec `corpus.pool`): "answerable",
+    # "unanswerable", or "all" (both).
     pool: str = "answerable"
+    # The corpus `sampling` block (spec `corpus.sampling`), applied after scan + pool:
+    # "full", {per_doc_type: N, seed}, {per_bin: N, seed}, {limit: N}, or {ids: [...]}.
+    sampling: object = "full"
     # How pages are selected for the reasoner, in the T/TL/TLV/V vocabulary the
     # retriever ranks over: ("oracle",) = gold pages; ("T",)/("V",)/("T","V") =
     # text (PyMuPDF) / vision (image) retrieval arms.

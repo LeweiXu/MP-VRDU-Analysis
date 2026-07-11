@@ -10,6 +10,60 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**Flat spec format + one unified spec-driven task (2026-07-11).** The generation
+layer was collapsed to a single mechanism, and `pivot_v4.md` is folded in here and
+deleted. This supersedes the "Per-sweep YAML expander (2026-07-10)" entry below.
+- **One pipeline, `task_name` is a label.** `G1OracleLadder` / `G2Retrieval` /
+  `G3Hallucination` are gone; `experiments/tasks/task.py::Task` is the only
+  generation task. It reads its behaviour from the config: `pool` (answerable /
+  unanswerable), `retrieval_representation` (`oracle` = gold pages via
+  `OracleConditioner`; else the text/vision inference arms), the ladder, `k`, and
+  `prompt_modes`. `task_name` names only the cache dir + parallel job, not a type.
+  The registry resolves any label to `Task(name)`.
+- **Flat, fully-explicit specs — no `base`, no `sweeps`, no `task`.** The nested
+  base/sweeps + `retrieval`/`inference` form is replaced: every run lists the full
+  variable set explicitly under a `task_name`, and a list-valued axis is the set of
+  values to run over (cross-product). `dataset`/`parser` expand to one run_tag each;
+  `reasoner_spec` x `quantization` fold into `reasoner_specs`; `visual_resolution`
+  becomes the driver-looped list; representations / k / prompt_modes are cell
+  dimensions. New keys: `corpus.pool`, `parser_dpi` (was `dpi`),
+  `retrieval_representation` (in {T, V, oracle}), merged benchmark method lists
+  (`text_retrievers` / `vision_retrievers` / `joints` at top level, no separate
+  `retrieval:` block). `ops/specs/template.yaml` is the reference menu + the three
+  worked tasks; all specs rewritten; the old nested specs deleted.
+- **Pool is spec-driven, not task-bound.** `config.pool` (from `corpus.pool`)
+  replaces `pool_for_task(name)` / `UNANSWERABLE_TASKS`.
+- **Enforcement.** A run whose benchmark lists are non-empty must include `bge-m3`
+  and `colqwen2.5` (the fixed inference arms), and any inference pick must be a
+  benchmarked method (`SpecError`).
+- **Prompt mode rides the conditioner name.** The prediction key has no prompt
+  field, so the mode is appended (`retrieved_text_k3__none`, `oracle__none`);
+  answerable G1/G2 runs use `none` (not the old `targeted` default) per the specs.
+- **Oracle is a retriever too.** `retrievers/oracle.py::OracleRetriever` returns the
+  gold pages, for uniformity / a perfect-retrieval reference; reasoner oracle cells
+  still select via `OracleConditioner` (all gold pages, no top-k).
+
+**G2 retrieval stage-drift fixed + BGE-M3 inference arm (2026-07-10/11).**
+- **Retrieval benchmark is stage 1, before inference.** It was written *after* all
+  reasoner cells and rebuilt every method from raw retrievers; now it runs first
+  (gated on `config.text_retrievers`), persists each method's ranking to the shared
+  memo (`MemoizedRetriever`, `<cache>/retrieval/`), and the inference arms reuse
+  those rankings instead of ranking twice. `retrieval.jsonl` is written incrementally
+  (per method, flushed) instead of buffered to one `"w"` at the end.
+- **Inference text arm bm25 -> bge-m3** (G2 specs); the vision arm builds with
+  `allow_text_fallback=False` so a load failure is an honest miss, not a silent
+  order ranking. `build_retrievers` tolerates `none` arms (oracle / vision-less runs).
+
+**How this drifted from `pivot_v4.md` (folded, then deleted).** The pivot still
+framed three tasks (G1/G2/G3) with a `base` + `sweeps` YAML and G2-specific
+`retrieval:`/`inference:` blocks (pivot §7). The implementation went further toward
+the pivot's own "few tasks, one pipeline" principle: there is now exactly one task,
+and specs are flat and fully explicit (no fallbacks), which the pivot's staged
+plan did not describe. The pivot's science (cost-ordered ladder, bins, RQs,
+retrieval cost rungs, telemetry, answerable/unanswerable split, machine split = the
+retry) is unchanged and now lives in `README.md`; the code structure lives in
+`docs/AGENT_GUIDE.md`.
+
 **Per-sweep YAML expander wired (2026-07-10).** The nested `base` + `sweeps` (and G2
 `retrieval` / `inference`) form in `ops/specs/target_architecture.yaml` is now
 expanded end to end by `experiments/corpus/yaml_spec.py`: one flat `Spec` per sweep at

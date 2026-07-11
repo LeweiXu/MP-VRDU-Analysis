@@ -1,10 +1,7 @@
-# G2 smoke: retrieval benchmark + inference end-to-end on one V100 with the 2B
-# reasoner and one question per doc_type, small k. qwen3-embedding / colqwen3 may
-# OOM on 16 GB (their rows skip); TLV/V inference cells may OOM (graceful failure).
 task_name: G2_retrieval
-run_tag: g2-smoke
+run_tag: g2-retrieval-full
 dataset: [mmlongbench]
-corpus: {scan: any, pool: answerable, sampling: {per_doc_type: 1, seed: 0}}
+corpus: {scan: any, pool: answerable, sampling: full}
 parser_dpi: 200
 parser: [paddleocrvl]
 retrieval_representation: [T, V]

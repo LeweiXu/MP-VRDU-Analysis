@@ -1,22 +1,22 @@
-task_name: G1_oracle_ladder
-run_tag: g1-smoke
+task_name: G3_hallucination
+run_tag: g3-hallucination-full
 dataset: [mmlongbench]
-corpus: {scan: any, pool: all, sampling: full}
+corpus: {scan: any, pool: unanswerable, sampling: full}
 parser_dpi: 200
 parser: [paddleocrvl]
-retrieval_representation: [oracle]
+retrieval_representation: [T]
 text_retrievers: []
 vision_retrievers: []
 joints: []
-k_values: []
+k_values: [3]
 joint_k_values: []
-inference_text_retriever: none
+inference_text_retriever: bm25
 inference_vision_retriever: none
 inference_joint: false
 reasoner_spec: [qwen3vl-8b-local]
 quantization: [bf16]
 visual_resolution: [med]
 reasoner_representations: [T, TL, TLV, V]
-prompt_modes: [none]
-classifier: none
+prompt_modes: [none, generic, targeted]
+classifier: qwen3vl-2b-local
 judge_spec: stub

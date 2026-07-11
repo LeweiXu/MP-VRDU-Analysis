@@ -4,9 +4,12 @@ from."""
 
 from __future__ import annotations
 
+import logging
 import random
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+log = logging.getLogger("mpvrdu.corpus")
 
 # A task draws only from its pool, so a spec cannot cross-contaminate: the
 # hallucination task lives on the unanswerable questions, everything else on the
@@ -21,13 +24,75 @@ def pool_for_task(task_name: str) -> str:
 
 
 def filter_by_pool(corpus: Sequence[Any], pool: str) -> list[Any]:
-    """Keep only the answerable or unanswerable questions of a corpus."""
+    """Keep the answerable, unanswerable, or (`all`) both questions of a corpus."""
 
+    if pool in ("all", None, ""):
+        return list(corpus)
     if pool == "unanswerable":
         return [q for q in corpus if q.is_unanswerable]
     if pool == "answerable":
         return [q for q in corpus if not q.is_unanswerable]
-    raise ValueError(f"pool must be 'answerable' or 'unanswerable', got {pool!r}")
+    raise ValueError(f"pool must be 'all', 'answerable', or 'unanswerable', got {pool!r}")
+
+
+def auto_scan_labels(doc_ids, data_dir, csv_path) -> dict[str, str]:
+    """Map each doc_id to a PyMuPDF-detected `digital`/`scanned` label, cached to CSV.
+
+    Reads any existing `annotations/auto_scan.csv` (columns `doc_id,auto_scan`),
+    classifies only the doc_ids missing from it (via `data.render.classify_scanned`,
+    the same detector the annotation script uses), and writes the accumulated cache
+    back. A document whose PDF can't be resolved gets an empty label (matches no
+    filter).
+    """
+
+    import csv
+    from pathlib import Path
+
+    from data.loader import resolve_pdf
+    from data.render import classify_scanned
+
+    csv_path = Path(csv_path)
+    cache: dict[str, str] = {}
+    if csv_path.is_file():
+        with csv_path.open(newline="") as handle:
+            for row in csv.DictReader(handle):
+                doc_id = (row.get("doc_id") or "").strip()
+                if doc_id:
+                    cache[doc_id] = (row.get("auto_scan") or "").strip()
+
+    missing = [d for d in dict.fromkeys(doc_ids) if d not in cache]
+    for doc_id in sorted(missing):
+        try:
+            cache[doc_id] = classify_scanned(resolve_pdf(doc_id, data_dir)).label
+        except Exception as exc:  # noqa: BLE001 - an unresolvable PDF is an unknown label, not a crash
+            log.warning("auto-scan: could not classify %s: %s", doc_id, exc)
+            cache[doc_id] = ""
+
+    if missing:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with csv_path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["doc_id", "auto_scan"])
+            for doc_id in sorted(cache):
+                writer.writerow([doc_id, cache[doc_id]])
+    return cache
+
+
+def filter_by_scan(corpus: Sequence[Any], scan: str, *, data_dir, annotations_dir) -> list[Any]:
+    """Keep only questions whose document is `digital` or `scanned` (auto-detected).
+
+    Applied before the pool + sampling. `any` (or empty) is a no-op. The label comes
+    from `auto_scan_labels`, cached in `annotations/auto_scan.csv`.
+    """
+
+    from pathlib import Path
+
+    if scan in (None, "", "any"):
+        return list(corpus)
+    if scan not in ("digital", "scanned"):
+        raise ValueError(f"scan must be 'any', 'digital', or 'scanned', got {scan!r}")
+    labels = auto_scan_labels({q.doc_id for q in corpus}, data_dir, Path(annotations_dir) / "auto_scan.csv")
+    return [q for q in corpus if labels.get(q.doc_id) == scan]
 
 
 def _draw_documents(bin_questions: Sequence[Any], target: int | None, seed: int) -> set[str]:

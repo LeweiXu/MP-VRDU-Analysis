@@ -266,6 +266,8 @@ def config_from_spec(spec: Spec, *, smoke: bool = False):
     return ExperimentConfig(
         smoke=smoke,
         pool=str(spec.corpus.get("pool", "answerable")),
+        scan_filter=str(spec.corpus.get("scan", "any")),
+        sampling=spec.corpus.get("sampling", "full"),
         reasoner_spec=reasoner_spec,
         reasoner_specs=spec.reasoner_specs,
         representations=spec.reasoner_representations,
