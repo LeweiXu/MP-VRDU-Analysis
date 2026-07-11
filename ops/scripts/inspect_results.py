@@ -40,12 +40,12 @@ from config import ROOT, ExperimentConfig  # noqa: E402
 from data.loader import load_mmlongbench, resolve_pdf  # noqa: E402
 from data.render import render_pdf  # noqa: E402
 from experiments.engine.paths import experiment_paths  # noqa: E402
-from pipeline.orchestrator import CachedPrediction, PredictionCache  # noqa: E402
+from pipeline.orchestrator import PredictionCache  # noqa: E402
 from reporting.build import load_result_rows  # noqa: E402
-from schema import Question, ResultRow  # noqa: E402
+from schema import PredictionRow, Question, ResultRow  # noqa: E402
 
 
-def _cell_key(record: CachedPrediction | ResultRow) -> tuple[str, str, str, str]:
+def _cell_key(record: PredictionRow | ResultRow) -> tuple[str, str, str, str]:
     """Identity a prediction and its judged row share (independent of the judge)."""
 
     return (record.question_id, record.condition, record.representation, record.model_spec)
@@ -55,7 +55,7 @@ def _cell_key(record: CachedPrediction | ResultRow) -> tuple[str, str, str, str]
 class InspectItem:
     """One cached cell: the reasoner output, its question, and (if judged) the row."""
 
-    prediction: CachedPrediction
+    prediction: PredictionRow
     question: Question | None
     row: ResultRow | None  # judged result, present only after the judge phase ran
 
@@ -174,7 +174,7 @@ def _field_lines(obj: object) -> list[str]:
 def item_markdown(item: InspectItem, image_names: Iterable[str], image_prefix: str = "") -> str:
     """Build the markdown block for one cell (VSCode renders the local images).
 
-    Dumps *every* field from the generate phase (`CachedPrediction`) and the judge
+    Dumps *every* field from the generate phase (`PredictionRow`) and the judge
     phase (`ResultRow`), plus the question context, so nothing is hidden.
     """
 
@@ -203,7 +203,7 @@ def item_markdown(item: InspectItem, image_names: Iterable[str], image_prefix: s
         lines.append("**Question:** not found in the loaded corpus.")
         lines.append("")
 
-    lines.append("**Generate fields (predictions.jsonl / CachedPrediction):**")
+    lines.append("**Generate fields (predictions.jsonl / PredictionRow):**")
     lines.extend(_field_lines(prediction))
     lines.append("")
 

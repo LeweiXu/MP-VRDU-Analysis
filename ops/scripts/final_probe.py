@@ -236,7 +236,7 @@ def _tasks_output():
     base = CFG.paths.results_dir / "cache" / "v4" / "kaya-probe" / "full"
     status: list[str] = []
     for task in ("G1_oracle_ladder", "G2_retrieval", "G3_hallucination"):
-        rows = [__import__("json").loads(l) for l in (base / task / "results.jsonl").read_text().splitlines() if l.strip()]
+        rows = [__import__("json").loads(l) for l in (base / task / "predictions.jsonl").read_text().splitlines() if l.strip()]
         counts = Counter(r["status"] for r in rows)
         status.append(f"{task}={len(rows)}rows{dict(counts)}")
     if not (base / "G3_hallucination" / "classifier.jsonl").exists():
@@ -246,6 +246,18 @@ def _tasks_output():
 
 
 run_cmd("tasks.all(G1-G3)", ["ops.generate", "--spec", "ops/specs/kaya_probe.yaml", "--allow-unlabelled"], _tasks_output)
+
+
+# -- judge (stub): turn the probe run's predictions into results.jsonl -------
+
+def _results_written():
+    base = CFG.paths.results_dir / "cache" / "v4" / "kaya-probe" / "full"
+    for task in ("G1_oracle_ladder", "G2_retrieval", "G3_hallucination"):
+        assert (base / task / "results.jsonl").exists(), f"{task} results.jsonl missing after judge"
+    return "results.jsonl written for G1-G3"
+
+
+run_cmd("judge.stub(G1-G3)", ["ops.judge", "--spec", "ops/specs/kaya_probe.yaml", "--judge-spec", "stub"], _results_written)
 
 
 # -- resolution robustness (min vs full; distinct run_tags so they don't collide) --
@@ -259,7 +271,7 @@ def _res_run(preset, tag):
 def _vis_tokens(tag):
     import json
 
-    path = CFG.paths.results_dir / "cache" / "v4" / tag / "full" / "G1_oracle_ladder" / "results.jsonl"
+    path = CFG.paths.results_dir / "cache" / "v4" / tag / "full" / "G1_oracle_ladder" / "predictions.jsonl"
     rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     v = [r for r in rows if r["representation"] == "V" and r["status"] == "ok"]
     assert v, "no ok V-rung row"

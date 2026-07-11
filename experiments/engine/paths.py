@@ -151,7 +151,6 @@ class ExperimentPaths:
 
     root: Path
     predictions: Path
-    generate_results: Path
     results: Path
     side_dir: Path
     table_dir: Path
@@ -170,7 +169,6 @@ def experiment_paths(config: ExperimentConfig, name: str) -> ExperimentPaths:
     return ExperimentPaths(
         root=root,
         predictions=root / "predictions.jsonl",
-        generate_results=root / "generate_results.jsonl",
         results=root / "results.jsonl",
         side_dir=root,
         table_dir=config.paths.results_dir / "tables" / table_partition,
@@ -209,7 +207,6 @@ def write_phase_status(
         "mode": mode(config),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "predictions": str(paths.predictions),
-        "generate_results": str(paths.generate_results),
         "results": str(paths.results),
     }
     error_type = ""

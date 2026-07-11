@@ -35,7 +35,6 @@ ALLOWED_KEYS = {
     "reasoner_representations",
     "prompt_modes",
     "classifier",
-    "judge_spec",
 }
 
 
@@ -72,7 +71,6 @@ class Spec:
     reasoner_representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
     prompt_modes: tuple[str, ...] = ("none",)
     classifier: str | None = None
-    judge_spec: str | None = None
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -149,7 +147,6 @@ def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
     parser_dpi = int(raw.get("parser_dpi", 200))
     prompt_modes = tuple(raw.get("prompt_modes") or ("none",))
     classifier = _clean_none(raw.get("classifier"))
-    judge_spec = raw.get("judge_spec") or "stub"
 
     combos = [(ds, ps) for ds in datasets for ps in parsers]
     specs: list[Spec] = []
@@ -180,7 +177,6 @@ def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
             reasoner_representations=reps,
             prompt_modes=prompt_modes,
             classifier=classifier,
-            judge_spec=judge_spec,
         ))
     return specs
 
@@ -272,7 +268,6 @@ def config_from_spec(spec: Spec, *, smoke: bool = False):
         reasoner_specs=spec.reasoner_specs,
         representations=spec.reasoner_representations,
         retrieval_representation=spec.retrieval_representation,
-        judge_spec=spec.judge_spec or "stub",
         visual_resolution=spec.visual_resolutions[0] if spec.visual_resolutions else DEPLOYMENT_RESOLUTION,
         visual_resolutions=spec.visual_resolutions,
         k_values=spec.k_values or (1,),

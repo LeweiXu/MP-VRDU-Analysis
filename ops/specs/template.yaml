@@ -45,7 +45,6 @@ runs:
     reasoner_representations: [T, TL, TLV, V]
     prompt_modes: [none, generic, targeted]
     classifier: qwen3vl-2b-local              # none | <classifier reasoner spec>
-    judge_spec: stub                          # stub | <judge model spec>
 
   # ======================================================================== #
   # G1 - oracle ladder: reasoner over GOLD pages across the ladder, plus the
@@ -73,7 +72,6 @@ runs:
     reasoner_representations: [T, TL, TLV, V]
     prompt_modes: [none]
     classifier: none
-    judge_spec: stub
 
   # ======================================================================== #
   # G2 - retrieval: real retrievers select the pages (matched vision arm, cross
@@ -101,7 +99,6 @@ runs:
     reasoner_representations: [TLV, V]
     prompt_modes: [none]
     classifier: none
-    judge_spec: stub
 
   # ======================================================================== #
   # G3 - hallucination / prompting: unanswerable questions over a small
@@ -129,4 +126,3 @@ runs:
     reasoner_representations: [TLV]
     prompt_modes: [none, generic, targeted]
     classifier: qwen3vl-2b-local
-    judge_spec: stub

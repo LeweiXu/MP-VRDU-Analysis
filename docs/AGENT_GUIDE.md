@@ -47,10 +47,10 @@ agent-facing view: which file owns which paper-facing responsibility.
 | `pipeline/representation.py` | Stage B: the `T`/`TL`/`TLV`/`V` composer; the modality boundary (only `TLV`/`V` attach images). |
 | `pipeline/reasoner.py` | Stage C: `Reasoner` ABC (the swap point) + per-cell prompt instruction. |
 | `pipeline/judge.py` | Stage D: `StubJudge`, `GeminiJudge`, `GPT4oMiniJudge`. |
-| `pipeline/orchestrator.py` | Composes A→D per cell; owns the two cache layers + telemetry capture. |
+| `pipeline/orchestrator.py` | Composes the reasoner path (A→C) per cell into an unjudged `PredictionRow`; owns the cell caches + telemetry capture. |
 | `scoring/*` | `accuracy` (doc-level CI), `cost`, `frontier`, `retrieval`, `abstention`, `agreement` (judge-human κ). |
 | `experiments/tasks/` | The single spec-driven `Task` + the base ABC; `task_name` is a label, not a type. |
-| `experiments/engine/` | The generate/judge driver (robustness, `--failed-only`), side-artifact writers, cache/table paths + cell keys. |
+| `experiments/engine/` | The generate driver (robustness, `--failed-only`), side-artifact writers, cache/table paths + cell keys. |
 | `experiments/corpus/` | Question-set resolver + sampling; flat YAML spec loader. |
 | `experiments/registry.py` | Any `task_name` label → the unified `Task`. |
 | `reporting/build.py` | Task → table routing, cell grouping, build-time routing assembly; writes CSV + `.md`. |
@@ -91,14 +91,19 @@ InternVL / GPT / Gemini backend is a new registry entry, no pipeline change.
 
 ---
 
-## Caching contract (two layers, both under `results/cache/`)
+## Caching contract (two files, both under `results/cache/`)
 
-1. **`ResultCache`** — one `ResultRow` per cell, keyed by SHA-256 over
+1. **`PredictionCache`** (`predictions.jsonl`, written by generate) — one
+   `PredictionRow` per cell **including failures**, keyed by SHA-256 over
    `{question_id, doc_id, condition, representation, model_spec, page_indices,
-   visual_resolution, judge_spec}`. Idempotent and resumable from disk.
-2. **`PredictionCache`** (additive) — the reasoner output keyed the same way **minus
-   `judge_spec`**, so one prediction is scored by any judge without re-running the
-   model.
+   visual_resolution}` (no judge). Carries the answer, all covariates, telemetry, and
+   `status`/`skipped_reason`; no judging. Idempotent and resumable from disk.
+2. **`ResultCache`** (`results.jsonl`, written by the judge phase) — one `ResultRow`
+   per cell = the `PredictionRow` plus the judge verdict (`result_key`, `judge_spec`,
+   `score`, `correct`, `abstained`), keyed by the prediction key **plus `judge_spec`**.
+   `results.jsonl` is a strict superset of `predictions.jsonl` (failed cells pass
+   through unscored), and one prediction can be scored by any number of judges into
+   disjoint rows without re-running the model.
 
 Rules that make the two-machine model and the sweeps work:
 
@@ -113,7 +118,7 @@ Rules that make the two-machine model and the sweeps work:
   key and completes the *same* file — this is what makes the `--failed-only` retry
   a file copy, not a merge (README §13).
 - **`visual_resolution` is a per-cell axis**, part of both keys and stamped on
-  `ResultRow` / `CachedPrediction`; a lower-res image is a genuinely different
+  `ResultRow` / `PredictionRow`; a lower-res image is a genuinely different
   (lossier) input, so this is the honest identity. `IDENTITY_FIELDS` in reporting
   includes it and `resolution.build` pivots by the per-cell preset.
 
@@ -184,8 +189,9 @@ cache-key field: `qwen3vl-8b-local-4bit` / `-8bit`. `ModelSpec.parse` strips the
 trailing `-4bit`/`-8bit` into `ModelSpec.quantization` while `name` keeps the full
 string, so quantized runs get their own cache rows and `size` still resolves to
 `8b`. `get_reasoner` passes it to the backend (bitsandbytes 4-bit NF4 double-quant
-or 8-bit). `--quantization` must match between generate and judge. Mains run bf16;
-4-bit is single-GPU iteration plus a possible appendix quant-sensitivity row.
+or 8-bit). Judge reads the reasoner spec from the same `--spec`, so quantization
+matches generate automatically. Mains run bf16; 4-bit is single-GPU iteration plus a
+possible appendix quant-sensitivity row.
 
 ---
 

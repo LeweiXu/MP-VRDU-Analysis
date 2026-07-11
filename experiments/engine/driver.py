@@ -180,11 +180,11 @@ def _warm_parser_after_retrieval(config, pages, retrievers, free_gpu) -> None:
     free_gpu()
 
 
-def _failed_result_row(orchestrator, cell, exc, machine):
-    """Build a status row for a cell that raised, so it is data, not a hole."""
+def _failed_prediction_row(orchestrator, cell, exc, machine):
+    """Build a status `PredictionRow` for a cell that raised, so it is data, not a hole."""
 
     from pipeline.representation import get_representation
-    from schema import ResultRow
+    from schema import PredictionRow
 
     rep = get_representation(cell.representation) if isinstance(cell.representation, str) else cell.representation
     status, reason = classify_failure(exc)
@@ -193,16 +193,16 @@ def _failed_result_row(orchestrator, cell, exc, machine):
         pages, provenance, note = page_set.page_indices, page_set.provenance, page_set.note
     except Exception:
         pages, provenance, note = (), "", ""
-    prediction_key, result_key = orchestrator._keys(cell.question, cell.conditioner, rep.modality, pages)
+    prediction_key = orchestrator._prediction_key(cell.question, cell.conditioner, rep.modality, pages)
     q = cell.question
-    return ResultRow(
-        result_key=result_key, prediction_key=prediction_key, question_id=q.id, doc_id=q.doc_id,
+    return PredictionRow(
+        prediction_key=prediction_key, question_id=q.id, doc_id=q.doc_id,
         doc_type=q.doc_type, bin_label=q.bin_label, scan_label=q.scan_label, hop=q.hop,
         is_unanswerable=q.is_unanswerable, evidence_sources=q.evidence_sources,
         condition=cell.conditioner.name, provenance=provenance, page_indices=pages,
-        representation=rep.modality, model_spec=orchestrator.reasoner.spec, judge_spec=orchestrator.judge.spec,
+        representation=rep.modality, model_spec=orchestrator.reasoner.spec,
         machine=machine, status=status, skipped_reason=reason, oom_occurred=(status == "oom"),
-        answer="", score=0.0, correct=False, abstained=False, total_text_tokens=0, total_visual_tokens=0,
+        answer="", total_text_tokens=0, total_visual_tokens=0,
         text_tokens_fed=0, output_tokens=0, tokens_dropped=0, truncation_occurred=False,
         latency_s=0.0, prefill_latency_s=0.0, decode_latency_s=0.0, peak_vram_bytes=0,
         visual_resolution=orchestrator.visual_resolution, note=note, metadata={},
@@ -216,8 +216,8 @@ def _cell_identity(cell, spec, resolution) -> tuple:
     return (q.id, q.doc_id, cell.conditioner.name, _modality_of(cell), spec, resolution)
 
 
-def _prepare_failed_only(results_path) -> set[tuple]:
-    """Drop failed rows from a results file and return the cells to re-run.
+def _prepare_failed_only(predictions_path) -> set[tuple]:
+    """Drop failed rows from a predictions file and return the cells to re-run.
 
     Reads the existing rows, keeps the `ok` ones, rewrites the file with just
     those, and returns the identity of each dropped (failed) cell. Removing the
@@ -225,7 +225,7 @@ def _prepare_failed_only(results_path) -> set[tuple]:
     still cached would otherwise read straight back as a cache hit.
     """
 
-    path = Path(results_path)
+    path = Path(predictions_path)
     if not path.exists():
         return set()
     ok_rows: list[dict] = []
@@ -246,31 +246,30 @@ def _prepare_failed_only(results_path) -> set[tuple]:
 
 
 def generate(config, task, questions, *, limit=None, machine=None, failed_only=False):
-    """Run one task's cells to a scored row each, then its side work.
+    """Run one task's cells to an unjudged prediction row each, then its side work.
 
     A parse pre-pass warms the retrieval and render caches with the reasoner not
     yet loaded, then the retriever weights are freed before the reasoner loads, so
     parser/retriever/reasoner never share the GPU. Every cell writes exactly one
-    row (ok, or a status row on failure) via `run_cells`.
+    `PredictionRow` (ok, or a status row on failure) to `predictions.jsonl` via
+    `run_cells`; scoring is a separate judge phase.
     """
 
     from config import VISUAL_RESOLUTION_PRESETS
     from experiments.engine.paths import experiment_paths, free_gpu
     from models import get_reasoner
-    from pipeline.judge import StubJudge, get_judge
-    from pipeline.orchestrator import Orchestrator, PredictionCache, ResultCache, current_machine
+    from pipeline.orchestrator import Orchestrator, PredictionCache, current_machine
     from pipeline.reasoner import Reasoner
 
     machine = machine or current_machine()
     paths = experiment_paths(config, task.name)
     failed_ids: set[tuple] | None = None
     if failed_only:
-        failed_ids = _prepare_failed_only(paths.results)
+        failed_ids = _prepare_failed_only(paths.predictions)
         if not failed_ids:
             log.info("failed-only %s: no failed cells, nothing to retry", task.name)
             return
         log.info("failed-only %s: retrying %d failed cells", task.name, len(failed_ids))
-    result_cache = ResultCache(paths.results)
     prediction_cache = PredictionCache(paths.predictions)
     task_questions = list(task.resolve_questions(config, questions))
     if limit is not None:
@@ -313,8 +312,7 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
         # Pre-pass (resolution-independent): warm the render / retrieval / parser
         # caches once, with no reasoner resident. Resolution is a reasoner-side
         # downscale, so it does not change what gets rendered or parsed here.
-        prewarm = Orchestrator(config, reasoner=_SpecOnly(spec), judge=StubJudge("prewarm"),
-                               cache=result_cache, prediction_cache=prediction_cache)
+        prewarm = Orchestrator(config, reasoner=_SpecOnly(spec), prediction_cache=prediction_cache)
         parser_pages, seen_pages = [], set()
         for cell in base_cells:
             try:
@@ -343,16 +341,15 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
                 if not cells:
                     continue
             reasoner.max_pixels = VISUAL_RESOLUTION_PRESETS[resolution]
-            orchestrator = Orchestrator(config, reasoner=reasoner, judge=get_judge(config.judge_spec),
-                                        cache=result_cache, prediction_cache=prediction_cache,
+            orchestrator = Orchestrator(config, reasoner=reasoner, prediction_cache=prediction_cache,
                                         machine=machine, visual_resolution=resolution)
 
             def run_one(cell, _orch=orchestrator):
                 return _orch.run_cell(cell.question, cell.conditioner, cell.representation, cell.prompt_mode)
 
             def on_failure(cell, exc, _orch=orchestrator):
-                row = _failed_result_row(_orch, cell, exc, machine)
-                result_cache.put(row)
+                row = _failed_prediction_row(_orch, cell, exc, machine)
+                prediction_cache.put(row)
                 log.error("cell FAILED q=%s rep=%s res=%s: %s",
                           cell.question.id, cell.representation, _orch.visual_resolution, row.skipped_reason)
                 return row

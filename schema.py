@@ -1,5 +1,5 @@
 """Frozen data contracts (Question, PageSet, Page, Payload, Prediction, Score,
-ResultRow) and the per-cell telemetry every run records for one cell."""
+PredictionRow, ResultRow) and the per-cell telemetry every run records for one cell."""
 
 from __future__ import annotations
 
@@ -249,6 +249,134 @@ class Score:
     abstained: bool = False
     judge_spec: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PredictionRow:
+    """One cell's generation output plus per-cell telemetry, before any judging.
+
+    This is what the generate phase writes to `predictions.jsonl`, one per cell
+    regardless of outcome (a failed cell still writes a row with `status` in
+    {oom, error} and a `skipped_reason`). It is exactly a `ResultRow` minus the
+    judge-derived fields (`result_key`, `judge_spec`, `score`, `correct`,
+    `abstained`); the judge phase adds those to build the `ResultRow`, so
+    `results.jsonl` is a strict superset of `predictions.jsonl`.
+    """
+
+    prediction_key: str
+    # identity / provenance
+    question_id: str
+    doc_id: str
+    doc_type: str
+    bin_label: str
+    scan_label: str
+    hop: str
+    is_unanswerable: bool
+    evidence_sources: tuple[str, ...]
+    condition: str
+    provenance: str
+    page_indices: tuple[int, ...]
+    representation: str
+    model_spec: str
+    machine: str
+    status: str
+    skipped_reason: str
+    oom_occurred: bool
+    # answer (no judge verdict yet)
+    answer: str
+    # tokens (cap removed: fed must equal total; dropped is the zero-canary)
+    total_text_tokens: int
+    total_visual_tokens: int
+    text_tokens_fed: int
+    output_tokens: int
+    tokens_dropped: int
+    truncation_occurred: bool
+    # latency split
+    latency_s: float
+    prefill_latency_s: float
+    decode_latency_s: float
+    # memory
+    peak_vram_bytes: int
+    # the visual-resolution preset this cell was fed (part of the cell key)
+    visual_resolution: str = ""
+    note: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> str:
+        data = asdict(self)
+        data["page_indices"] = list(self.page_indices)
+        data["evidence_sources"] = list(self.evidence_sources)
+        return json.dumps(data, sort_keys=True)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PredictionRow":
+        data = dict(data)
+        data["page_indices"] = tuple(data.get("page_indices", ()))
+        data["evidence_sources"] = tuple(data.get("evidence_sources", ()))
+        return cls(**data)
+
+    def as_prediction(self) -> "Prediction":
+        """Rebuild the `Prediction` this row's answer + telemetry came from.
+
+        Lets a judge (or a prediction-cache hit) reuse the reasoner output without
+        re-running the model; `answer` maps back to `Prediction.text`.
+        """
+
+        return Prediction(
+            text=self.answer,
+            model_spec=self.model_spec,
+            total_text_tokens=self.total_text_tokens,
+            total_visual_tokens=self.total_visual_tokens,
+            text_tokens_fed=self.text_tokens_fed,
+            output_tokens=self.output_tokens,
+            latency_s=self.latency_s,
+            prefill_latency_s=self.prefill_latency_s,
+            decode_latency_s=self.decode_latency_s,
+            peak_vram_bytes=self.peak_vram_bytes,
+        )
+
+    def to_result_row(self, score: "Score", result_key: str) -> "ResultRow":
+        """Add the judge verdict to build the full `ResultRow` for a cell."""
+
+        return ResultRow(
+            result_key=result_key,
+            prediction_key=self.prediction_key,
+            question_id=self.question_id,
+            doc_id=self.doc_id,
+            doc_type=self.doc_type,
+            bin_label=self.bin_label,
+            scan_label=self.scan_label,
+            hop=self.hop,
+            is_unanswerable=self.is_unanswerable,
+            evidence_sources=self.evidence_sources,
+            condition=self.condition,
+            provenance=self.provenance,
+            page_indices=self.page_indices,
+            representation=self.representation,
+            model_spec=self.model_spec,
+            judge_spec=score.judge_spec,
+            machine=self.machine,
+            status=self.status,
+            skipped_reason=self.skipped_reason,
+            oom_occurred=self.oom_occurred,
+            answer=self.answer,
+            score=score.value,
+            correct=score.correct,
+            abstained=score.abstained,
+            total_text_tokens=self.total_text_tokens,
+            total_visual_tokens=self.total_visual_tokens,
+            text_tokens_fed=self.text_tokens_fed,
+            output_tokens=self.output_tokens,
+            tokens_dropped=self.tokens_dropped,
+            truncation_occurred=self.truncation_occurred,
+            latency_s=self.latency_s,
+            prefill_latency_s=self.prefill_latency_s,
+            decode_latency_s=self.decode_latency_s,
+            peak_vram_bytes=self.peak_vram_bytes,
+            visual_resolution=self.visual_resolution,
+            note=self.note,
+            metadata=dict(self.metadata),
+        )
 
 
 @dataclass(frozen=True)

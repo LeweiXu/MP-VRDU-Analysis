@@ -1,7 +1,7 @@
 """Post-generation health check: scan a spec's run_tags for failed or missing cells.
 
 Every cell writes exactly one row with a `status` (ok / oom / error), so after a
-generate run this reads the results.jsonl each run wrote and reports, per run_tag
+generate run this reads the predictions.jsonl each run wrote and reports, per run_tag
 and task, how many cells are ok vs oom vs error, plus (when the dataset is on hand)
 how many are missing versus expected. It exits nonzero if any task looks broken, so
 it can gate a run. Read-only: it never touches the caches.
@@ -33,7 +33,7 @@ DEFAULT_FAIL_RATE = 0.02
 
 
 def summarize_status(path: Path) -> tuple[Counter, Counter]:
-    """Return (status counts, failure-reason histogram) for one results.jsonl."""
+    """Return (status counts, failure-reason histogram) for one predictions.jsonl."""
 
     counts: Counter = Counter()
     reasons: Counter = Counter()
@@ -137,11 +137,11 @@ def main(argv: list[str] | None = None) -> int:
                     expected = None
 
             if model_specs:
-                if not paths.results.exists():
+                if not paths.predictions.exists():
                     counts, reasons = Counter(), Counter()
-                    label, note = "FAIL", "results.jsonl missing (task did not run)"
+                    label, note = "FAIL", "predictions.jsonl missing (task did not run)"
                 else:
-                    counts, reasons = summarize_status(paths.results)
+                    counts, reasons = summarize_status(paths.predictions)
                     label, note = verdict(counts, expected, args.fail_rate)
             else:
                 counts, reasons = Counter(), Counter()

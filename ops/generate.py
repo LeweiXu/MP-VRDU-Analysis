@@ -54,7 +54,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quantization", choices=("4bit", "8bit"), default=None)
     parser.add_argument("--visual-resolution", default=DEPLOYMENT_RESOLUTION,
                         help="resolution preset (low/med/high)")
-    parser.add_argument("--judge-spec", default="stub")
     parser.add_argument("--run-tag", default=None, help="per-run cache namespace (isolates a run's cells)")
     parser.add_argument("--limit", type=int, default=None, help="cap questions per task (smoke/debug)")
     parser.add_argument("--failed-only", action="store_true",
@@ -86,7 +85,6 @@ def main(argv: list[str] | None = None) -> int:
             reasoner_spec=args.reasoner_spec,
             quantization=args.quantization,
             visual_resolution=args.visual_resolution,
-            judge_spec=args.judge_spec,
             run_tag=args.run_tag,
         )
         runs = [(config, args.task, args.limit)]

@@ -10,9 +10,11 @@ Fixed mistakes in the two full specs and updated the README Kaya table to match:
   means it now needs **2 V100s** (was 1). README row updated to
   `--gres gpu:v100:2 --time 72:00:00`; that walltime will hit the partition cap, so
   expect to submit at the cap and resume from cache across submissions.
-- **G3 (`kaya_g3_full.yaml`):** `text_retrievers` [] → [bm25] so the T-representation
-  arm actually retrieves. Reasoner is unchanged (8B), so its GPU/walltime row in the
-  README is unchanged.
+- **G3 (`kaya_g3_full.yaml`):** `text_retrievers` stays `[]` (a brief `[bm25]` edit was
+  reverted: it tripped the "benchmark must include bge-m3+colqwen2.5" rule and the
+  benchmark is meaningless on unanswerable questions anyway). The T arm still retrieves
+  via `inference_text_retriever: bm25`; there is just no separate `retrieval.jsonl` for
+  G3. Reasoner is unchanged (8B), so its README GPU/walltime row is unchanged.
 
 Everything below is implemented and pytest is green (204). Nothing is git-committed
 yet: the whole refactor + the new specs live in the working tree. The three Kaya

@@ -5,7 +5,7 @@ corpus: {scan: any, pool: unanswerable, sampling: full}
 parser_dpi: 200
 parser: [paddleocrvl]
 retrieval_representation: [T]
-text_retrievers: [bm25]
+text_retrievers: []
 vision_retrievers: []
 joints: []
 k_values: [3]
@@ -19,4 +19,3 @@ visual_resolution: [med]
 reasoner_representations: [T, TL, TLV, V]
 prompt_modes: [none, generic, targeted]
 classifier: qwen3vl-2b-local
-judge_spec: stub

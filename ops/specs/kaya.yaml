@@ -25,7 +25,6 @@ runs:
     reasoner_representations: [T, TL, TLV, V]
     prompt_modes: [none]
     classifier: none
-    judge_spec: stub
 
   - task_name: G2_retrieval
     run_tag: g2
@@ -48,7 +47,6 @@ runs:
     reasoner_representations: [TLV, V]
     prompt_modes: [none]
     classifier: none
-    judge_spec: stub
 
   - task_name: G3_hallucination
     run_tag: g3
@@ -71,4 +69,3 @@ runs:
     reasoner_representations: [TLV]
     prompt_modes: [none, generic, targeted]
     classifier: qwen3vl-2b-local
-    judge_spec: stub

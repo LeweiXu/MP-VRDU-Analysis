@@ -22,4 +22,3 @@ visual_resolution: [med]
 reasoner_representations: [TLV]
 prompt_modes: [none, generic, targeted]
 classifier: qwen3vl-2b-local
-judge_spec: stub

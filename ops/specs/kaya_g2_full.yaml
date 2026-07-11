@@ -19,4 +19,3 @@ visual_resolution: [med]
 reasoner_representations: [TLV, V]
 prompt_modes: [none]
 classifier: none
-judge_spec: stub

@@ -1,4 +1,5 @@
-"""Composes the five stages of one cell and owns the two cache layers and telemetry capture."""
+"""Composes the reasoner stages of one cell, owns the jsonl cell caches (predictions
+written by generate, results by the judge phase), and captures per-cell telemetry."""
 
 from __future__ import annotations
 
@@ -6,22 +7,18 @@ import json
 import logging
 import os
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
 
 from config import DEFAULT_PROMPT_MODE, PROMPT_MODES, ExperimentConfig
 from data.loader import resolve_pdf
 from data.render import pdf_page_count, render_pdf
 from experiments.engine.paths import prediction_key as make_prediction_key
-from experiments.engine.paths import result_key as make_result_key
 from models import get_reasoner
 from models.payload import ModelInput
 from pipeline.conditioner import InputConditioner
-from pipeline.judge import Judge, StubJudge, get_judge
 from pipeline.reasoner import Reasoner
 from pipeline.representation import Representation, get_representation
-from schema import Page, PageSet, Prediction, Question, ResultRow, Score, tokens_dropped, truncation_occurred
+from schema import Page, PageSet, Prediction, PredictionRow, Question, ResultRow, tokens_dropped, truncation_occurred
 
 log = logging.getLogger("mpvrdu.orchestrator")
 
@@ -67,82 +64,30 @@ class ResultCache:
         return len(self._index)
 
 
-@dataclass(frozen=True)
-class CachedPrediction:
-    """A reasoner output plus its page provenance, keyed without the judge.
-
-    This is the durable record produced by the reasoner stage. It carries
-    everything a `ResultRow` needs from the reasoner path so a later judge-only
-    pass can rebuild the row without re-running the model.
-    """
-
-    prediction_key: str
-    question_id: str
-    doc_id: str
-    condition: str
-    representation: str
-    model_spec: str
-    provenance: str
-    page_indices: tuple[int, ...]
-    note: str
-    text: str
-    total_text_tokens: int
-    total_visual_tokens: int
-    text_tokens_fed: int
-    output_tokens: int
-    latency_s: float
-    prefill_latency_s: float
-    decode_latency_s: float
-    peak_vram_bytes: int
-    visual_resolution: str = ""
-
-    def to_json(self) -> str:
-        data = asdict(self)
-        data["page_indices"] = list(self.page_indices)
-        return json.dumps(data, sort_keys=True)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CachedPrediction":
-        data = dict(data)
-        data["page_indices"] = tuple(data.get("page_indices", ()))
-        return cls(**data)
-
-    def as_prediction(self) -> Prediction:
-        """Rebuild the frozen `Prediction` this record was serialised from."""
-
-        return Prediction(
-            text=self.text,
-            model_spec=self.model_spec,
-            total_text_tokens=self.total_text_tokens,
-            total_visual_tokens=self.total_visual_tokens,
-            text_tokens_fed=self.text_tokens_fed,
-            output_tokens=self.output_tokens,
-            latency_s=self.latency_s,
-            prefill_latency_s=self.prefill_latency_s,
-            decode_latency_s=self.decode_latency_s,
-            peak_vram_bytes=self.peak_vram_bytes,
-        )
-
-
 class PredictionCache:
-    """Append-only jsonl cache of reasoner outputs keyed without the judge."""
+    """Append-only jsonl cache of `PredictionRow`s keyed by prediction_key (no judge).
+
+    This is what the generate phase writes to `predictions.jsonl`: one row per cell
+    including failures, carrying everything a `ResultRow` needs except the judge
+    verdict, so the judge phase can rebuild the row without re-running the model.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
-        self._index: dict[str, CachedPrediction] = {}
+        self._index: dict[str, PredictionRow] = {}
         self._handle = None
         if self.path.exists():
             for line in self.path.read_text().splitlines():
                 line = line.strip()
                 if not line:
                     continue
-                record = CachedPrediction.from_dict(json.loads(line))
+                record = PredictionRow.from_dict(json.loads(line))
                 self._index[record.prediction_key] = record
 
-    def get(self, prediction_key: str) -> CachedPrediction | None:
+    def get(self, prediction_key: str) -> PredictionRow | None:
         return self._index.get(prediction_key)
 
-    def put(self, record: CachedPrediction) -> None:
+    def put(self, record: PredictionRow) -> None:
         if record.prediction_key in self._index:
             return
         self._index[record.prediction_key] = record
@@ -152,7 +97,7 @@ class PredictionCache:
         self._handle.write(record.to_json() + "\n")
         self._handle.flush()
 
-    def __iter__(self) -> Iterator[CachedPrediction]:
+    def __iter__(self) -> Iterator[PredictionRow]:
         return iter(self._index.values())
 
     def __len__(self) -> int:
@@ -160,23 +105,18 @@ class PredictionCache:
 
 
 class Orchestrator:
-    """Compose the pipeline for one cell, with the two cache layers."""
+    """Compose the reasoner path for one cell, writing an unjudged `PredictionRow`."""
 
     def __init__(
         self,
         config: ExperimentConfig,
         reasoner: Reasoner | None = None,
-        judge: Judge | None = None,
-        cache: ResultCache | None = None,
         prediction_cache: PredictionCache | None = None,
         machine: str | None = None,
         visual_resolution: str | None = None,
     ) -> None:
         self.config = config
         self.reasoner = reasoner if reasoner is not None else get_reasoner(config.reasoner_spec)
-        self.judge = judge if judge is not None else get_judge(config.judge_spec)
-        cache_path = config.paths.cache_dir / "orchestrator" / "results.jsonl"
-        self.cache = cache if cache is not None else ResultCache(cache_path)
         self.prediction_cache = prediction_cache
         self.machine = machine or current_machine()
         # The resolution this orchestrator feeds every cell; part of the cell key.
@@ -203,17 +143,12 @@ class Orchestrator:
 
     # -- keys -------------------------------------------------------------
 
-    def _keys(self, question: Question, conditioner: InputConditioner, modality: str,
-              page_indices: tuple[int, ...]) -> tuple[str, str]:
-        prediction_key = make_prediction_key(
+    def _prediction_key(self, question: Question, conditioner: InputConditioner, modality: str,
+                        page_indices: tuple[int, ...]) -> str:
+        return make_prediction_key(
             question.id, question.doc_id, conditioner.name, modality, self.reasoner.spec,
             page_indices, self.visual_resolution,
         )
-        result_key = make_result_key(
-            question.id, question.doc_id, conditioner.name, modality, self.reasoner.spec,
-            page_indices, self.judge.spec, self.visual_resolution,
-        )
-        return prediction_key, result_key
 
     # -- the run loop -----------------------------------------------------
 
@@ -237,7 +172,7 @@ class Orchestrator:
             representation = get_representation(representation, self.config.parser_tool, self.config.dpi)  # type: ignore[arg-type]
         page_set = conditioner.condition(question, self.page_count(question))
         if self.prediction_cache is not None:
-            prediction_key, _ = self._keys(question, conditioner, representation.modality, page_set.page_indices)
+            prediction_key = self._prediction_key(question, conditioner, representation.modality, page_set.page_indices)
             if self.prediction_cache.get(prediction_key) is not None:
                 return page_set
         self.render_pages(question, page_set)
@@ -249,13 +184,14 @@ class Orchestrator:
         conditioner: InputConditioner,
         representation: Representation | str,
         prompt_mode: str = DEFAULT_PROMPT_MODE,
-    ) -> ResultRow:
+    ) -> PredictionRow:
         """Run (or fetch from cache) one `(question, condition, representation)` cell.
 
-        `prompt_mode` selects the reasoner's instruction preamble; the cell's
-        condition name already carries the mode, so the mode is part of the cache
-        key. Setting it here (per cell) is what makes the same page set produce a
-        distinct cell under each prompt in the hallucination sweep.
+        Returns the cell's unjudged `PredictionRow`; scoring happens in a separate
+        judge phase. `prompt_mode` selects the reasoner's instruction preamble; the
+        cell's condition name already carries the mode, so the mode is part of the
+        cache key. Setting it here (per cell) is what makes the same page set
+        produce a distinct cell under each prompt in the hallucination sweep.
         """
 
         if isinstance(representation, str):
@@ -265,20 +201,37 @@ class Orchestrator:
         self.reasoner.prompt_instruction = PROMPT_MODES[prompt_mode]
 
         page_set = conditioner.condition(question, self.page_count(question))
-        prediction_key, result_key = self._keys(
+        prediction_key = self._prediction_key(
             question, conditioner, representation.modality, page_set.page_indices
         )
 
-        cached = self.cache.get(result_key)
-        if cached is not None:
-            return cached
+        if self.prediction_cache is not None:
+            cached = self.prediction_cache.get(prediction_key)
+            if cached is not None:
+                return cached
 
-        prediction = self._resolve_prediction(question, conditioner, representation, page_set, prediction_key)
-        score: Score = self.judge.score(question, prediction)
+        pages = self.render_pages(question, page_set)
+        payload = representation.build(pages)
+        model_input = ModelInput.from_payload(payload)
+        prediction: Prediction = self.reasoner.answer(question, model_input)
 
-        dropped = tokens_dropped(prediction.total_text_tokens, prediction.text_tokens_fed)
-        row = ResultRow(
-            result_key=result_key,
+        row = self._prediction_row(question, conditioner, representation, page_set, prediction, prediction_key)
+        if self.prediction_cache is not None:
+            self.prediction_cache.put(row)
+        return row
+
+    def _prediction_row(
+        self,
+        question: Question,
+        conditioner: InputConditioner,
+        representation: Representation,
+        page_set: PageSet,
+        prediction: Prediction,
+        prediction_key: str,
+    ) -> PredictionRow:
+        """Build the ok `PredictionRow` for a cell from its reasoner output."""
+
+        return PredictionRow(
             prediction_key=prediction_key,
             question_id=question.id,
             doc_id=question.doc_id,
@@ -293,20 +246,16 @@ class Orchestrator:
             page_indices=page_set.page_indices,
             representation=representation.modality,
             model_spec=prediction.model_spec or self.reasoner.spec,
-            judge_spec=score.judge_spec or self.judge.spec,
             machine=self.machine,
             status="ok",
             skipped_reason="",
             oom_occurred=False,
             answer=prediction.text,
-            score=score.value,
-            correct=score.correct,
-            abstained=score.abstained,
             total_text_tokens=prediction.total_text_tokens,
             total_visual_tokens=prediction.total_visual_tokens,
             text_tokens_fed=prediction.text_tokens_fed,
             output_tokens=prediction.output_tokens,
-            tokens_dropped=dropped,
+            tokens_dropped=tokens_dropped(prediction.total_text_tokens, prediction.text_tokens_fed),
             truncation_occurred=truncation_occurred(prediction.total_text_tokens, prediction.text_tokens_fed),
             latency_s=prediction.latency_s,
             prefill_latency_s=prediction.prefill_latency_s,
@@ -316,51 +265,3 @@ class Orchestrator:
             note=page_set.note,
             metadata={"source_dataset": question.raw_fields.get("source_dataset", self.config.dataset)},
         )
-        self.cache.put(row)
-        return row
-
-    def _resolve_prediction(
-        self,
-        question: Question,
-        conditioner: InputConditioner,
-        representation: Representation,
-        page_set: PageSet,
-        prediction_key: str,
-    ) -> Prediction:
-        """Return a prediction, using the prediction cache to skip the model."""
-
-        if self.prediction_cache is not None:
-            hit = self.prediction_cache.get(prediction_key)
-            if hit is not None:
-                return hit.as_prediction()
-
-        pages = self.render_pages(question, page_set)
-        payload = representation.build(pages)
-        model_input = ModelInput.from_payload(payload)
-        prediction: Prediction = self.reasoner.answer(question, model_input)
-
-        if self.prediction_cache is not None:
-            self.prediction_cache.put(
-                CachedPrediction(
-                    prediction_key=prediction_key,
-                    question_id=question.id,
-                    doc_id=question.doc_id,
-                    condition=conditioner.name,
-                    representation=representation.modality,
-                    model_spec=prediction.model_spec or self.reasoner.spec,
-                    provenance=page_set.provenance,
-                    page_indices=page_set.page_indices,
-                    note=page_set.note,
-                    text=prediction.text,
-                    total_text_tokens=prediction.total_text_tokens,
-                    total_visual_tokens=prediction.total_visual_tokens,
-                    text_tokens_fed=prediction.text_tokens_fed,
-                    output_tokens=prediction.output_tokens,
-                    latency_s=prediction.latency_s,
-                    prefill_latency_s=prediction.prefill_latency_s,
-                    decode_latency_s=prediction.decode_latency_s,
-                    peak_vram_bytes=prediction.peak_vram_bytes,
-                    visual_resolution=self.visual_resolution,
-                )
-            )
-        return prediction

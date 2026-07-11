@@ -22,7 +22,7 @@ envs/mpvrdu/bin/python -m pytest -q
 
 # generate (GPU, spec-driven) -> judge (needs a Gemini/OpenAI key in .env) -> build
 envs/mpvrdu/bin/python -m ops.generate --spec ops/specs/kaya.yaml
-envs/mpvrdu/bin/python -m ops.judge    --task all --judge-spec gemini-flash
+envs/mpvrdu/bin/python -m ops.judge    --spec ops/specs/kaya.yaml --judge-spec gemini-flash
 envs/mpvrdu/bin/python -m ops.build    --task all
 
 # tiny smoke: one question per doc_type, 2B model, one task (spec-driven)
@@ -201,18 +201,20 @@ same key and completes the same file.
 
 ### What a run writes to disk
 
-Each task writes two jsonl files under `results/cache/<run_tag>/<mode>/<task>/`:
+The **generate** phase writes one jsonl file; the **judge** phase writes the second,
+both under `results/cache/<run_tag>/<mode>/<task>/`:
 
-- **`predictions.jsonl`** is the reasoner output, one row per cell: the model's
-  answer text, which pages it saw, and cost telemetry (text/visual tokens, output
-  tokens, the prefill/decode latency split, peak VRAM). It is keyed *without* the
-  judge, so `ops.judge` can re-score it with a different judge and never re-run the
-  model.
-- **`results.jsonl`** is the fully-scored row: everything in the prediction plus
-  the judge verdict (`score`, `correct`, `abstained`, `judge_spec`), the document
-  bin/identity fields, and `status`/`skipped_reason` (a failed cell still writes
-  one row, marked `oom` or `error`). This is the file `check_run` and the table
-  builders read.
+- **`predictions.jsonl`** (written by `ops.generate`) is one row per cell,
+  **including failures**: the model's answer text, which pages it saw, the document
+  bin/identity fields, cost telemetry (text/visual tokens, output tokens, the
+  prefill/decode latency split, peak VRAM), and `status`/`skipped_reason` (a cell
+  that OOM'd or errored still writes a row, marked `oom` or `error`). It carries no
+  judging, so `ops.judge` can score it with any judge and never re-run the model.
+  This is the file `check_run` reads.
+- **`results.jsonl`** (written by `ops.judge`) is a **strict superset**: every
+  `predictions.jsonl` row plus the judge verdict (`result_key`, `judge_spec`,
+  `score`, `correct`, `abstained`). Failed cells pass through unscored (score 0),
+  so it stays one row per cell. This is the file the table builders read.
 
 Both files share one schema across every run, so a G2 row looks like a G1 row.
 What changes per run is the cells plus the **side artifacts** the run's config asks
@@ -226,12 +228,13 @@ twice. A run with a classifier configured writes `classifier.jsonl` after infere
 (the modality-bin classifier priced once over the answerable docs). In the
 canonical runs those are G2 (retrieval) and G3 (classifier).
 
-The **stub judge** (`judge_spec: stub`) is a cheap offline scorer, not a no-op: it
-counts a cell correct when the gold answer appears (case-insensitively) in the
-model's text and the model did not abstain, and for unanswerable questions when it
-*does* abstain. It runs through the same result-cache path as the real judges with
-no API call, so a stub run still produces a complete `results.jsonl` you can later
-re-judge with Gemini/GPT via `ops.judge`.
+The **stub judge** (`ops.judge --judge-spec stub`, the default) is a cheap offline
+scorer, not a no-op: it counts a cell correct when the gold answer appears
+(case-insensitively) in the model's text and the model did not abstain, and for
+unanswerable questions when it *does* abstain. It runs through the same judge path
+as the real judges with no API call, so `ops.judge --spec <spec> --judge-spec stub`
+produces a complete `results.jsonl` offline that you can later re-judge with
+Gemini/GPT (a different `--judge-spec` writes its own rows, keyed by judge).
 
 ## 2. The representation ladder (cost-ordered, not cumulative)
 
@@ -351,8 +354,9 @@ unanswerable — applied in `experiments/corpus/resolve.py::filter_by_pool`.
 
 ## 9. Telemetry (fixed schema, collected every run)
 
-Every cell writes **exactly one** `results.jsonl` row regardless of outcome, so a
-failure is data, not a hole. The schema is fixed once so results across every run
+Every cell writes **exactly one** `predictions.jsonl` row regardless of outcome (and
+one `results.jsonl` row after judging), so a failure is data, not a hole. The schema
+is fixed once so results across every run
 are comparable and placement (main paper vs appendix) can be decided after the
 data exists.
 

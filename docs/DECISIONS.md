@@ -10,6 +10,33 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**Generate/judge split: predictions.jsonl unjudged, results.jsonl is the judge's
+(2026-07-11).** Generate no longer scores inline. This supersedes the behaviour where
+`Orchestrator.run_cell` ran a (stub) judge and wrote a fully-scored `results.jsonl`
+while `predictions.jsonl` held only ok cells.
+- **Generate writes one unjudged file.** `run_cell` builds a new
+  `schema.PredictionRow` (answer + all covariates + telemetry + `status`, no judge) and
+  the driver writes it to `predictions.jsonl`, one row per cell **including failures**.
+  The inline judge, `ResultCache` in generate, and the `judge_spec` spec key are gone
+  (`judge_spec` dropped from `yaml_spec.py` and every `ops/specs/*.yaml`); `ops.generate`
+  lost its `--judge-spec` flag.
+- **`ops/judge.py` is now real** (was a no-op that logged counts). `--spec <yaml>`
+  resolves the run_tag + dataset, loads the corpus for gold answers, scores each ok
+  prediction with `--judge-spec` (stub default; gemini / gpt-4o-mini also), and writes
+  the full `ResultRow` to `results.jsonl`. Failed cells pass through unscored (score 0),
+  so `results.jsonl` is a **strict superset** of `predictions.jsonl`, row for row.
+  Deduped on `result_key`, so a second judge writes disjoint rows and re-judging is
+  resumable. Loop mirrors the retired `old/experiments/artifacts.py`.
+- **Frozen interfaces intact.** `PredictionRow` = `ResultRow` minus
+  `{result_key, judge_spec, score, correct, abstained}`;
+  `PredictionRow.to_result_row(score, result_key)` builds the judged row. `ResultRow`'s
+  shape and the `prediction_key` / `result_key` formulas are unchanged — only the
+  caching contract's *content* grew (predictions.jsonl now stores the richer
+  `PredictionRow`, replacing `CachedPrediction`; results.jsonl is written by judge, not
+  generate). Removed the dead `generate_results.jsonl` path.
+- **Fallout.** `check_run` reads `status` from `predictions.jsonl`; `inspect_results`
+  reads `PredictionRow`; `final_probe` runs a stub judge step before the table build.
+
 **Flat spec format + one unified spec-driven task (2026-07-11).** The generation
 layer was collapsed to a single mechanism, and `pivot_v4.md` is folded in here and
 deleted. This supersedes the "Per-sweep YAML expander (2026-07-10)" entry below.
