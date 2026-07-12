@@ -45,6 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--joint-ks", default="", help="override joint k values (default: the spec's)")
     parser.add_argument("--filename", default="retrieval_extra.jsonl",
                         help="benchmark output file beside the run (NOT retrieval.jsonl)")
+    parser.add_argument("--fresh", action="store_true",
+                        help="delete each method's memo first and re-rank the whole rung, so no "
+                             "rows are left over from an earlier run (e.g. mixing capped/uncapped)")
     parser.add_argument("--verbose", action="store_true")
     return parser
 
@@ -86,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         config, pool, paths.side_dir,
         single_ks=single_ks, joint_ks=joint_ks,
         text_methods=text_methods, vision_methods=vision_methods,
-        joint_pairs=joints, filename=args.filename,
+        joint_pairs=joints, filename=args.filename, fresh=args.fresh,
     )
     log.info("complete-retrieval: wrote %s; memo updated under %s",
              paths.side_dir / args.filename, config.paths.cache_dir / "retrieval")

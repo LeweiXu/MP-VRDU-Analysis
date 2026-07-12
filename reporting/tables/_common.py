@@ -11,15 +11,23 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from config import DEFAULT_BINS
 from scoring.accuracy import accuracy_summary
 from scoring.cost import cost_summary
 from scoring.frontier import RUNG_ORDER, FrontierCell, sufficiency_frontier
 
-# Bins in thesis order, plus the bucket unlabeled rows fall into (bins are blank
-# until the manual annotation pass fills annotations/doc_labels.csv).
-BIN_ORDER: tuple[str, ...] = DEFAULT_BINS
-UNLABELED = "(unlabeled)"
+# The tables group by the native mmlongbench doc_type label. These are the seven
+# classes the dataset ships; anything else (e.g. a longdocurl task tag) sorts after
+# them, and a blank doc_type falls into the `(unknown)` bucket.
+DOC_TYPE_ORDER: tuple[str, ...] = (
+    "Academic paper",
+    "Administration/Industry file",
+    "Brochure",
+    "Financial report",
+    "Guidebook",
+    "Research report / Introduction",
+    "Tutorial/Workshop",
+)
+UNKNOWN_DOC_TYPE = "(unknown)"
 
 # Identity of one cell (a prediction without its judge); used to collapse re-runs
 # and multi-judge history to a single row per cell before aggregating. Resolution
@@ -69,17 +77,17 @@ def load_ok_rows(path: str | Path) -> list[Any]:
     return [row for row in best.values() if getattr(row, "status", "") == "ok"]
 
 
-def bin_of(row: Any) -> str:
-    """The row's modality bin, bucketed to `(unlabeled)` when blank."""
+def doc_type_of(row: Any) -> str:
+    """The row's native doc_type label, bucketed to `(unknown)` when blank."""
 
-    return getattr(row, "bin_label", "") or UNLABELED
+    return getattr(row, "doc_type", "") or UNKNOWN_DOC_TYPE
 
 
-def ordered_bins(rows: Iterable[Any]) -> list[str]:
-    """Present bins in thesis order, unlabeled last."""
+def ordered_doc_types(rows: Iterable[Any]) -> list[str]:
+    """Present doc_types in the fixed order, any extras (then unknown) after."""
 
-    present = {bin_of(row) for row in rows}
-    ordered = [b for b in BIN_ORDER if b in present]
+    present = {doc_type_of(row) for row in rows}
+    ordered = [t for t in DOC_TYPE_ORDER if t in present]
     return ordered + sorted(present - set(ordered))
 
 

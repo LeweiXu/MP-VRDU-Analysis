@@ -57,87 +57,60 @@ A run narrows the corpus in three ordered stages (`corpus:` in the spec):
    `per_doc_type` caps to *exactly* N (can slice a document); `per_bin` keeps *whole*
    documents to *about* N. Both draw whole documents so document-level CIs stay valid.
 
-## Running the experiments on Kaya
+## Running the experiments
 
-Each experiment is one spec under `ops/specs/`. Submit generation to SLURM
-(non-blocking with `--no-wait`); 8B needs two V100s, 2B fits one. Tune `--time` to
-the corpus size (first-time page rasterization is slow, then cached).
+Each experiment is one spec under `ops/specs/`. A run has three stages, each its own
+entry point that shares the run's cache by `run_tag`: **generate** (GPU, on Kaya) ->
+**judge** (local, needs an API key) -> **build** (local, assembles the tables).
+
+### 1. Generate (Kaya)
+
+Submit generation to SLURM (non-blocking with `--no-wait`). 8B needs two V100s, 2B fits
+one; the job writes one `predictions.jsonl` row per cell (including failures), unjudged.
 
 ```bash
 envs/mpvrdu/bin/python -m ops.kaya.kaya submit --no-wait \
-  --gres gpu:v100:<N> --time <HH:MM:SS> ops/generate.py -- --spec ops/specs/<spec>.yaml
+  --gres gpu:v100:2 --time <HH:MM:SS> ops/generate.py -- --spec ops/specs/<spec>.yaml
 ```
 
-Walltimes below use the **observed** rate from the full runs: ~33 s per 8B reasoner
-cell on 2×V100, wall-clock, which already folds in prewarm (page render + parser OCR)
-and model load. It is slower than it looks because the V100 has no FlashAttention, so
-image cells (TLV/V) run the dense O(seq²) attention kernel at ~45-57 s each; the ~33 s
-average is lower only because text cells are quicker and OOM cells fail fast. Cell
-counts are for the full mmlongbench pool: 847 answerable (657 of them digital) and 244
-unanswerable. Scanned docs run ~1.2-1.5× slower than digital (OCR on scanned pages is
-the slow prewarm step).
+Size `--time` by cell count at roughly 33 s per 8B cell on 2×V100 (wall-clock, prewarm
+and model load included; scanned docs and image-heavy cells run slower). A timeout is
+safe: resubmitting the same spec resumes from cache, skipping done cells. Two V100
+caveats: there is no FlashAttention on these GPUs, so image-heavy G2 inference is far
+faster on the supervisor H100 (run the retrieval memo on Kaya, the inference on the
+H100); and big-context TLV/V cells OOM by design — they write `oom` rows, the job keeps
+going, and the supervisor finishes them with `--failed-only` (add `--skip-oom` on a
+resume so it does not re-parse cells already known to OOM). Check queue/node state with
+`ops.kaya.kaya status`.
 
-| Spec | Varies | ≈ cells | Suggested |
-|---|---|---|---|
-| `kaya_g1_representation_full.yaml` | the T/TL/TLV/V ladder (headline), 8B, scan:any | 847×4 ≈ 3.4k | `--gres gpu:v100:2 --time 36:00:00` |
-| `kaya_g1_resolution_full.yaml` | resolution low/med/high at TLV/V, 8B | 657×2×3 ≈ 3.9k | `--gres gpu:v100:2 --time 40:00:00` |
-| `kaya_g1_reasoner_full.yaml` | reasoner 2B / 4B / InternVL3-8B | 657×4×3 ≈ 7.9k | `--gres gpu:v100:2 --time 60:00:00` |
-| `kaya_g1_quantization_full.yaml` | quantization 8bit + 4bit, 8B | 657×4×2 ≈ 5.3k | `--gres gpu:v100:2 --time 60:00:00` |
-| `kaya_g2_full.yaml` | retrieval benchmark + inference (k∈{1,3,5}, joint {1,3}) | 847×2×3×3 ≈ 15k inf + stage-1 | inference does not finish on V100 — see below |
-| `kaya_g3_full.yaml` | hallucination prompts + classifier, 8B, 244 unanswerable | 244×4×3 ≈ 2.9k | `--gres gpu:v100:2 --time 36:00:00` |
+### 2. Judge (local)
 
-### Why V100 runs are slow, and what belongs on the H100
-
-Kaya has only V100s (16 GB, 2/node) and no FlashAttention for Qwen3-VL (sm_70), so
-attention always runs the dense O(seq²) math kernel. Per image cell that is ~45-57 s,
-and long-context cells (many retrieved pages, or dense `TL` layout JSON) both slow
-down and OOM. So:
-
-- 8B needs 2×V100 (device_map shards it); 2B fits one; quantized 8B fits one.
-- **G2 inference belongs on the supervisor H100.** At ~30-35 s/cell over ~15k
-  reduced-k image cells it is ~130 h on V100, which no Kaya wall covers. Complete the
-  retrieval memo on Kaya (one V100 is enough), but run G2 inference on the H100, where
-  FlashAttention makes image cells several times faster.
-- OOM cells are expected on big-context TLV/V (and high-k) cells: they write `oom`
-  rows, the job keeps going, and the supervisor finishes them with `--failed-only`.
-  On a resume that only needs to fill missing cells, pass `--skip-oom` so the job does
-  not re-render / re-parse pages for cells already known to OOM (leave those for the
-  supervisor sweep).
-
-If the partition caps walltime below these, submit at the cap: a timeout writes
-partial results and **resubmitting the same spec resumes from cache** (skips done
-cells) — as the G2 smoke did. Cells that OOM on a V100 write `oom` rows and the job
-keeps going; complete those on the supervisor by re-submitting with `--failed-only`
-(§13). After a run, `kaya.py pull`, then judge + build locally (`ops.judge` /
-`ops.build`).
-
-### Judging a finished run
-
-Generation writes only `predictions.jsonl` (the reasoner output, unjudged). Scoring is a
-separate phase you run **locally**: it needs a Gemini/OpenAI key in `.env`, and Kaya's
-compute nodes are offline. Point it at the same spec so it finds the run's cache by
-`run_tag`. For the finished G1 representation run:
+Generation does not score. Judging is a separate local phase (Kaya's compute nodes are
+offline); it needs a Gemini/OpenAI key in `.env` and the same spec, so it finds the run
+by `run_tag`.
 
 ```bash
-# 1. pull the finished run's predictions.jsonl back from Kaya
-envs/mpvrdu/bin/python -m ops.kaya.kaya pull
-
-# 2. score them into results.jsonl (stub is offline/instant; gemini-flash / gpt-4o-mini hit the API)
-envs/mpvrdu/bin/python -m ops.judge --spec ops/specs/kaya_g1_representation_full.yaml --judge-spec gemini-flash
+envs/mpvrdu/bin/python -m ops.kaya.kaya pull                                    # bring predictions back
+envs/mpvrdu/bin/python -m ops.judge --spec ops/specs/<spec>.yaml --judge-spec gemini-flash
 ```
 
-`ops.judge` reads `predictions.jsonl`, looks up each question's gold answer, and writes
-one `results.jsonl` row per prediction beside it (a strict superset: prediction + the
-`score`/`correct`/`abstained`/`judge_spec` verdict). It loads no models, so it is
-CPU-only and fast; the only limit is the judge API quota, so judge one run at a time and
-set `GEMINI_API_KEY_SECONDARY` in `.env` for the two-key fallback. Re-running with a
-different `--judge-spec` writes its own rows keyed by judge, so you can re-score without
-re-generating. The `--failed-only` OOM cells carry through unscored (they have no answer),
-so judge after those are completed if you want them in the tables.
+It reads `predictions.jsonl`, looks up each gold answer, and writes one `results.jsonl`
+row per prediction (a strict superset: prediction + `score`/`correct`/`abstained`/
+`judge_spec` verdict). It loads no models, so it is CPU-only; the only limit is the judge
+API quota, so judge one run at a time and set `GEMINI_API_KEY_SECONDARY` for the two-key
+fallback. Re-running with a different `--judge-spec` writes its own rows keyed by judge,
+so re-scoring never re-generates. Unscored `oom` cells (no answer) carry through, so
+judge again after the supervisor completes them if you want them in the tables.
 
-Then assemble tables with `ops.build --task <task-or-all>`. Note `ops.build` currently
-reads the **default (un-tagged) cache**, so building a run-tagged run needs the run's
-tag wired through `ops.build` first (a known gap); judging itself is unaffected.
+### 3. Build (local)
+
+Assemble the CSV/Markdown tables from `results.jsonl`. Pass the run's `--run-tag` so it
+reads that run's cache (omit it only for the un-tagged cache); tables group by the seven
+native mmlongbench doc_type classes.
+
+```bash
+envs/mpvrdu/bin/python -m ops.build --task <task-or-all> --run-tag <run_tag>
+```
 
 ---
 

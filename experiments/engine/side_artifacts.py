@@ -63,19 +63,28 @@ def write_retrieval_eval(
     vision_methods: Sequence[str] = _VISION_METHODS,
     joint_pairs: Sequence[tuple[str, str]] = _JOINT_PAIRS,
     filename: str = "retrieval.jsonl",
+    fresh: bool = False,
 ) -> None:
     """Write the RQ2 retrieval-accuracy ladder (page P/R/F1 + cost), no reasoner.
 
     Scores every method in `text_methods` + `vision_methods` at `single_ks`, plus the
     `joint_pairs` unions at `joint_ks`, one row per (question, method, k). Each row
     carries the per-query `retrieval_latency_s` and the method's amortized
-    `index_build_amortized_s`. Each method is built and scored independently so a
-    big-model OOM (Qwen3-Embedding-4B, ColQwen3-4B on a V100) loses only that method's
-    rows, not the whole artifact.
+    `index_build_amortized_s`.
+
+    Failures are isolated the way `predictions.jsonl` isolates cells: a method that
+    fails to *load* is skipped whole, but once loaded each question is ranked
+    independently, so a single OOM (a dense page on a V100) skips only that question
+    and the rest keep going. A failed question is recorded in the memo as a status row
+    (`status` + `skipped_reason`, no ranking) rather than silently dropped, and is left
+    out of the scored benchmark rows. `fresh=True` deletes each method's memo file
+    first, so the whole rung re-ranks under the current settings (no mixing, e.g.,
+    capped and uncapped rows).
     """
 
     from data.loader import resolve_pdf
     from data.render import pdf_page_count
+    from experiments.engine.driver import classify_failure
     from experiments.engine.paths import free_gpu
     from retrievers import MemoizedRetriever
     from retrievers.joint import union
@@ -111,36 +120,51 @@ def write_retrieval_eval(
         # Rank + score each single method and write its rows (then flush) as it
         # finishes, so a crash keeps every completed method's rows.
         for name, kind in [*((n, "text") for n in text_methods), *((n, "vision") for n in vision_methods)]:
+            if fresh:
+                (persist_dir / f"{name}__dpi{int(config.dpi)}.jsonl").unlink(missing_ok=True)
             try:
                 retriever = MemoizedRetriever(_build_retriever(config, name, kind), persist_dir=persist_dir)
-                rmap: dict[str, tuple[int, ...]] = {}
-                lmap: dict[str, float] = {}
-                for q in questions:
+            except Exception as exc:  # noqa: BLE001 - a model that will not load skips the whole method
+                log.warning("retrieval eval: method %s failed to build, skipping its rows: %s", name, exc)
+                free_gpu()
+                continue
+            rmap: dict[str, tuple[int, ...]] = {}
+            lmap: dict[str, float] = {}
+            for q in questions:
+                try:
                     rmap[q.id] = tuple(retriever.rank(q, page_counts[q.id]))
                     lmap[q.id] = float(getattr(retriever.inner, "last_query_s", 0.0))
-                idx = float(getattr(retriever.inner, "index_build_s", 0.0))
-                rankings[name] = rmap
-                latency[name] = lmap
-                index_build[name] = idx
-                for q in questions:
-                    for k in single_ks:
-                        _emit(handle, score_retrieval(
-                            q, rmap[q.id][:k], retriever=name, modality=modalities[name], k=k,
-                            retrieval_latency_s=lmap[q.id], index_build_amortized_s=idx))
-                handle.flush()
-                retriever.unload()
-            except Exception as exc:  # noqa: BLE001 - one method's failure must not sink the artifact
-                log.warning("retrieval eval: method %s failed, skipping its rows: %s", name, exc)
-            finally:
-                free_gpu()
+                except Exception as exc:  # noqa: BLE001 - one question's OOM must not sink the method
+                    status, reason = classify_failure(exc)
+                    log.warning("retrieval eval: %s failed on question %s (%s), recording it: %s",
+                                name, q.id, status, reason)
+                    retriever.persist_failure(q.id, page_counts[q.id], status, reason)
+                    free_gpu()
+            idx = float(getattr(retriever.inner, "index_build_s", 0.0))
+            rankings[name] = rmap
+            latency[name] = lmap
+            index_build[name] = idx
+            for q in questions:
+                if q.id not in rmap:
+                    continue
+                for k in single_ks:
+                    _emit(handle, score_retrieval(
+                        q, rmap[q.id][:k], retriever=name, modality=modalities[name], k=k,
+                        retrieval_latency_s=lmap[q.id], index_build_amortized_s=idx))
+            handle.flush()
+            retriever.unload()
+            free_gpu()
 
-        # Joint unions: emitted once both constituent methods have ranked.
+        # Joint unions: emitted once both constituent methods have ranked (a question
+        # missing from either side, e.g. one it OOM'd on, is skipped for the joint too).
         for tname, vname in joint_pairs:
             if tname not in rankings or vname not in rankings:
                 continue
             idx = index_build.get(tname, 0.0) + index_build.get(vname, 0.0)
             joint_name = f"{tname}|{vname}"
             for q in questions:
+                if q.id not in rankings[tname] or q.id not in rankings[vname]:
+                    continue
                 lat = latency[tname].get(q.id, 0.0) + latency[vname].get(q.id, 0.0)
                 for k in joint_ks:
                     merged = union(rankings[tname][q.id][:k], rankings[vname][q.id][:k])

@@ -25,10 +25,12 @@ BGE_M3_MODEL_ID = "BAAI/bge-m3"
 QWEN3_EMBEDDING_MODEL_ID = "Qwen/Qwen3-Embedding-4B"
 
 # Qwen3-Embedding-4B is fp16 (~8 GB) on one 16 GB V100, so the OOM is activation, not
-# weight, memory: batching long page-texts spikes past the ~8 GB headroom. Encode one
-# text at a time so the activation peak is a single sequence, with no length cap (full
-# page text is embedded, no truncation).
+# weight, memory. batch_size=1 bounds the batch dimension, but attention is O(seq^2) in
+# sequence length, so a single dense page (thousands of tokens) still spikes past the
+# ~8 GB headroom on its own forward pass. Cap the sequence length too: 4096 fits one
+# card at batch=1 with headroom, and only the rare very long page is truncated.
 QWEN3_ENCODE_BATCH = 1
+QWEN3_MAX_SEQ_LEN = 4096
 
 
 class Bm25Retriever(Retriever):
@@ -115,9 +117,14 @@ class DenseTextRetriever(Retriever):
         # Page embeddings are query-independent, so they are encoded once per
         # document and reused across every question and k.
         self._page_emb: dict[tuple[str, int], list[list[float]]] = {}
+        self._page_seq_stats: dict[tuple[str, int], dict | None] = {}
         # Retrieval cost (pivot 6.3): cumulative page-embed build time, last query time.
         self.index_build_s = 0.0
         self.last_query_s = 0.0
+        # Per-page token lengths + the embedder's truncation cap for the last ranked
+        # question, so the memo can record whether any page was truncated (None when
+        # the embedder exposes no tokenizer, e.g. bge-m3, or on the bm25 fallback).
+        self.last_seq_stats: dict | None = None
 
     def _load_embedder(self) -> Any:
         """Load the sentence embedder lazily (subclass-specific)."""
@@ -145,8 +152,35 @@ class DenseTextRetriever(Retriever):
         self._page_emb[key] = vectors
         return vectors
 
+    def _seq_stats(self, question: Question, page_texts: Sequence[str], page_count: int) -> dict | None:
+        """Per-page untruncated token lengths + the embedder's `max_seq_length` cap.
+
+        Returns None when the embedder exposes no HF tokenizer (e.g. bge-m3's wrapper).
+        Cached per document; the counts are the tokenizer's own, so they match what the
+        model truncates at `seq_len_cap`.
+        """
+
+        key = (question.doc_id, int(page_count))
+        if key in self._page_seq_stats:
+            return self._page_seq_stats[key]
+        embedder = self.embedder
+        tokenizer = getattr(embedder, "tokenizer", None) if embedder is not None else None
+        stats: dict | None = None
+        if tokenizer is not None:
+            cap = int(getattr(embedder, "max_seq_length", 0)) or None
+            lens = [len(ids) for ids in tokenizer(list(page_texts), truncation=False,
+                                                  add_special_tokens=True)["input_ids"]]
+            stats = {
+                "seq_len_cap": cap,
+                "page_token_lens": lens,
+                "truncated_pages": sum(1 for length in lens if cap and length > cap),
+            }
+        self._page_seq_stats[key] = stats
+        return stats
+
     def rank(self, question: Question, page_count: int) -> tuple[int, ...]:
         page_texts = self._page_texts(question, page_count)
+        self.last_seq_stats = None
         if not page_texts:
             self.last_query_s = 0.0
             return ()
@@ -154,6 +188,7 @@ class DenseTextRetriever(Retriever):
             # Page-embed build is timed inside _page_embeddings (index cost), so the
             # query timer below only covers the query encode + scoring.
             page_vectors = self._page_embeddings(question, page_texts, page_count)
+            self.last_seq_stats = self._seq_stats(question, page_texts, page_count)
             start = perf_counter()
             query_vectors = self._encode([question.question])
             if len(page_vectors) != len(page_texts) or not query_vectors:
@@ -161,6 +196,7 @@ class DenseTextRetriever(Retriever):
             scores = [cosine(query_vectors[0], v) for v in page_vectors]
             self.last_query_s = perf_counter() - start
         except Exception:
+            self.last_seq_stats = None
             if not self.allow_bm25_fallback:
                 raise
             start = perf_counter()
@@ -215,16 +251,19 @@ class Qwen3EmbeddingRetriever(DenseTextRetriever):
 
         # 4B in fp32 (SentenceTransformer's default) needs ~16 GB and OOMs a V100;
         # load in fp16 on GPU so it fits, and fall back to a plain CPU load if
-        # CUDA is absent (e.g. a login-node smoke). batch_size=1 (not a length cap)
-        # is what bounds the activation peak, so full page text is embedded.
+        # CUDA is absent (e.g. a login-node smoke). Cap the sequence length so a
+        # single dense page cannot spike attention memory past the fp16 weights.
         try:
             import torch
 
             if torch.cuda.is_available():
-                return SentenceTransformer(
+                model = SentenceTransformer(
                     self.model_id, device="cuda",
                     model_kwargs={"torch_dtype": torch.float16},
                 )
+                if getattr(model, "max_seq_length", 0) and model.max_seq_length > QWEN3_MAX_SEQ_LEN:
+                    model.max_seq_length = QWEN3_MAX_SEQ_LEN
+                return model
         except Exception:
             pass
         return SentenceTransformer(self.model_id)

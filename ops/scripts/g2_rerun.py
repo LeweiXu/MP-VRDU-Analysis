@@ -40,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="vision methods to complete in stage 1, for the joint (comma list)")
     parser.add_argument("--complete-filename", default="retrieval_qwen3.jsonl",
                         help="stage-1 benchmark output file (never retrieval.jsonl)")
+    parser.add_argument("--fresh-complete", action="store_true",
+                        help="pass --fresh to stage 1: wipe the completed methods' memos and re-rank "
+                             "the whole rung (so no rows are left over from an earlier run)")
     parser.add_argument("--verbose", action="store_true")
     return parser
 
@@ -62,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
             "--vision-methods", args.complete_vision_methods,
             "--joints", "matched",
             "--filename", args.complete_filename,
+            *(["--fresh"] if args.fresh_complete else []),
             *verbose,
         ])
         if rc != 0:

@@ -15,8 +15,15 @@ below and should not be kept as separate live files.
   cache) and so found nothing for a run-tagged generation; `--run-tag g1-representation-full`
   points `config.paths.cache_dir` at `results/cache/<run_tag>/…`. Verified end to end on
   the finished G1 representation `results.jsonl` (headline/parser/resolution/scale/routing/
-  composition tables assemble). Table `n` is the per-bin cell count (`len(bin_rows)`),
+  composition tables assemble). Table `n` is the per-group cell count (`len(rows)`),
   shared across builders; per-column accuracy still uses the per-rung counts.
+- **Tables now group by the native mmlongbench doc_type (7 classes), not the modality
+  bin.** `reporting/tables/_common.py`: `bin_of`/`ordered_bins`/`BIN_ORDER` became
+  `doc_type_of`/`ordered_doc_types`/`DOC_TYPE_ORDER` (Academic paper, Administration/
+  Industry file, Brochure, Financial report, Guidebook, Research report / Introduction,
+  Tutorial/Workshop; unknown last). The `bin` column across headline/parser/resolution/
+  matched_cross/retrieval_accuracy is renamed `doc_type`. The modality `bin_label` still
+  drives `per_bin` sampling and annotation; only the report grouping changed.
 - **`ops/kaya/kaya.py` (1200+ lines) split into an `ops/kaya/runner/` subpackage**, one
   module per slice: `config` (dataclasses/constants/quoting), `remote` (ssh exec + the
   prelude/env exports), `sync` (push/pull), `sources` (`# kaya:` headers + repo-local file
@@ -35,11 +42,29 @@ Three changes from sizing the full runs for the Kaya migration deadline:
   cuts that re-parse. It is the resume counterpart to `--failed-only` (which retries oom
   cells); do not pass both. `_oom_cell_ids` (unlike `_prepare_failed_only`) does not
   rewrite predictions.jsonl.
-- **qwen3-embedding encodes at batch_size=1 with no seq-length cap.** The earlier V100
-  OOM fix was `encode_batch_size=2` + `max_seq_length=4096`; that cap truncated long page
-  text. batch_size=1 alone bounds the activation peak (one sequence live), so full page
-  text is embedded with no truncation. Only affects the qwen3-embedding retrieval memo
-  build (stage 1), not inference (bge-m3 / colqwen2.5).
+- **qwen3-embedding encodes at `batch_size=1` + `max_seq_length=4096`.** First tried
+  `batch_size=1` with the cap removed (aiming for no truncation), but a memo-regen job
+  (1033382) OOM'd on a dense page after ~24 questions: batch=1 bounds the batch dimension,
+  but attention is O(seq^2), so one long page still spikes past the fp16 weights on its own
+  forward. Restored the 4096 cap (fits one V100 at batch=1 with headroom; only the rare
+  very long page truncates). Only affects the qwen3-embedding retrieval memo build (stage
+  1), not inference (bge-m3 / colqwen2.5). Dense-retriever memo rows now also carry
+  truncation telemetry (`seq_len_cap`, `page_token_lens`, `truncated_pages`) so you can see
+  which pages the cap clipped; the fields are additive (the memo loader ignores unknown
+  keys) and populate only for embedders exposing an HF tokenizer (qwen3-embedding, not
+  bge-m3's wrapper).
+- **Retrieval benchmark isolates failures per question, records them, and can rerun from
+  scratch.** `write_retrieval_eval` used a per-*method* try/except, so one question's OOM
+  dropped the whole method. Now a load failure still skips the method, but once loaded each
+  question is ranked independently: an OOM records a memo status row (`status` +
+  `skipped_reason`, empty `ranking`, written once via `MemoizedRetriever.persist_failure`)
+  and the loop continues; failed questions are left out of the scored rows. `fresh=True`
+  (`complete_retrieval --fresh`, `g2_rerun --fresh-complete`) deletes each method's memo
+  first so the rung re-ranks uniformly (no mixing capped/uncapped rows). On the inference
+  side, `build_retrievers(reuse_only=…)` (set on a `--skip-retrieval` pass) makes a memo
+  miss raise `RetrievalMemoMiss` instead of silently re-ranking, so the inference cell is
+  recorded as a failure (with the reason, carrying any earlier retrieval failure) and
+  rides on — keeping failures self-contained and rerunnable rather than guarding the run.
 - **README walltimes rebased on observed rate (~33 s/8B cell, wall-clock incl. prewarm),
   replacing the old ~18 s/cell guess that underestimated.** Added the V100 no-FlashAttention
   note and the recommendation to run G2 inference on the supervisor H100 (V100 image cells

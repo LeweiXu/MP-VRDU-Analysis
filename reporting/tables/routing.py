@@ -9,7 +9,7 @@ from typing import Any
 from scoring.accuracy import accuracy_summary
 from scoring.cost import cost_summary
 
-from ._common import Table, bin_of, frontier_rung, group_by
+from ._common import Table, doc_type_of, frontier_rung, group_by
 
 
 def _acc_pct(rows: Sequence[Any]) -> float:
@@ -21,12 +21,12 @@ def _latency_ms(rows: Sequence[Any]) -> float:
 
 
 def _oracle_rows(rows: Sequence[Any], *, margin_points: float) -> list[Any]:
-    """Rows the oracle policy would keep: each bin's frontier rung."""
+    """Rows the oracle policy would keep: each doc_type's frontier rung."""
 
     kept: list[Any] = []
-    for bin_rows in group_by(rows, bin_of).values():
-        chosen = frontier_rung(bin_rows, margin_points=margin_points)
-        kept += [r for r in bin_rows if getattr(r, "representation", "") == chosen]
+    for dt_rows in group_by(rows, doc_type_of).values():
+        chosen = frontier_rung(dt_rows, margin_points=margin_points)
+        kept += [r for r in dt_rows if getattr(r, "representation", "") == chosen]
     return kept
 
 
@@ -46,7 +46,7 @@ def build(rows: Sequence[Any], classifier_rows: Sequence[Any] = (), *, margin_po
     policies = [
         ("uniform_cheapest_T", by_rung.get("T", []), 0.0, ""),
         ("uniform_strongest_TLV", by_rung.get("TLV", []), 0.0, ""),
-        ("oracle_routing", routed, 0.0, "per-bin frontier rung"),
+        ("oracle_routing", routed, 0.0, "per-doc_type frontier rung"),
         ("predicted_routing", routed, clf_ms, "oracle rung choice + classifier latency"),
     ]
     columns = ["policy", "accuracy", "latency_ms", "note"]

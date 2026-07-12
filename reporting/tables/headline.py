@@ -1,4 +1,4 @@
-"""Cost-ordered representation ladder by bin: the headline accuracy frontier."""
+"""Cost-ordered representation ladder by doc_type: the headline accuracy frontier."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 from scoring.frontier import RUNG_ORDER
 
-from ._common import Table, acc_cell, bin_of, frontier_rung, group_by, ordered_bins
+from ._common import Table, acc_cell, doc_type_of, frontier_rung, group_by, ordered_doc_types
 
 
 def _present_rungs(rows: Sequence[Any], allowed: Sequence[str]) -> list[str]:
@@ -15,7 +15,7 @@ def _present_rungs(rows: Sequence[Any], allowed: Sequence[str]) -> list[str]:
     return [r for r in RUNG_ORDER if r in allowed and r in seen]
 
 
-def ladder_by_bin(
+def ladder_by_doc_type(
     rows: Sequence[Any],
     *,
     key: str,
@@ -25,34 +25,34 @@ def ladder_by_bin(
     with_frontier: bool = True,
     note: str = "",
 ) -> Table:
-    """Bin x rung accuracy grid, one row per bin, optional frontier column."""
+    """doc_type x rung accuracy grid, one row per doc_type, optional frontier column."""
 
     present = _present_rungs(rows, rungs)
-    columns = ["bin", *present]
+    columns = ["doc_type", *present]
     if with_frontier:
         columns.append("frontier")
     columns.append("n")
-    by_bin = group_by(rows, bin_of)
+    by_doc_type = group_by(rows, doc_type_of)
     table_rows: list[list[str]] = []
-    for b in ordered_bins(rows):
-        bin_rows = by_bin[b]
-        by_rung = group_by(bin_rows, lambda r: getattr(r, "representation", ""))
+    for dt in ordered_doc_types(rows):
+        dt_rows = by_doc_type[dt]
+        by_rung = group_by(dt_rows, lambda r: getattr(r, "representation", ""))
         cells = [acc_cell(by_rung.get(rung, [])) for rung in present]
-        row = [b, *cells]
+        row = [dt, *cells]
         if with_frontier:
-            row.append(frontier_rung(bin_rows, margin_points=margin_points) or "-")
-        row.append(str(len(bin_rows)))
+            row.append(frontier_rung(dt_rows, margin_points=margin_points) or "-")
+        row.append(str(len(dt_rows)))
         table_rows.append(row)
     return Table(key=key, title=title, columns=columns, rows=table_rows, note=note)
 
 
 def build(rows: Sequence[Any], *, margin_points: float = 3.0) -> Table:
-    """Headline table: oracle-page accuracy across the four rungs, per bin."""
+    """Headline table: oracle-page accuracy across the four rungs, per doc_type."""
 
     oracle = [r for r in rows if getattr(r, "condition", "") == "oracle"]
-    return ladder_by_bin(
+    return ladder_by_doc_type(
         oracle or rows,
         key="headline",
-        title="Headline: cost-ordered ladder accuracy by bin (oracle pages)",
+        title="Headline: cost-ordered ladder accuracy by doc_type (oracle pages)",
         margin_points=margin_points,
     )

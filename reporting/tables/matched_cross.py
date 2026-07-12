@@ -1,4 +1,4 @@
-"""Retrieval matched-versus-cross: accuracy by retrieval modality and bin, at the
+"""Retrieval matched-versus-cross: accuracy by retrieval modality and doc_type, at the
 TLV reasoning rung."""
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from ._common import Table, acc_cell, bin_of, group_by, ordered_bins
+from ._common import Table, acc_cell, doc_type_of, group_by, ordered_doc_types
 
 _COND = re.compile(r"(?:retrieved|similarity)_(?P<modality>text|vision|joint|bm25|bge|colqwen\w*)_k(?P<k>\d+)")
 
@@ -37,16 +37,16 @@ def build(rows: Sequence[Any]) -> Table:
     tagged = [(r, modality_of(r)) for r in rows]
     tagged = [(r, m) for r, m in tagged if m is not None]
     modalities = [m for m in ("text", "vision", "joint") if any(mm == m for _, mm in tagged)]
-    columns = ["bin", *modalities, "n"]
-    by_bin = group_by([r for r, _ in tagged], bin_of)
+    columns = ["doc_type", *modalities, "n"]
+    by_doc_type = group_by([r for r, _ in tagged], doc_type_of)
     table_rows: list[list[str]] = []
-    for b in ordered_bins([r for r, _ in tagged]):
-        bin_rows = by_bin[b]
-        cells = [acc_cell([r for r in bin_rows if modality_of(r) == m]) for m in modalities]
-        table_rows.append([b, *cells, str(len(bin_rows))])
+    for dt in ordered_doc_types([r for r, _ in tagged]):
+        dt_rows = by_doc_type[dt]
+        cells = [acc_cell([r for r in dt_rows if modality_of(r) == m]) for m in modalities]
+        table_rows.append([dt, *cells, str(len(dt_rows))])
     return Table(
         key="matched_cross",
-        title="Matched vs cross: accuracy by retrieval modality and bin (TLV)",
+        title="Matched vs cross: accuracy by retrieval modality and doc_type (TLV)",
         columns=columns,
         rows=table_rows,
     )

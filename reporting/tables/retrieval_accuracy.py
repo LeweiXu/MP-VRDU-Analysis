@@ -1,4 +1,4 @@
-"""Page-retrieval accuracy benchmark: precision/recall/F1 per method and bin,
+"""Page-retrieval accuracy benchmark: precision/recall/F1 per method and doc_type,
 from the retrieval side-artifact (covers methods never fed to the reasoner)."""
 
 from __future__ import annotations
@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from ._common import Table, bin_of, group_by
+from ._common import Table, doc_type_of, group_by
 
 
 def _mean(values: Sequence[float]) -> str:
@@ -14,22 +14,22 @@ def _mean(values: Sequence[float]) -> str:
 
 
 def build(retrieval_rows: Sequence[Any]) -> Table:
-    """One row per (retriever, k, bin): macro P/R/F1 over its questions."""
+    """One row per (retriever, k, doc_type): macro P/R/F1 over its questions."""
 
-    columns = ["retriever", "modality", "k", "bin", "P", "R", "F1", "n"]
+    columns = ["retriever", "modality", "k", "doc_type", "P", "R", "F1", "n"]
     by_group = group_by(
         retrieval_rows,
-        lambda r: (getattr(r, "retriever", ""), getattr(r, "modality", ""), int(getattr(r, "k", 0)), bin_of(r)),
+        lambda r: (getattr(r, "retriever", ""), getattr(r, "modality", ""), int(getattr(r, "k", 0)), doc_type_of(r)),
     )
     table_rows: list[list[str]] = []
-    for (retriever, modality, k, b) in sorted(by_group, key=lambda t: (t[0], t[1], t[2], t[3])):
-        group = by_group[(retriever, modality, k, b)]
+    for (retriever, modality, k, dt) in sorted(by_group, key=lambda t: (t[0], t[1], t[2], t[3])):
+        group = by_group[(retriever, modality, k, dt)]
         table_rows.append(
             [
                 retriever,
                 modality,
                 str(k),
-                b,
+                dt,
                 _mean([float(getattr(r, "precision", 0.0)) for r in group]),
                 _mean([float(getattr(r, "recall", 0.0)) for r in group]),
                 _mean([float(getattr(r, "f1", 0.0)) for r in group]),
@@ -38,7 +38,7 @@ def build(retrieval_rows: Sequence[Any]) -> Table:
         )
     return Table(
         key="retrieval_accuracy",
-        title="Retrieval accuracy: page P/R/F1 by method and bin",
+        title="Retrieval accuracy: page P/R/F1 by method and doc_type",
         columns=columns,
         rows=table_rows,
     )

@@ -107,11 +107,15 @@ import logging  # noqa: E402
 log = logging.getLogger("mpvrdu.driver")
 
 
-def build_retrievers(config):
+def build_retrievers(config, *, reuse_only: bool = False):
     """The text + vision retrievers the inference stage feeds the reasoner, memoized
     and lazily loaded. Which arm is which comes from the spec
     (`inference_text_retriever` / `inference_vision_retriever`, default bm25 /
     colqwen2.5); the full six-method benchmark lives in the retrieval side-artifact.
+
+    `reuse_only` (set on a `--skip-retrieval` pass) forbids re-ranking a memo miss: a
+    question absent from the memo raises `RetrievalMemoMiss` so its inference cell is
+    recorded as a failure rather than silently loading the retriever to re-rank.
     """
 
     from experiments.tasks.base import Retrievers
@@ -137,8 +141,8 @@ def build_retrievers(config):
         return get_vision_retriever(config.inference_vision_retriever, allow_text_fallback=False, **kwargs)
 
     return Retrievers(
-        text=MemoizedRetriever(_text_arm(), persist_dir=persist_dir),
-        vision=MemoizedRetriever(_vision_arm(), persist_dir=persist_dir),
+        text=MemoizedRetriever(_text_arm(), persist_dir=persist_dir, reuse_only=reuse_only),
+        vision=MemoizedRetriever(_vision_arm(), persist_dir=persist_dir, reuse_only=reuse_only),
     )
 
 
@@ -336,7 +340,9 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
             log.warning("generate %s: --skip-retrieval but no retrieval memo at %s; "
                         "inference will re-rank (load retrievers)", task.name, memo)
 
-    retrievers = build_retrievers(config)
+    # On a memo-reuse pass (--skip-retrieval) the inference retrievers must not re-rank a
+    # missing/failed memo cell; instead the cell fails with a clear reason and rides on.
+    retrievers = build_retrievers(config, reuse_only=skip_retrieval)
 
     class _SpecOnly(Reasoner):
         def __init__(self, spec):

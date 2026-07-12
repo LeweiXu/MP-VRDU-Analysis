@@ -176,6 +176,14 @@ class StubRetriever(Retriever):
         return tuple(range(min(int(k), page_count)))
 
 
+class RetrievalMemoMiss(RuntimeError):
+    """A reuse-only memoized retriever was asked for a question its memo lacks.
+
+    Raised so the inference cell records this as its failure reason (and rides on)
+    instead of the retriever silently re-ranking on a `--skip-retrieval` pass.
+    """
+
+
 class MemoizedRetriever(Retriever):
     """Cache a retriever's full ranking per (question, page count), slice per `k`.
 
@@ -184,14 +192,22 @@ class MemoizedRetriever(Retriever):
     `persist_dir` the full rankings are also written to disk keyed by the
     retriever name and dpi, so a later process (a failed-only re-run, or a task
     reusing another's retrieval) reads them back instead of recomputing.
+
+    `reuse_only` makes a memo miss raise `RetrievalMemoMiss` rather than re-ranking,
+    for an inference pass meant to consume an existing memo (`--skip-retrieval`).
     """
 
-    def __init__(self, inner: Retriever, *, persist_dir: Path | str | None = None) -> None:
+    def __init__(self, inner: Retriever, *, persist_dir: Path | str | None = None,
+                 reuse_only: bool = False) -> None:
         self.inner = inner
         self.name = inner.name
         self.modality = getattr(inner, "modality", "")
         self.dpi = int(getattr(inner, "dpi", 0))
+        self.reuse_only = bool(reuse_only)
         self._cache: dict[tuple[str, int], tuple[int, ...]] = {}
+        # Questions recorded as failed (a status row, no ranking) -> the reason; tracked
+        # so a failure is written once and its reason can be surfaced on a reuse miss.
+        self._failed: dict[tuple[str, int], str] = {}
         self._persist_path: Path | None = None
         if persist_dir is not None:
             self._persist_path = Path(persist_dir) / f"{self.name}__dpi{self.dpi}.jsonl"
@@ -205,24 +221,61 @@ class MemoizedRetriever(Retriever):
             if not line:
                 continue
             record = json.loads(line)
-            self._cache[(record["question_id"], int(record["page_count"]))] = tuple(record["ranking"])
+            key = (record["question_id"], int(record["page_count"]))
+            if record.get("status", "ok") != "ok":
+                self._failed[key] = record.get("skipped_reason", "")  # no valid ranking to cache
+                continue
+            self._cache[key] = tuple(record["ranking"])
 
-    def _persist(self, question_id: str, page_count: int, ranking: tuple[int, ...]) -> None:
+    def _persist(self, question_id: str, page_count: int, ranking: tuple[int, ...],
+                 seq_stats: dict | None = None) -> None:
+        if self._persist_path is None:
+            return
+        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+        row = {"question_id": question_id, "page_count": int(page_count), "ranking": list(ranking)}
+        if seq_stats:
+            # Truncation telemetry from a dense text retriever; extra keys are ignored
+            # by _load_persisted, so this is additive.
+            row.update(seq_stats)
+        with self._persist_path.open("a") as handle:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+    def persist_failure(self, question_id: str, page_count: int, status: str, reason: str) -> None:
+        """Record a question the inner retriever could not rank (e.g. an OOM) as a memo
+        row carrying `status` + `skipped_reason`, mirroring a failed predictions cell.
+
+        Written once per (question, page count): a question already ranked or already
+        recorded as failed is left alone, so repeated resumes do not pile up rows.
+        """
+
+        key = (question_id, int(page_count))
+        if key in self._cache or key in self._failed:
+            return
+        self._failed[key] = reason
         if self._persist_path is None:
             return
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
         with self._persist_path.open("a") as handle:
             handle.write(json.dumps(
-                {"question_id": question_id, "page_count": int(page_count), "ranking": list(ranking)},
+                {"question_id": question_id, "page_count": int(page_count),
+                 "ranking": [], "status": status, "skipped_reason": reason},
                 sort_keys=True,
             ) + "\n")
 
     def rank(self, question: Question, page_count: int) -> tuple[int, ...]:
         key = (question.id, int(page_count))
         if key not in self._cache:
+            if self.reuse_only:
+                earlier = self._failed.get(key)
+                detail = f"retrieval failed earlier: {earlier}" if earlier else "no ranking in the retrieval memo"
+                raise RetrievalMemoMiss(
+                    f"{self.name}: {detail} for question {question.id} "
+                    f"(reuse-only, e.g. --skip-retrieval; complete the memo or drop --skip-retrieval)"
+                )
             ranking = tuple(self.inner.rank(question, int(page_count)))
             self._cache[key] = ranking
-            self._persist(question.id, int(page_count), ranking)
+            self._persist(question.id, int(page_count), ranking,
+                          seq_stats=getattr(self.inner, "last_seq_stats", None))
         return self._cache[key]
 
     def retrieve(self, question: Question, page_count: int, k: int) -> tuple[int, ...]:
