@@ -1,93 +1,117 @@
-# Handoff (2026-07-11): flat-spec refactor done, smokes green, experiments ready
+# Handoff (2026-07-12): generate/judge split shipped, Kaya generation in flight
 
-## Update (2026-07-11): G2/G3 specs corrected, README run-times refreshed
+## Code state
 
-Fixed mistakes in the two full specs and updated the README Kaya table to match:
+- **Committed (`6064117` "results generation unification" + `8d0bb6a`): the generate/judge
+  split.** Generate now writes only `predictions.jsonl` (one `PredictionRow` per cell,
+  including failures, no judging). `ops.judge --spec <yaml> --judge-spec <stub|gemini-flash|gpt-4o-mini>`
+  reads it and writes `results.jsonl` (= every prediction row plus the verdict; a strict
+  superset). `judge_spec` was removed from all specs; `ResultRow` shape and the cache keys
+  are unchanged. Top entry in `docs/DECISIONS.md` has the details.
+- **Uncommitted (working tree): the Kaya pre-submission preflight.**
+  `ops/scripts/preflight.py` plus `kaya submit` wiring that auto-runs it on the login node
+  for any spec-driven submit (`--no-preflight` skips), plus `tests/test_preflight.py` and
+  KAYA guide updates. It checks: spec parses, pipeline imports, dataset loads + corpus
+  resolves (reports question/cell counts), every reasoner/retriever/classifier weight is
+  staged offline, parser env exists, and a soft `--gres` sizing hint. Full suite is 215 green.
 
-- **G2 (`kaya_g2_full.yaml`):** reasoner is now `qwen3vl-8b-local` (was 2B),
-  `k_values` [1,3] → [1,3,5,7,10], `joint_k_values` [1,3] → [1,3,5]. Since inference
-  loops over `k_values` (task.py), the reasoner cell count jumped ~9.6k → ~24k, and 8B
-  means it now needs **2 V100s** (was 1). README row updated to
-  `--gres gpu:v100:2 --time 72:00:00`; that walltime will hit the partition cap, so
-  expect to submit at the cap and resume from cache across submissions.
-- **G3 (`kaya_g3_full.yaml`):** `text_retrievers` stays `[]` (a brief `[bm25]` edit was
-  reverted: it tripped the "benchmark must include bge-m3+colqwen2.5" rule and the
-  benchmark is meaningless on unanswerable questions anyway). The T arm still retrieves
-  via `inference_text_retriever: bm25`; there is just no separate `retrieval.jsonl` for
-  G3. Reasoner is unchanged (8B), so its README GPU/walltime row is unchanged.
+## Kaya jobs in flight (as of Sun 2026-07-12 ~10:00 node time)
 
-Everything below is implemented and pytest is green (204). Nothing is git-committed
-yet: the whole refactor + the new specs live in the working tree. The three Kaya
-smokes passed end to end. The six real experiment specs are written and verified.
+All are 8B qwen3vl, 2xV100, med resolution. The OOM failures are the expected V100 pressure
+on the big-context TLV/V cells (all CUDA OOM, zero real errors); they are marked `oom`, the
+job keeps going, and they get completed later on the supervisor via `--failed-only`.
 
-## What changed (trust the code + docs/DECISIONS.md, not old prose)
+| Job | spec | wall | cells | progress |
+|---|---|---|---|---|
+| 1028727 | `kaya_g1_representation_full` | 24h | 2,628 | ~60% (1481 ok / 106 oom), finishes ~Sun evening |
+| 1028725 | `kaya_g3_full` | 24h | 2,928 | ~42% (1122 ok / 99 oom), will not clear the wall |
+| 1028729 | `kaya_g2_full` | 72h | 25,410 inf | stage-1 done, inference not started (see below) |
 
-- **One spec-driven task.** `G1OracleLadder`/`G2Retrieval`/`G3Hallucination` are gone;
-  `experiments/tasks/task.py::Task` is the only generation task. `task_name` is a
-  label (cache dir + parallel job), not a type. Behaviour comes from the config.
-- **Flat spec format** (`experiments/corpus/yaml_spec.py`): no `base`, no `sweeps`, no
-  `task`. Every run lists the full variable set under a `task_name`; a list axis is
-  the set of values to run over (cross-product). `dataset`/`parser` expand to one
-  run_tag each; `reasoner_spec` x `quantization` fold into `reasoner_specs`;
-  `visual_resolution` -> driver-looped list; reps/k/prompt_modes are cell dimensions.
-  `ops/specs/template.yaml` is the reference menu + three worked tasks.
-- **Corpus is a 3-stage funnel** (`corpus:` block, applied in `Task.resolve_questions`):
-  `scan` (document: any/digital/scanned, PyMuPDF auto-detect cached to
-  `annotations/auto_scan.csv`) -> `pool` (question: answerable/unanswerable/all) ->
-  `sampling` (full / per_doc_type / per_bin / limit / ids). All five sampling
-  strategies are wired (via `resolve.resolve_corpus`).
-- **G2 stage-drift fixed (Phase 1):** the retrieval benchmark runs as stage 1 before
-  inference, persists rankings to the shared memo (`<cache>/retrieval/`), and the
-  inference arms reuse them; `retrieval.jsonl` is written incrementally. Inference
-  text arm is **bge-m3** (was bm25); vision arm has fallbacks off.
-- **Oracle is a retriever** (`retrievers/oracle.py`); oracle cells still select via
-  `OracleConditioner` (all gold pages).
-- **Docs:** `pivot_v4.md` folded into `docs/DECISIONS.md` and deleted; `README.md` and
-  `docs/AGENT_GUIDE.md` updated to the code. README now has the sampling explanation
-  and the Kaya run commands + walltimes.
+**G2 detail.** The stage-1 retrieval benchmark is effectively complete: `retrieval.jsonl`
+has 26,257 rows (bm25, bge-m3, colmodernvbert, colqwen2.5, colqwen3, plus 2 joints).
+qwen3-embedding-4B OOM'd, so its rows and the qwen3-embedding|colqwen3 joint are absent
+(known casualty of the 4B embedder on a 16 GB V100). The job is now in the inference
+parser/render pre-pass (confirmed alive: parser markdown being written). Inference is 25,410
+cells and will not finish in 72h. **User decision: leave it running; the supervisor finishes
+it in full if the wall is not enough.**
 
-## Kaya smokes (all COMPLETED, 1 V100, 2B, per_doc_type:1)
+## Deadline: Kaya down Fri 2026-07-17 17:00 for migration
 
-- G1 `1028085` COMPLETED (9m) — oracle ladder; a few TL/TLV cells OOM'd and the job
-  continued gracefully (this is expected and desired).
-- G3 `1028088` COMPLETED (22m).
-- G2 `1028087` TIMEOUT at 1h (clean, no critical errors), **resumed** from cache as
-  `1028586` COMPLETED (27m). Confirms cache-resume works.
+Everything must be generated (ideally judged + built) by then. Runway from Sun ~10:00 is
+about 127h. Per task:
 
-Cache layout: `results/cache/<run_tag>/<smoke|full>/<task_name>/{predictions,results}.jsonl`
-+ `results/cache/<run_tag>/retrieval/` (memo). `results/` is rsync-excluded, so the
-remote cache survives pushes.
+- **G1 representation:** finishes on its own ~Sun evening, then `--failed-only` on the
+  supervisor for the 106 OOM cells.
+- **G3:** let it hit the 24h wall (do NOT cancel now, requeue risk), then resubmit the same
+  spec. It resumes from the ~1,200 cached cells and runs the classifier side artifact.
+  Then `--failed-only` on the supervisor for the OOMs.
+- **G2:** as above, the supervisor completes it if 72h is short.
 
-## How to run the real experiments
+## Additional G1 sub-experiments to submit (Kaya is relatively free)
 
-See README "Running the experiments on Kaya" for the six specs, submit commands, and
-walltimes. Short version: `ops.kaya.kaya submit --no-wait --gres gpu:v100:<N> --time
-<H> ops/generate.py -- --spec ops/specs/<spec>.yaml` (8B needs 2 V100s, 2B needs 1).
-A timeout resumes from cache on resubmit; V100 OOM cells complete on the supervisor
-via `--failed-only`.
+Same 657 digital-and-answerable corpus, oracle ladder. The parser markdown cache is shared
+(`results/cache/parser/...`, already warm from g1-representation), so these skip the slow
+parser pass; only renders (per run_tag) repeat, roughly 1-2h per job.
 
-## Open items / gotchas
+| spec | cells | breakdown | suggested |
+|---|---|---|---|
+| `kaya_g1_quantization_full` | 5,256 | 657 x 4 rungs x 2 quants (8bit, 4bit) | `--gres gpu:v100:2 --time 72:00:00` |
+| `kaya_g1_reasoner_full` | 7,884 | 657 x 4 rungs x 3 models (2B, 4B, InternVL3-8B) | `--gres gpu:v100:2 --time 60:00:00` |
+| `kaya_g1_resolution_full` | 3,942 | 657 x 2 rungs (TLV, V) x 3 res (low, med, high) | `--gres gpu:v100:2 --time 54:00:00` |
 
-- **`kaya_g1_quantization_per_doc_type_80.yaml` does not actually sweep quantization**
-  (`quantization: [bf16]` = one value). Set `[bf16, 8bit, 4bit]` for the quant table.
-- **`results.jsonl` has one row per cell incl. OOM/error; `predictions.jsonl` only ok
-  cells.** The difference is the failed cells (status `oom`/`error`, `skipped_reason`,
-  `oom_occurred`). `ops.judge` re-scores predictions only.
-- **`docs/REPO_STRUCTURE.md` is absent** (deleted in an earlier commit) and its
-  generator `ops/scripts/dump_docstrings.py` has a `REPO` path bug (`parent.parent`
-  resolves to `ops/`, needs `parents[2]`) and expects the file to already exist.
-  README/AGENT_GUIDE/CLAUDE.md still reference it. Restore/regenerate separately.
-- **`ops.judge` / `ops.build` take `--task` but no `--run-tag`** — confirm they target
-  the right run_tag before scoring the real multi-run outputs.
-- **32B** only runs on the supervisor H100 (V100s can't fit it). `h100_main.yaml` is
-  currently a single G1 flat run.
-- **Nothing is committed.** Review the working tree (`git status`) before committing;
-  it includes the deleted old task files, the new `task.py`/`oracle.py`, the rewritten
-  specs, and the doc updates.
+Walls anchored to the observed ~120 cells/h for 8B bf16 on 2xV100 (pre-pass included) and
+padded: 8-bit is ~1.5-2x slower (drives the 72h quant wall); InternVL3-8B needs the 2 V100s
+and is the slow leg of the reasoner job; high-res TLV/V is slow and OOM-heavy. Jobs exit when
+done and resume from cache on a wall hit, so the walls are safe upper bounds.
 
-## Pipeline invariant worth keeping in mind
+```bash
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --no-wait --gres gpu:v100:2 --mem 64G --time 72:00:00 ops/generate.py -- --spec ops/specs/kaya_g1_quantization_full.yaml
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --no-wait --gres gpu:v100:2 --mem 64G --time 60:00:00 ops/generate.py -- --spec ops/specs/kaya_g1_reasoner_full.yaml
+envs/mpvrdu/bin/python -m ops.kaya.kaya submit --no-wait --gres gpu:v100:2 --mem 64G --time 54:00:00 ops/generate.py -- --spec ops/specs/kaya_g1_resolution_full.yaml
+```
 
-Only one model type is on the GPU at a time: retrievers load one at a time and unload
-(`write_retrieval_eval`), the parser runs in its own isolated subprocess before the
-reasoner loads, and inference reads rankings/parser text from disk caches so it never
-reloads them. Don't collapse these stages.
+`submit` pushes first (safe here: the diff since the last push is additive, being the
+preflight tooling plus these specs plus docs, and touches none of the running jobs'
+executing modules or the rsync-excluded `results/` `.cache/` `.data/`), then auto-runs the
+preflight on the login node and only queues if it passes. Quantized 8B fits one V100, so the
+quant job can use `--gres gpu:v100:1` to ease contention at the cost of more OOM cells to mop
+up later.
+
+## Cell-count reference
+
+Formula: questions x representations x prompt_modes x k-values x retrieval-methods (oracle
+runs collapse k and methods to 1). mmlongbench = 1091 questions = 847 answerable + 244
+unanswerable; 657 of the answerable are digital-scan.
+
+- **G1 (oracle):** representation 657x4 = 2,628; quantization 657x4x2 = 5,256;
+  reasoner 657x4x3 = 7,884; resolution 657x2x3 = 3,942.
+- **G3 (bm25 text arm only, 3 prompt sweep):** 244x4x3 = 2,928.
+- **G2 (TLV,V x k{1,3,5,7,10} x text/vision/joint):** 847x2x5x3 = 25,410 inference cells.
+
+## After generation
+
+Per task, on the supervisor if OOMs remain: `ops.generate --spec <spec> --failed-only`
+(the bigger GPU fits the cells the V100 OOM'd on). Then judge and build:
+
+```bash
+envs/mpvrdu/bin/python -m ops.judge --spec ops/specs/<spec>.yaml --judge-spec gemini-flash
+envs/mpvrdu/bin/python -m ops.build --task all
+```
+
+Judge each task as it finishes rather than batching: the Gemini Tier-1 key is ~10k
+requests/day and the total prediction count is ~30k+ if G2 runs full, so use the two-key
+fallback (secondary `GEMINI_API_KEY_SECONDARY` in `.env`) and/or stub-judge first for
+immediate tables.
+
+## Watch-outs
+
+- **Don't push while jobs run** unless the diff is additive and orthogonal (as it is now).
+  `push`/`submit` do `rsync --delete` on the remote root; `results/ .cache/ .data/ envs/
+  logs/` are excluded, so caches/weights/data are safe, but source files are replaced.
+- **G2's 25,410 inference cells** (k-sweep x 3 methods) is the one thing that fits no single
+  wall and blows the Gemini judge quota. Trimming inference k is possible (retrieval.jsonl
+  already covers k-accuracy) but `write_retrieval_eval` opens `retrieval.jsonl` in `"w"`
+  mode, so back that file up first, or add an additive `inference_k_values` spec field to
+  decouple inference k from the benchmark k.
+- **check_run** (`ops.scripts.check_run --spec <spec>`) reads `predictions.jsonl` and reports
+  ok/oom/error vs expected per run_tag; run it (login node, `--no-push`) to gauge progress.

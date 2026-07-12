@@ -8,10 +8,33 @@ strict superset of `predictions.jsonl`. Loads no reasoner; targets a run by `--s
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
 
 from experiments.engine.paths import configure_logging, experiment_paths, log
 from experiments.engine.paths import result_key as make_result_key
 from schema import Score
+
+
+def load_env_file(path: Path) -> None:
+    """Load `KEY=VALUE` lines from a `.env` file into `os.environ` (real env wins).
+
+    The judge needs the Gemini/OpenAI key, which lives in the repo `.env` rather than
+    the shell. `setdefault` so an already-exported variable is never overridden.
+    """
+
+    if not path.is_file():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            os.environ.setdefault(key, value.strip().strip("'\""))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,6 +84,12 @@ def judge_run(config, task_name: str, questions: dict, judge) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure_logging(args.verbose)
+
+    from config import ROOT
+
+    # The judge key lives in the repo .env, not the shell, so load it before the judge
+    # (which reads GEMINI_API_KEY / GEMINI_API_KEY_SECONDARY / OPENAI_API_KEY).
+    load_env_file(ROOT / ".env")
 
     from experiments.corpus.yaml_spec import config_from_spec, load_yaml_specs
     from ops.generate import load_corpus

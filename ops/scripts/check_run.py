@@ -69,7 +69,12 @@ def verdict(counts: Counter, expected: int | None, fail_rate: float) -> tuple[st
 
 
 def _expected_rows(config, task, questions, limit) -> int:
-    """Cells one task would emit: generation_cells x model_specs, after the limit."""
+    """Cells one task would emit: generation_cells x model_specs x visual_resolutions.
+
+    The driver re-runs the base cells once per resolution (each is a distinct cell key),
+    so a multi-resolution spec (e.g. the resolution ladder) emits len(cells) x specs x
+    resolutions rows, not just len(cells) x specs.
+    """
 
     from experiments.engine.driver import build_retrievers
 
@@ -79,8 +84,9 @@ def _expected_rows(config, task, questions, limit) -> int:
     specs = task.model_specs(config)
     if not specs:
         return 0
+    resolutions = config.visual_resolutions or (config.visual_resolution,)
     cells = task.generation_cells(config, task_questions, retrievers=build_retrievers(config))
-    return len(cells) * len(specs)
+    return len(cells) * len(specs) * len(resolutions)
 
 
 def build_parser() -> argparse.ArgumentParser:

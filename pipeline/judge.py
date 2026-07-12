@@ -311,6 +311,6 @@ def get_judge(spec: str) -> Judge:
         return StubJudge("stub")
     if normalized in {"gpt4o-mini", "gpt-4o-mini", "gpt4o-mini-judge", "gpt-4o-mini-judge"}:
         return GPT4oMiniJudge(spec=spec)
-    if normalized in {"gemini", "gemini-flash", "gemini-flash-judge", "gemini-2.5-flash"}:
+    if normalized in {"gemini", "gemini-judge", "gemini-flash", "gemini-flash-judge", "gemini-2.5-flash"}:
         return GeminiJudge(spec=spec)
     raise ValueError(f"unsupported judge spec {spec!r}")

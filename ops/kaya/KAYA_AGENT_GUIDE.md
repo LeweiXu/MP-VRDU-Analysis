@@ -163,6 +163,11 @@ CLI flags override headers.
 `submit`:
 
 - Pushes by default.
+- For a spec-driven generation submit (a `.py` whose forwarded args carry `--spec`),
+  runs `ops/scripts/preflight.py` on the login node first and aborts the submit if it
+  fails (spec won't parse, empty corpus, unstaged reasoner/retriever/classifier weight).
+  `--no-preflight` skips it. The check is offline, CPU-only, and reuses the login
+  prelude, so it never touches the GPU or the queue.
 - For `.py` files, generates an sbatch wrapper with config/CLI SLURM defaults.
 - For `.sbatch` files, submits the file with any explicit SLURM overrides. The
   file owns its own setup, environment activation, output paths, and offline

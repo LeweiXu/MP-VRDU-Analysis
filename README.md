@@ -90,6 +90,34 @@ keeps going; complete those on the supervisor by re-submitting with `--failed-on
 (§13). After a run, `kaya.py pull`, then judge + build locally (`ops.judge` /
 `ops.build`).
 
+### Judging a finished run
+
+Generation writes only `predictions.jsonl` (the reasoner output, unjudged). Scoring is a
+separate phase you run **locally**: it needs a Gemini/OpenAI key in `.env`, and Kaya's
+compute nodes are offline. Point it at the same spec so it finds the run's cache by
+`run_tag`. For the finished G1 representation run:
+
+```bash
+# 1. pull the finished run's predictions.jsonl back from Kaya
+envs/mpvrdu/bin/python -m ops.kaya.kaya pull
+
+# 2. score them into results.jsonl (stub is offline/instant; gemini-flash / gpt-4o-mini hit the API)
+envs/mpvrdu/bin/python -m ops.judge --spec ops/specs/kaya_g1_representation_full.yaml --judge-spec gemini-flash
+```
+
+`ops.judge` reads `predictions.jsonl`, looks up each question's gold answer, and writes
+one `results.jsonl` row per prediction beside it (a strict superset: prediction + the
+`score`/`correct`/`abstained`/`judge_spec` verdict). It loads no models, so it is
+CPU-only and fast; the only limit is the judge API quota, so judge one run at a time and
+set `GEMINI_API_KEY_SECONDARY` in `.env` for the two-key fallback. Re-running with a
+different `--judge-spec` writes its own rows keyed by judge, so you can re-score without
+re-generating. The `--failed-only` OOM cells carry through unscored (they have no answer),
+so judge after those are completed if you want them in the tables.
+
+Then assemble tables with `ops.build --task <task-or-all>`. Note `ops.build` currently
+reads the **default (un-tagged) cache**, so building a run-tagged run needs the run's
+tag wired through `ops.build` first (a known gap); judging itself is unaffected.
+
 ---
 
 ## Repository structure

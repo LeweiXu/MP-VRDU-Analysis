@@ -1,7 +1,7 @@
 task_name: G1_oracle_ladder
-run_tag: g1-quantization-per-doc-type-80
+run_tag: g1-reasoner-full
 dataset: [mmlongbench]
-corpus: {scan: digital, pool: answerable, sampling: {per_doc_type: 80, seed: 0}}
+corpus: {scan: digital, pool: answerable, sampling: full}
 parser_dpi: 200
 parser: [paddleocrvl]
 retrieval_representation: [oracle]
@@ -13,8 +13,8 @@ joint_k_values: []
 inference_text_retriever: none
 inference_vision_retriever: none
 inference_joint: false
-reasoner_spec: [qwen3vl-8b-local]
-quantization: [bf16, 8bit, 4bit]
+reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, internvl3-8b-local]
+quantization: [bf16]
 visual_resolution: [med]
 reasoner_representations: [T, TL, TLV, V]
 prompt_modes: [none]

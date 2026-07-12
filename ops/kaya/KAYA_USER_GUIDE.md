@@ -193,8 +193,20 @@ Submits a repo-local `.py` or `.sbatch` file to SLURM.
 | Flag | Default | Meaning |
 |---|---|---|
 | `program` | required | Repo-local `.py` (wrapped in a generated sbatch) or an existing `.sbatch` file. |
+| `--no-preflight` | off | Skip the login-node preflight for a spec-driven generation submit. |
 
 Plus all [shared job options](#shared-job-options-run-and-submit).
+
+**Preflight.** When you submit a generation run (a `.py` whose forwarded args carry
+`--spec`), `submit` first runs `ops/scripts/preflight.py` on the login node (core env,
+offline) and only submits if it passes. The preflight parses the spec, imports the
+pipeline, loads the dataset and resolves the corpus (reporting the question and cell
+counts), and confirms every reasoner / retriever / classifier weight the run needs is
+staged in the offline HF cache. A hard failure (spec won't parse, empty corpus, missing
+inference weight) prints the reasons and blocks the submit; pass `--no-preflight` to
+override. It also takes your `--gres` into account for a soft reasoner-sizing hint (e.g.
+8B on a single V100). You can run it by hand: `python -m ops.scripts.preflight --spec
+ops/specs/<spec>.yaml [--gres gpu:v100:2]`.
 
 For `.py`, `kaya.py` generates the sbatch wrapper and applies the SLURM
 CLI/config options above. For `.sbatch`, the file's own `#SBATCH` directives and

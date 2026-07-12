@@ -531,7 +531,8 @@ def generated_python_sbatch(
 ) -> tuple[str, str]:
     """Build a generated sbatch wrapper for a Python source file."""
 
-    job_name = args.job_name or settings.job_name or local_path.stem.replace("_", "-")
+    job_name = (args.job_name or settings.job_name or spec_job_name(script_args)
+                or local_path.stem.replace("_", "-"))
     logs_dir = config.remote_path("logs")
     command = python_command(config, local_path, script_args)
     directives = slurm_options(config, args, job_name=job_name)
@@ -942,6 +943,66 @@ def submit_python(
     return job_id
 
 
+def spec_arg(forwarded: list[str]) -> str | None:
+    """Pull the `--spec <file>` (or `--spec=<file>`) value out of forwarded args."""
+
+    for index, token in enumerate(forwarded):
+        if token == "--spec" and index + 1 < len(forwarded):
+            return forwarded[index + 1]
+        if token.startswith("--spec="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def spec_job_name(forwarded: list[str]) -> str | None:
+    """A SLURM job name from the `--spec` run_tag(s), or None if not a spec run.
+
+    A single-run spec names the job after its run_tag (so `g1-quantization-full` is
+    distinguishable in squeue instead of every generate job being `generate`); a
+    multi-run spec falls back to the spec file stem. Any parse problem returns None
+    so the caller keeps its old default rather than failing the submit.
+    """
+
+    spec = spec_arg(forwarded)
+    if not spec:
+        return None
+    path = Path(spec)
+    if not path.is_absolute():
+        path = LOCAL_ROOT / path
+    try:
+        from experiments.corpus.yaml_spec import load_yaml_specs
+
+        tags = [s.run_tag for s in load_yaml_specs(path) if s.run_tag]
+    except Exception:
+        return None
+    if not tags:
+        return None
+    return tags[0] if len(tags) == 1 else path.stem.replace("_", "-")
+
+
+def run_preflight(config: KayaConfig, spec: str, gres: str | None) -> None:
+    """Run the login-node preflight for a spec; abort submission if it fails.
+
+    Streams `ops/scripts/preflight.py` on the login node (core env, offline) so a
+    parse error, empty corpus, or unstaged weight is caught here, before the job
+    clears the queue. A nonzero preflight raises `SystemExit`.
+    """
+
+    preflight = LOCAL_ROOT / "ops" / "scripts" / "preflight.py"
+    extra = ["--gres", gres] if gres else []
+    command = python_command(config, preflight, ["--spec", spec, *extra])
+    script = "\n".join([remote_prelude(config, activate=True, offline=True), shell_join(command)])
+    print(f"[preflight] {config.ssh_alias}: {shell_join(command)}")
+    try:
+        ssh_script(config, script)
+    except subprocess.CalledProcessError:
+        raise SystemExit(
+            "[preflight] FAILED - not submitting. Fix the issues above, or pass "
+            "--no-preflight to override."
+        )
+    print("[preflight] passed")
+
+
 def handle_submit(config: KayaConfig, args: argparse.Namespace) -> None:
     """Submit a Python file through a generated wrapper, or an existing sbatch file."""
 
@@ -953,6 +1014,10 @@ def handle_submit(config: KayaConfig, args: argparse.Namespace) -> None:
     forwarded = strip_separator(args.program_args)
     if not args.no_push:
         push(config)
+    # Preflight a spec-driven generation submit on the login node before the queue.
+    spec = spec_arg(forwarded)
+    if spec and not args.no_preflight:
+        run_preflight(config, spec, args.gres)
     if local_path.suffix == ".sbatch":
         job_name = args.job_name or local_path.stem
         job_id = submit_remote_sbatch(
@@ -1068,6 +1133,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_run_args(submit)
     add_slurm_args(submit)
     add_job_lifecycle_args(submit)
+    submit.add_argument("--no-preflight", action="store_true",
+                        help="skip the login-node preflight check for a spec-driven generation submit")
     submit.add_argument("program", help="repo-local .py or .sbatch file")
 
     watch = sub.add_parser("watch", help="wait for a job id, pull logs/results, and print matching log tails")
