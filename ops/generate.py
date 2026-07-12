@@ -59,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--failed-only", action="store_true",
                         help="re-run only the cells that failed (status != ok) in a previous run, "
                              "upgrading them in place; ok cells and side artifacts are left alone")
+    parser.add_argument("--skip-retrieval", action="store_true",
+                        help="skip the stage-1 retrieval benchmark and reuse the existing retrieval memo "
+                             "(inference only; never rewrites retrieval.jsonl). Needs the memo present.")
+    parser.add_argument("--skip-oom", action="store_true",
+                        help="drop cells already recorded as oom in predictions.jsonl from the run "
+                             "(prewarm + parser-warm included), so a V100 resume does not re-render / "
+                             "re-parse pages that only OOM again. Leave them for a --failed-only sweep "
+                             "on a bigger GPU; do not combine with --failed-only.")
     parser.add_argument("--require-complete-annotations", action="store_true",
                         help="stop if the annotation sheet exists but misses some corpus docs; "
                              "default is to allow blank bins (annotations are an optional enrichment)")
@@ -100,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
         if config.run_tag:
             log.info("run_tag=%s | task=%s | dataset=%s", config.run_tag, selector, config.dataset)
         for task in resolve(selector):
-            generate(config, task, questions, limit=limit, failed_only=args.failed_only)
+            generate(config, task, questions, limit=limit, failed_only=args.failed_only,
+                     skip_retrieval=args.skip_retrieval, skip_oom=args.skip_oom)
     return 0
 
 

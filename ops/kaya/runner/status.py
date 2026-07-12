@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
-"""Print Kaya GPU partition node, memory, queue, and start-estimate status.
+"""Kaya GPU partition status: node/GPU/memory usage, the running/pending queue, the
+user's jobs, and scheduler start estimates. Read-only, over SSH.
 
-This is a read-only operational helper that gets SLURM state over SSH.
-"""
+Reachable as `python -m ops.kaya.kaya status` (or standalone `python -m
+ops.kaya.runner.status`)."""
 
 from __future__ import annotations
 
@@ -16,9 +16,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
-
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = ROOT / "kaya" / "config.json"
+from .config import DEFAULT_CONFIG
 
 
 @dataclass(frozen=True)
@@ -70,17 +68,23 @@ class StartEstimate:
     reason_or_nodelist: str
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Return the command-line parser."""
+def add_status_args(parser: argparse.ArgumentParser) -> None:
+    """Add the status-report options (shared by the standalone and CLI parsers)."""
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--ssh-alias", help="SSH host override; defaults to kaya/config.json")
     parser.add_argument("--partition", default="gpu")
     parser.add_argument("--user", help="user for the 'Your Jobs' section; defaults to remote whoami")
     parser.add_argument("--limit", type=int, default=25, help="maximum rows in the Your Jobs section")
     parser.add_argument("--json", action="store_true", help="emit JSON")
     parser.add_argument("--no-start", action="store_true", help="skip squeue --start estimates")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Return the standalone command-line parser."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    add_status_args(parser)
     return parser
 
 
@@ -493,10 +497,9 @@ def print_queue(rows: list[QueueRow], *, show_queue_time: bool = False) -> None:
     print_table(headers, table_rows)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point."""
+def run_status(args: argparse.Namespace) -> int:
+    """Gather and print Kaya status from a parsed namespace (config/ssh_alias/...)."""
 
-    args = build_parser().parse_args(argv)
     ssh_alias = load_ssh_alias(args.config, args.ssh_alias)
     nodes = load_nodes(ssh_alias, args.partition)
     scheduler_tz, scheduler_tz_name = remote_timezone(ssh_alias)
@@ -554,6 +557,12 @@ def main(argv: list[str] | None = None) -> int:
         scheduler_tz_name=scheduler_tz_name,
     )
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Standalone entry point."""
+
+    return run_status(build_parser().parse_args(argv))
 
 
 if __name__ == "__main__":

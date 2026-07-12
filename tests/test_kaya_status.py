@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from ops.scripts.kaya_status import (
+from ops.kaya.runner.status import (
     QueueRow,
     StartEstimate,
     parse_queue,

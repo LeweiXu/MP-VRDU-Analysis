@@ -97,7 +97,10 @@ rsync and should never be copied to Kaya.
 
 ## kaya.py Contract
 
-`kaya.py` is intentionally small. It owns only common execution mechanics:
+`kaya.py` is intentionally small: it parses args and dispatches. The mechanics live
+in the `ops/kaya/runner/` subpackage, one module per slice (`config`, `remote`,
+`sync`, `sources`, `slurm`, `jobs`, `status`, `commands`). It owns only common
+execution mechanics:
 
 ```bash
 envs/mpvrdu/bin/python -m ops.kaya.kaya show-config
@@ -106,8 +109,11 @@ envs/mpvrdu/bin/python -m ops.kaya.kaya pull
 envs/mpvrdu/bin/python -m ops.kaya.kaya run <program> -- <args>
 envs/mpvrdu/bin/python -m ops.kaya.kaya submit <file.py|file.sbatch> -- <args>
 envs/mpvrdu/bin/python -m ops.kaya.kaya watch [job_id]
+envs/mpvrdu/bin/python -m ops.kaya.kaya status
 ```
 
+`status` prints partition node/queue/start-estimate state (read-only, over SSH);
+the same report is also runnable standalone as `python -m ops.kaya.runner.status`.
 It does not contain task-specific subcommands. Setup, prestage, GPU smoke, and
 probe commands are separate runnable scripts:
 

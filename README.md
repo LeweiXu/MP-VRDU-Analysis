@@ -68,20 +68,41 @@ envs/mpvrdu/bin/python -m ops.kaya.kaya submit --no-wait \
   --gres gpu:v100:<N> --time <HH:MM:SS> ops/generate.py -- --spec ops/specs/<spec>.yaml
 ```
 
-Walltimes below use the observed rate ~18 s per reasoner cell (300 questions × 4
-rungs ≈ 1200 cells took ~6 h on Kaya) and **overestimate on purpose**. Real runs are
-faster: 2B/4B are quicker than 8B, OOM cells fail fast, and page rendering only pays
-its cost on the first pass then caches. Cell counts assume ~800 digital+answerable
-questions (7 doc_types → `per_doc_type: 80` ≈ 560).
+Walltimes below use the **observed** rate from the full runs: ~33 s per 8B reasoner
+cell on 2×V100, wall-clock, which already folds in prewarm (page render + parser OCR)
+and model load. It is slower than it looks because the V100 has no FlashAttention, so
+image cells (TLV/V) run the dense O(seq²) attention kernel at ~45-57 s each; the ~33 s
+average is lower only because text cells are quicker and OOM cells fail fast. Cell
+counts are for the full mmlongbench pool: 847 answerable (657 of them digital) and 244
+unanswerable. Scanned docs run ~1.2-1.5× slower than digital (OCR on scanned pages is
+the slow prewarm step).
 
-| Spec | Varies | ≈ reasoner cells | Suggested |
+| Spec | Varies | ≈ cells | Suggested |
 |---|---|---|---|
-| `kaya_g1_representation_full.yaml` | the T/TL/TLV/V ladder (headline), 8B, ~800 digital | 800×4 ≈ 3.2k | `--gres gpu:v100:2 --time 20:00:00` |
-| `kaya_g1_resolution_full.yaml` | resolution low/med/high at TLV/V, 8B | 800×2×3 ≈ 4.8k | `--gres gpu:v100:2 --time 28:00:00` |
-| `kaya_g1_reasoner_per_doc_type_80.yaml` | reasoner 2B / 4B / InternVL3-8B | 560×4×3 ≈ 6.7k | `--gres gpu:v100:2 --time 30:00:00` |
-| `kaya_g1_quantization_per_doc_type_80.yaml` | quantization (only bf16 now; `[bf16, 8bit, 4bit]` triples it) | 560×4 ≈ 2.2k | `--gres gpu:v100:2 --time 14:00:00` |
-| `kaya_g2_full.yaml` | retrieval benchmark + inference (6 methods, 8B, k∈{1,3,5,7,10}) | 800×2×3×5 ≈ 24k + stage-1 | `--gres gpu:v100:2 --time 72:00:00` |
-| `kaya_g3_full.yaml` | hallucination prompts + classifier, 8B, ~250 unanswerable | 250×4×3 ≈ 3.0k | `--gres gpu:v100:2 --time 20:00:00` |
+| `kaya_g1_representation_full.yaml` | the T/TL/TLV/V ladder (headline), 8B, scan:any | 847×4 ≈ 3.4k | `--gres gpu:v100:2 --time 36:00:00` |
+| `kaya_g1_resolution_full.yaml` | resolution low/med/high at TLV/V, 8B | 657×2×3 ≈ 3.9k | `--gres gpu:v100:2 --time 40:00:00` |
+| `kaya_g1_reasoner_full.yaml` | reasoner 2B / 4B / InternVL3-8B | 657×4×3 ≈ 7.9k | `--gres gpu:v100:2 --time 60:00:00` |
+| `kaya_g1_quantization_full.yaml` | quantization 8bit + 4bit, 8B | 657×4×2 ≈ 5.3k | `--gres gpu:v100:2 --time 60:00:00` |
+| `kaya_g2_full.yaml` | retrieval benchmark + inference (k∈{1,3,5}, joint {1,3}) | 847×2×3×3 ≈ 15k inf + stage-1 | inference does not finish on V100 — see below |
+| `kaya_g3_full.yaml` | hallucination prompts + classifier, 8B, 244 unanswerable | 244×4×3 ≈ 2.9k | `--gres gpu:v100:2 --time 36:00:00` |
+
+### Why V100 runs are slow, and what belongs on the H100
+
+Kaya has only V100s (16 GB, 2/node) and no FlashAttention for Qwen3-VL (sm_70), so
+attention always runs the dense O(seq²) math kernel. Per image cell that is ~45-57 s,
+and long-context cells (many retrieved pages, or dense `TL` layout JSON) both slow
+down and OOM. So:
+
+- 8B needs 2×V100 (device_map shards it); 2B fits one; quantized 8B fits one.
+- **G2 inference belongs on the supervisor H100.** At ~30-35 s/cell over ~15k
+  reduced-k image cells it is ~130 h on V100, which no Kaya wall covers. Complete the
+  retrieval memo on Kaya (one V100 is enough), but run G2 inference on the H100, where
+  FlashAttention makes image cells several times faster.
+- OOM cells are expected on big-context TLV/V (and high-k) cells: they write `oom`
+  rows, the job keeps going, and the supervisor finishes them with `--failed-only`.
+  On a resume that only needs to fill missing cells, pass `--skip-oom` so the job does
+  not re-render / re-parse pages for cells already known to OOM (leave those for the
+  supervisor sweep).
 
 If the partition caps walltime below these, submit at the cap: a timeout writes
 partial results and **resubmitting the same spec resumes from cache** (skips done

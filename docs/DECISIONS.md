@@ -10,6 +10,41 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**`ops.build --run-tag` + kaya.py split into `ops/kaya/runner/` (2026-07-12).**
+- **`ops.build` gained `--run-tag`.** It built from `ExperimentConfig()` (un-tagged
+  cache) and so found nothing for a run-tagged generation; `--run-tag g1-representation-full`
+  points `config.paths.cache_dir` at `results/cache/<run_tag>/…`. Verified end to end on
+  the finished G1 representation `results.jsonl` (headline/parser/resolution/scale/routing/
+  composition tables assemble). Table `n` is the per-bin cell count (`len(bin_rows)`),
+  shared across builders; per-column accuracy still uses the per-rung counts.
+- **`ops/kaya/kaya.py` (1200+ lines) split into an `ops/kaya/runner/` subpackage**, one
+  module per slice: `config` (dataclasses/constants/quoting), `remote` (ssh exec + the
+  prelude/env exports), `sync` (push/pull), `sources` (`# kaya:` headers + repo-local file
+  resolution + spec run_tag), `slurm` (sbatch gen/submit), `jobs` (squeue/wait/logs/cancel
+  listing), `status`, and `commands` (the handlers). `kaya.py` is now just the parser +
+  dispatch and re-exports `load_config` / `spec_arg` / `KayaConfig` / `push` / `pull` for
+  existing importers. `ops/scripts/kaya_status.py` folded into `runner/status.py` and is
+  reachable as `python -m ops.kaya.kaya status` (test import updated to the new path).
+
+**`--skip-oom`, qwen3-embedding batch=1, and V100 walltimes corrected (2026-07-12).**
+Three changes from sizing the full runs for the Kaya migration deadline:
+- **`--skip-oom`** (`ops/generate.py` → `driver.generate(skip_oom=...)`, and `g2_rerun.py`
+  passes it through). Drops every cell already recorded `oom` from the run, prewarm
+  included. A cached oom row is a cache hit at inference anyway, but the driver's prewarm
+  still hit `render_pages` + the isolated parser for TL/TLV cells on every resume; this
+  cuts that re-parse. It is the resume counterpart to `--failed-only` (which retries oom
+  cells); do not pass both. `_oom_cell_ids` (unlike `_prepare_failed_only`) does not
+  rewrite predictions.jsonl.
+- **qwen3-embedding encodes at batch_size=1 with no seq-length cap.** The earlier V100
+  OOM fix was `encode_batch_size=2` + `max_seq_length=4096`; that cap truncated long page
+  text. batch_size=1 alone bounds the activation peak (one sequence live), so full page
+  text is embedded with no truncation. Only affects the qwen3-embedding retrieval memo
+  build (stage 1), not inference (bge-m3 / colqwen2.5).
+- **README walltimes rebased on observed rate (~33 s/8B cell, wall-clock incl. prewarm),
+  replacing the old ~18 s/cell guess that underestimated.** Added the V100 no-FlashAttention
+  note and the recommendation to run G2 inference on the supervisor H100 (V100 image cells
+  are ~45-57 s and ~15k reduced-k cells is ~130 h).
+
 **Generate/judge split: predictions.jsonl unjudged, results.jsonl is the judge's
 (2026-07-11).** Generate no longer scores inline. This supersedes the behaviour where
 `Orchestrator.run_cell` ran a (stub) judge and wrote a fully-scored `results.jsonl`

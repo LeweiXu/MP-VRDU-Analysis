@@ -1,0 +1,62 @@
+# Job B (half of the "everything else" batch, split with Job C for parallel walls).
+# Two runs, executed in order: g3 resume first (also writes the missing
+# classifier.jsonl), then the big reasoner scanned set.
+#
+# g3-hallucination-full RESUMES an existing run_tag (safe: that job ended, no writer
+# race). g1-reasoner-scanned is a NEW scanned-only run_tag that runs alongside the
+# still-running digital g1-reasoner-full; scan:digital and scan:scanned are disjoint,
+# so the two predictions.jsonl merge to scan:any at build time.
+#
+# Submit with --skip-oom so the g3 resume does not re-render / re-parse pages for the
+# cells already recorded as oom (those go to a supervisor --failed-only sweep later):
+#
+#   kaya submit --no-wait --gres gpu:v100:2 --time 60:00:00 ops/generate.py -- \
+#       --spec ops/specs/kaya_jobB_scanned_resume.yaml --skip-oom
+
+runs:
+
+  # -- resume: g3, finish the ~819 missing cells + write the missing classifier.jsonl -
+  - task_name: G3_hallucination
+    run_tag: g3-hallucination-full
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: unanswerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: [3]
+    joint_k_values: []
+    inference_text_retriever: bm25
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none, generic, targeted]
+    classifier: qwen3vl-2b-local
+
+  # -- new: reasoner, scanned only (merges with running g1-reasoner-full) ------------
+  - task_name: G1_oracle_ladder
+    run_tag: g1-reasoner-scanned
+    dataset: [mmlongbench]
+    corpus: {scan: scanned, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, internvl3-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none

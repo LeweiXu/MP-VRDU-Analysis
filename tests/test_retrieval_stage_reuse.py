@@ -111,6 +111,74 @@ def test_inference_reuses_stage1_ranking(tmp_path, monkeypatch) -> None:
                 assert inf.retrieve(q, PAGE_COUNT, k) == written[(method, q.id, k)]
 
 
+def test_skip_retrieval_gates_stage1(tmp_path) -> None:
+    """--skip-retrieval skips the stage-1 benchmark on a normal run (side work still runs)."""
+
+    from experiments.engine import driver
+
+    calls = {"benchmark": 0, "side": 0}
+
+    class FakeTask:
+        name = "G2_retrieval"
+
+        def model_specs(self, config):
+            return ()  # empty -> no reasoner loop, so generate stays light
+
+        def resolve_questions(self, config, questions):
+            return []
+
+        def generation_cells(self, config, questions, *, retrievers):
+            return []
+
+        def run_retrieval_benchmark(self, config, questions, side_dir, *, limit=None):
+            calls["benchmark"] += 1
+
+        def run_side(self, config, questions, side_dir, *, limit=None):
+            calls["side"] += 1
+
+    def make_config():
+        paths = SimpleNamespace(cache_dir=tmp_path / "cache", data_dir=tmp_path / "data",
+                                results_dir=tmp_path / "results", root=tmp_path)
+        for p in (paths.cache_dir, paths.data_dir, paths.results_dir):
+            p.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(paths=paths, smoke=False, run_tag="t", dpi=200,
+                               text_retrievers=("bge-m3",), inference_text_retriever="none",
+                               inference_vision_retriever="none",
+                               visual_resolutions=("med",), visual_resolution="med")
+
+    driver.generate(make_config(), FakeTask(), [], skip_retrieval=False)
+    assert calls["benchmark"] == 1  # normal run: stage-1 benchmark runs
+
+    calls["benchmark"] = 0
+    driver.generate(make_config(), FakeTask(), [], skip_retrieval=True)
+    assert calls["benchmark"] == 0  # skipped
+    assert calls["side"] == 2       # side work still runs both times
+
+
+def test_skip_oom_drops_oom_cells(tmp_path) -> None:
+    """--skip-oom removes cells recorded as oom from the run, keeping ok/missing ones."""
+
+    from experiments.engine import driver
+
+    # A predictions file: one ok cell, one oom cell, at the same resolution.
+    preds = tmp_path / "cache" / "predictions.jsonl"
+    preds.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"question_id": "q1", "doc_id": "docA", "condition": "oracle", "representation": "TLV",
+         "model_spec": "m", "visual_resolution": "med", "status": "ok"},
+        {"question_id": "q2", "doc_id": "docB", "condition": "oracle", "representation": "TLV",
+         "model_spec": "m", "visual_resolution": "med", "status": "oom"},
+    ]
+    preds.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    oom = driver._oom_cell_ids(preds)
+    assert oom == {("q2", "docB", "oracle", "TLV", "m", "med")}
+    # the ok cell is not in the drop set, so it still runs
+    assert ("q1", "docA", "oracle", "TLV", "m", "med") not in oom
+    # no file rewrite (unlike --failed-only): both rows survive on disk
+    assert len(preds.read_text().splitlines()) == 2
+
+
 def test_failed_method_loses_only_its_rows(tmp_path, monkeypatch) -> None:
     import experiments.engine.side_artifacts as sa
 

@@ -5,8 +5,9 @@ Purpose:
     experiment pipeline but support it: dataset/model staging (`download_hf`,
     `prestage`), Kaya environment setup (`setup_env`), GPU and resolution probes
     (`gpu_test`, `resolution_probe`), and dataset profiling (`profile_datasets`,
-    `dataset_stats`, `kaya_status`). Each is runnable with
-    `python -m ops.scripts.<name>` locally or dispatched to Kaya via the runner.
+    `dataset_stats`). Each is runnable with `python -m ops.scripts.<name>`
+    locally or dispatched to Kaya via the runner. Cluster status moved to the
+    runner: `python -m ops.kaya.kaya status`.
 
 Pipeline role:
     None at import time. This package exists so the scripts are importable as

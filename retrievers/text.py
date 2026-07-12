@@ -24,6 +24,12 @@ from schema import Question
 BGE_M3_MODEL_ID = "BAAI/bge-m3"
 QWEN3_EMBEDDING_MODEL_ID = "Qwen/Qwen3-Embedding-4B"
 
+# Qwen3-Embedding-4B is fp16 (~8 GB) on one 16 GB V100, so the OOM is activation, not
+# weight, memory: batching long page-texts spikes past the ~8 GB headroom. Encode one
+# text at a time so the activation peak is a single sequence, with no length cap (full
+# page text is embedded, no truncation).
+QWEN3_ENCODE_BATCH = 1
+
 
 class Bm25Retriever(Retriever):
     """Cheap lexical rung: BM25 over each page's embedded text (no model)."""
@@ -96,6 +102,8 @@ class DenseTextRetriever(Retriever):
 
     modality = "text"
     model_id = ""
+    #: How many texts to encode per forward pass (subclasses shrink it to bound memory).
+    encode_batch_size = 8
 
     def __init__(self, *, data_dir: Path | None = None, cache_dir: Path | None = None,
                  dpi: int = 96, embedder: Any | None = None, allow_bm25_fallback: bool = True) -> None:
@@ -119,7 +127,7 @@ class DenseTextRetriever(Retriever):
     def _encode(self, texts: Sequence[str]) -> list[list[float]]:
         embedder = self.embedder if self.embedder is not None else self._load_embedder()
         self.embedder = embedder
-        return as_vectors(embedder.encode(list(texts), batch_size=8))
+        return as_vectors(embedder.encode(list(texts), batch_size=self.encode_batch_size))
 
     def unload(self) -> None:
         """Drop the embedder so it frees the GPU before the reasoner loads."""
@@ -200,13 +208,15 @@ class Qwen3EmbeddingRetriever(DenseTextRetriever):
 
     name = "qwen3-embedding"
     model_id = QWEN3_EMBEDDING_MODEL_ID
+    encode_batch_size = QWEN3_ENCODE_BATCH
 
     def _load_embedder(self) -> Any:
         from sentence_transformers import SentenceTransformer
 
         # 4B in fp32 (SentenceTransformer's default) needs ~16 GB and OOMs a V100;
         # load in fp16 on GPU so it fits, and fall back to a plain CPU load if
-        # CUDA is absent (e.g. a login-node smoke).
+        # CUDA is absent (e.g. a login-node smoke). batch_size=1 (not a length cap)
+        # is what bounds the activation peak, so full page text is embedded.
         try:
             import torch
 

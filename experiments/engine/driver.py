@@ -245,7 +245,29 @@ def _prepare_failed_only(predictions_path) -> set[tuple]:
     return failed
 
 
-def generate(config, task, questions, *, limit=None, machine=None, failed_only=False):
+def _oom_cell_ids(predictions_path) -> set[tuple]:
+    """Identities of cells already recorded as `oom` in a predictions file.
+
+    Unlike `_prepare_failed_only`, this does not touch the file: a cached oom row
+    is a cache hit and would be skipped at inference anyway, but `--skip-oom` also
+    drops these cells from the prewarm / parser-warm pass, which is where a resume
+    otherwise still pays to render + parse pages for cells that only OOM again.
+    """
+
+    path = Path(predictions_path)
+    if not path.exists():
+        return set()
+    oom: set[tuple] = set()
+    for row in read_rows(path):
+        if (row.get("status") or "ok") == "oom":
+            oom.add((row.get("question_id"), row.get("doc_id"), row.get("condition"),
+                     row.get("representation"), row.get("model_spec"),
+                     row.get("visual_resolution", "")))
+    return oom
+
+
+def generate(config, task, questions, *, limit=None, machine=None, failed_only=False,
+             skip_retrieval=False, skip_oom=False):
     """Run one task's cells to an unjudged prediction row each, then its side work.
 
     A parse pre-pass warms the retrieval and render caches with the reasoner not
@@ -253,6 +275,17 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
     parser/retriever/reasoner never share the GPU. Every cell writes exactly one
     `PredictionRow` (ok, or a status row on failure) to `predictions.jsonl` via
     `run_cells`; scoring is a separate judge phase.
+
+    `skip_retrieval` skips the stage-1 retrieval benchmark on a normal run (not just a
+    failed-only retry), so a resumed / supervisor inference pass reuses the existing
+    retrieval memo and never rewrites `retrieval.jsonl`. It needs the memo already
+    present (else inference re-ranks by loading the retrievers).
+
+    `skip_oom` drops every cell already recorded as `oom` in `predictions.jsonl` from
+    the run (prewarm + parser-warm included), so a V100 resume does not re-render and
+    re-parse pages for cells that will only OOM again. Leave those cells for a
+    `--failed-only` sweep on a bigger GPU. It is the resume counterpart to
+    `--failed-only` (which retries them); passing both together is contradictory.
     """
 
     from config import VISUAL_RESOLUTION_PRESETS
@@ -270,6 +303,9 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
             log.info("failed-only %s: no failed cells, nothing to retry", task.name)
             return
         log.info("failed-only %s: retrying %d failed cells", task.name, len(failed_ids))
+    oom_ids: set[tuple] = _oom_cell_ids(paths.predictions) if skip_oom else set()
+    if skip_oom:
+        log.info("skip-oom %s: dropping %d cells already recorded as oom", task.name, len(oom_ids))
     prediction_cache = PredictionCache(paths.predictions)
     task_questions = list(task.resolve_questions(config, questions))
     if limit is not None:
@@ -285,11 +321,20 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
     # reasoner cells (GPU free, no reasoner resident). On a failed-only retry the memo
     # already exists from the first run, so skip it. A run with configured benchmark
     # method lists is the one that has this stage; others just have post-loop side work.
-    retrieval_stage_first = bool(config.text_retrievers) and not failed_only
+    # `--skip-retrieval` forces the reuse path even on a normal run.
+    retrieval_stage_first = bool(config.text_retrievers) and not failed_only and not skip_retrieval
     if retrieval_stage_first:
         log.info("generate %s: retrieval stage-1 (before inference)", task.name)
         task.run_retrieval_benchmark(config, questions, paths.side_dir, limit=limit)
         free_gpu()
+    elif skip_retrieval and bool(config.text_retrievers):
+        memo = config.paths.cache_dir / "retrieval"
+        if memo.exists() and any(memo.glob("*.jsonl")):
+            log.info("generate %s: --skip-retrieval, reusing memo at %s (stage-1 skipped, retrieval.jsonl untouched)",
+                     task.name, memo)
+        else:
+            log.warning("generate %s: --skip-retrieval but no retrieval memo at %s; "
+                        "inference will re-rank (load retrievers)", task.name, memo)
 
     retrievers = build_retrievers(config)
 
@@ -307,6 +352,14 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
                           if any(_cell_identity(c, spec, r) in failed_ids for r in resolutions)]
             if not base_cells:
                 log.info("failed-only %s: spec %s has no failed cells, skipping", task.name, spec)
+                continue
+        if oom_ids:
+            # Keep a cell in the prewarm scope if at least one resolution is not oom;
+            # the per-resolution loop below drops the individual oom resolutions.
+            base_cells = [c for c in base_cells
+                          if not all(_cell_identity(c, spec, r) in oom_ids for r in resolutions)]
+            if not base_cells:
+                log.info("skip-oom %s: spec %s is entirely oom cells, skipping", task.name, spec)
                 continue
 
         # Pre-pass (resolution-independent): warm the render / retrieval / parser
@@ -338,6 +391,10 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
             cells = base_cells
             if failed_ids is not None:
                 cells = [c for c in base_cells if _cell_identity(c, spec, resolution) in failed_ids]
+                if not cells:
+                    continue
+            if oom_ids:
+                cells = [c for c in cells if _cell_identity(c, spec, resolution) not in oom_ids]
                 if not cells:
                     continue
             reasoner.max_pixels = VISUAL_RESOLUTION_PRESETS[resolution]

@@ -1,0 +1,87 @@
+# Job C (other half of the "everything else" batch, split with Job B for parallel
+# walls). Three runs, executed in order: representation scan:any first (the headline
+# ladder, adds the ~190 scanned docs), then the quant and resolution scanned sets.
+#
+# g1-representation-full RESUMES an existing run_tag (safe: that job finished, no
+# writer race) as scan:any, reusing the 2628 cached digital cells and adding the
+# scanned ones. g1-quantization-scanned / g1-resolution-scanned are NEW scanned-only
+# run_tags that run alongside the still-running digital jobs; scan:digital and
+# scan:scanned are disjoint, so the two predictions.jsonl merge to scan:any at build.
+#
+# Submit with --skip-oom so the representation resume does not re-render / re-parse
+# pages for cells already recorded as oom (those go to a supervisor sweep later):
+#
+#   kaya submit --no-wait --gres gpu:v100:2 --time 60:00:00 ops/generate.py -- \
+#       --spec ops/specs/kaya_jobC_scanned_resume.yaml --skip-oom
+
+runs:
+
+  # -- resume: representation, now scan:any (adds ~190 scanned docs on top of the
+  #    2628 cached digital cells; digital cells are cache hits) --------------------
+  - task_name: G1_oracle_ladder
+    run_tag: g1-representation-full
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  # -- new: quantization, scanned only (merges with running g1-quantization-full) ---
+  - task_name: G1_oracle_ladder
+    run_tag: g1-quantization-scanned
+    dataset: [mmlongbench]
+    corpus: {scan: scanned, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [8bit, 4bit]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  # -- new: resolution, scanned only (merges with running g1-resolution-full) -------
+  - task_name: G1_oracle_ladder
+    run_tag: g1-resolution-scanned
+    dataset: [mmlongbench]
+    corpus: {scan: scanned, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [low, med, high]
+    reasoner_representations: [TLV, V]
+    prompt_modes: [none]
+    classifier: none

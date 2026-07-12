@@ -14,6 +14,9 @@ from reporting.build import assemble_tables, write_tables
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", default="all", help="task name or group")
+    parser.add_argument("--run-tag", default=None,
+                        help="build from a run-tagged cache (results/cache/<run_tag>/…); "
+                             "omit for the un-tagged cache")
     parser.add_argument("--verbose", action="store_true")
     return parser
 
@@ -21,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure_logging(args.verbose)
-    config = ExperimentConfig()
+    config = ExperimentConfig(run_tag=args.run_tag)
 
     task_paths = {}
     out_dir = None
