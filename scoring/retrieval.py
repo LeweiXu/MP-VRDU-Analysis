@@ -24,6 +24,7 @@ class RetrievalEvalRow:
 
     question_id: str
     doc_id: str
+    doc_type: str
     bin_label: str
     evidence_sources: tuple[str, ...]
     retriever: str
@@ -83,6 +84,7 @@ def score_retrieval(
     return RetrievalEvalRow(
         question_id=question.id,
         doc_id=question.doc_id,
+        doc_type=question.doc_type,
         bin_label=question.bin_label,
         evidence_sources=question.evidence_sources,
         retriever=retriever,

@@ -1,5 +1,6 @@
-"""Page-retrieval accuracy benchmark: precision/recall/F1 per method and doc_type,
-from the retrieval side-artifact (covers methods never fed to the reasoner)."""
+"""Page-retrieval accuracy benchmark: precision/recall/F1 per method, both broken
+out by doc_type and aggregated over all docs, from the retrieval side-artifact
+(covers methods never fed to the reasoner)."""
 
 from __future__ import annotations
 
@@ -13,6 +14,17 @@ def _mean(values: Sequence[float]) -> str:
     return f"{sum(values) / len(values):.3f}" if values else "-"
 
 
+def _metrics(group: Sequence[Any]) -> list[str]:
+    """The P/R/F1/n cells for one group of retrieval rows."""
+
+    return [
+        _mean([float(getattr(r, "precision", 0.0)) for r in group]),
+        _mean([float(getattr(r, "recall", 0.0)) for r in group]),
+        _mean([float(getattr(r, "f1", 0.0)) for r in group]),
+        str(len(group)),
+    ]
+
+
 def build(retrieval_rows: Sequence[Any]) -> Table:
     """One row per (retriever, k, doc_type): macro P/R/F1 over its questions."""
 
@@ -23,22 +35,29 @@ def build(retrieval_rows: Sequence[Any]) -> Table:
     )
     table_rows: list[list[str]] = []
     for (retriever, modality, k, dt) in sorted(by_group, key=lambda t: (t[0], t[1], t[2], t[3])):
-        group = by_group[(retriever, modality, k, dt)]
-        table_rows.append(
-            [
-                retriever,
-                modality,
-                str(k),
-                dt,
-                _mean([float(getattr(r, "precision", 0.0)) for r in group]),
-                _mean([float(getattr(r, "recall", 0.0)) for r in group]),
-                _mean([float(getattr(r, "f1", 0.0)) for r in group]),
-                str(len(group)),
-            ]
-        )
+        table_rows.append([retriever, modality, str(k), dt, *_metrics(by_group[(retriever, modality, k, dt)])])
     return Table(
         key="retrieval_accuracy",
         title="Retrieval accuracy: page P/R/F1 by method and doc_type",
+        columns=columns,
+        rows=table_rows,
+    )
+
+
+def build_overall(retrieval_rows: Sequence[Any]) -> Table:
+    """One row per (retriever, k): macro P/R/F1 over all questions, no doc_type split."""
+
+    columns = ["retriever", "modality", "k", "P", "R", "F1", "n"]
+    by_group = group_by(
+        retrieval_rows,
+        lambda r: (getattr(r, "retriever", ""), getattr(r, "modality", ""), int(getattr(r, "k", 0))),
+    )
+    table_rows: list[list[str]] = []
+    for (retriever, modality, k) in sorted(by_group, key=lambda t: (t[0], t[1], t[2])):
+        table_rows.append([retriever, modality, str(k), *_metrics(by_group[(retriever, modality, k)])])
+    return Table(
+        key="retrieval_accuracy_overall",
+        title="Retrieval accuracy: page P/R/F1 by method (all doc_types)",
         columns=columns,
         rows=table_rows,
     )

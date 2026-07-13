@@ -24,9 +24,9 @@ def _cfg(tmp_path: Path):
 def _questions():
     # evidence_pages/sources are what score_retrieval reads; the rest is identity.
     return [
-        SimpleNamespace(id="q1", doc_id="docA", bin_label="text-dominant",
+        SimpleNamespace(id="q1", doc_id="docA", doc_type="Academic paper", bin_label="text-dominant",
                         evidence_pages=(0,), evidence_sources=("Pure-text (Plain-text)",)),
-        SimpleNamespace(id="q2", doc_id="docB", bin_label="visual-dominant",
+        SimpleNamespace(id="q2", doc_id="docB", doc_type="Brochure", bin_label="visual-dominant",
                         evidence_pages=(2, 3), evidence_sources=("Chart",)),
     ]
 

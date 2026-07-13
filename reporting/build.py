@@ -38,6 +38,37 @@ def group_rows(rows: Iterable[Any]) -> dict[tuple, list[Any]]:
     return groups
 
 
+def _backfill_retrieval_doc_type(rows: Sequence[Any], config: Any) -> None:
+    """Fill a blank `doc_type` on retrieval rows from the corpus, in place.
+
+    The retrieval side-artifact only started carrying `doc_type` recently, so an
+    older `retrieval.jsonl` leaves it blank and the doc_type breakdown collapses
+    to `(unknown)`. doc_type is a property of the document, so we recover it by
+    doc_id from the loaded corpus. Best-effort: if the dataset can't be loaded the
+    rows are left as they are (the table still builds, just bucketed as unknown).
+    """
+
+    if not rows or all(_field(row, "doc_type") for row in rows):
+        return
+    data_dir = getattr(getattr(config, "paths", None), "data_dir", None) or getattr(config, "data_dir", None)
+    doc_type_by_id: dict[str, str] = {}
+    from data.loader import load_longdocurl, load_mmlongbench
+
+    for loader in (load_mmlongbench, load_longdocurl):
+        try:
+            for question in loader(data_dir):
+                if question.doc_type:
+                    doc_type_by_id.setdefault(question.doc_id, question.doc_type)
+        except Exception as exc:  # noqa: BLE001 - one dataset being absent is fine
+            log.debug("doc_type backfill: %s skipped (%s)", loader.__name__, exc)
+    if not doc_type_by_id:
+        log.warning("doc_type backfill: no corpus loaded, retrieval rows stay bucketed as unknown")
+        return
+    for row in rows:
+        if not _field(row, "doc_type") and hasattr(row, "__dict__"):
+            row.doc_type = doc_type_by_id.get(_field(row, "doc_id"), "")
+
+
 def load_result_rows(path: str | Path) -> list[dict[str, Any]]:
     """Read a results jsonl file into a list of row dicts."""
 
@@ -56,7 +87,7 @@ def load_result_rows(path: str | Path) -> list[dict[str, Any]]:
 # `reporting.tables` consume the grouped rows.
 TASK_TO_TABLES: Mapping[str, tuple[str, ...]] = {
     "G1_oracle_ladder": ("headline", "parser", "resolution", "scale", "composition", "routing"),
-    "G2_retrieval": ("matched_cross", "kdepth", "retrieval_accuracy"),
+    "G2_retrieval": ("matched_cross", "kdepth", "retrieval_accuracy", "retrieval_accuracy_overall"),
     "G3_hallucination": ("hallucination", "routing"),
 }
 
@@ -123,6 +154,7 @@ def assemble_tables(task_paths: Mapping[str, Any], *, config: Any = None, margin
     g1 = results("G1_oracle_ladder")
     g2 = results("G2_retrieval")
     g2_retrieval = side("G2_retrieval", "retrieval.jsonl")
+    _backfill_retrieval_doc_type(g2_retrieval, config)
     g3 = results("G3_hallucination")
     classifier_rows = side("G3_hallucination", "classifier.jsonl")
 
@@ -140,6 +172,7 @@ def assemble_tables(task_paths: Mapping[str, Any], *, config: Any = None, margin
         candidates += [_safe(matched_cross.build, g2), _safe(kdepth.build, g2)]
     if g2_retrieval:
         candidates.append(_safe(retrieval_accuracy.build, g2_retrieval))
+        candidates.append(_safe(retrieval_accuracy.build_overall, g2_retrieval))
     if g3:
         candidates.append(_safe(hallucination.build, g3))
     return [t for t in candidates if t is not None]

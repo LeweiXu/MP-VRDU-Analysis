@@ -10,6 +10,26 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**Added `retrieval_accuracy_overall` table (2026-07-13).** A second retrieval table
+alongside `retrieval_accuracy`, grouped by (retriever, modality, k) only (no doc_type
+split), one macro P/R/F1 row per method/k over all 847 questions. `build_overall` in
+`reporting/tables/retrieval_accuracy.py`, wired into `G2_retrieval`'s table set. The
+per-doc_type `retrieval_accuracy` table is unchanged.
+
+**Retrieval side-artifact carries `doc_type`; old `retrieval.jsonl` backfilled at build (2026-07-13).**
+The 2026-07-12 rename grouped `retrieval_accuracy` by the native `doc_type`, but
+`RetrievalEvalRow` (`scoring/retrieval.py`) only ever carried the modality `bin_label`,
+so every retrieval row read back a blank `doc_type` and the whole table collapsed into
+one `(unknown)` bucket per method/k. Fix: added a `doc_type` field to `RetrievalEvalRow`
+(set from `question.doc_type`, so fresh `retrieval.jsonl` carries it; `asdict` picks it
+up), and `reporting/build.py::_backfill_retrieval_doc_type` fills a blank `doc_type` on
+older rows by joining `doc_id → doc_type` from the corpus (best-effort; if the dataset
+can't load, rows stay `(unknown)` and the table still builds). The `g2-retrieval-full`
+table now breaks out all 7 classes (n sums to 847 per method/k). Watch-out for the
+manual memo fold-in: the qwen3-embedding regen (`retrieval_qwen3.jsonl`) also re-ranked
+`colqwen3`, which is already in `retrieval.jsonl`, so a blind `cat >>` double-counts
+colqwen3 at k=1,3,5; fold in only the `qwen3-embedding*` rows.
+
 **`ops.build --run-tag` + kaya.py split into `ops/kaya/runner/` (2026-07-12).**
 - **`ops.build` gained `--run-tag`.** It built from `ExperimentConfig()` (un-tagged
   cache) and so found nothing for a run-tagged generation; `--run-tag g1-representation-full`
