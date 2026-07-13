@@ -78,6 +78,15 @@ VISUAL_RESOLUTION_PRESETS: dict[str, int] = {
     "low": 400 * 28 * 28,    #   313,600 px   ~400 tok/page
 }
 
+# Qwen3-Embedding-4B (the expensive dense text retriever) memory knobs for a 16 GB
+# V100. There is no FlashAttention on this card, so attention is O(seq^2): a long page
+# must be capped or it OOMs on its own forward pass, and batch=1 bounds the batch
+# dimension. 4096 fits with headroom and truncates only the rare very long page. Applied
+# in retrievers/text.py; raise the cap (or drop batching) only on a larger GPU.
+QWEN3_EMBEDDING_MAX_SEQ_LEN = 4096
+QWEN3_EMBEDDING_ENCODE_BATCH = 1
+
+
 # The single fixed resolution used by every table except the scientific sweep.
 # PLACEHOLDER: set to "med" so the pipeline has a concrete preset to run at. This
 # is NOT the final value. The operational resolution probe (job 1017226, V rung,

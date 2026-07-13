@@ -7,6 +7,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from config import QWEN3_EMBEDDING_ENCODE_BATCH, QWEN3_EMBEDDING_MAX_SEQ_LEN
 from retrievers import (
     DEFAULT_CACHE_DIR,
     DEFAULT_DATA_DIR,
@@ -23,14 +24,6 @@ from schema import Question
 
 BGE_M3_MODEL_ID = "BAAI/bge-m3"
 QWEN3_EMBEDDING_MODEL_ID = "Qwen/Qwen3-Embedding-4B"
-
-# Qwen3-Embedding-4B is fp16 (~8 GB) on one 16 GB V100, so the OOM is activation, not
-# weight, memory. batch_size=1 bounds the batch dimension, but attention is O(seq^2) in
-# sequence length, so a single dense page (thousands of tokens) still spikes past the
-# ~8 GB headroom on its own forward pass. Cap the sequence length too: 4096 fits one
-# card at batch=1 with headroom, and only the rare very long page is truncated.
-QWEN3_ENCODE_BATCH = 1
-QWEN3_MAX_SEQ_LEN = 4096
 
 
 class Bm25Retriever(Retriever):
@@ -244,7 +237,7 @@ class Qwen3EmbeddingRetriever(DenseTextRetriever):
 
     name = "qwen3-embedding"
     model_id = QWEN3_EMBEDDING_MODEL_ID
-    encode_batch_size = QWEN3_ENCODE_BATCH
+    encode_batch_size = QWEN3_EMBEDDING_ENCODE_BATCH
 
     def _load_embedder(self) -> Any:
         from sentence_transformers import SentenceTransformer
@@ -261,8 +254,8 @@ class Qwen3EmbeddingRetriever(DenseTextRetriever):
                     self.model_id, device="cuda",
                     model_kwargs={"torch_dtype": torch.float16},
                 )
-                if getattr(model, "max_seq_length", 0) and model.max_seq_length > QWEN3_MAX_SEQ_LEN:
-                    model.max_seq_length = QWEN3_MAX_SEQ_LEN
+                if getattr(model, "max_seq_length", 0) and model.max_seq_length > QWEN3_EMBEDDING_MAX_SEQ_LEN:
+                    model.max_seq_length = QWEN3_EMBEDDING_MAX_SEQ_LEN
                 return model
         except Exception:
             pass

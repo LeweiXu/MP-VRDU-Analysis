@@ -48,7 +48,9 @@ Three changes from sizing the full runs for the Kaya migration deadline:
   but attention is O(seq^2), so one long page still spikes past the fp16 weights on its own
   forward. Restored the 4096 cap (fits one V100 at batch=1 with headroom; only the rare
   very long page truncates). Only affects the qwen3-embedding retrieval memo build (stage
-  1), not inference (bge-m3 / colqwen2.5). Dense-retriever memo rows now also carry
+  1), not inference (bge-m3 / colqwen2.5). The cap and encode batch now live in `config.py`
+  (`QWEN3_EMBEDDING_MAX_SEQ_LEN` / `QWEN3_EMBEDDING_ENCODE_BATCH`), imported by
+  `retrievers/text.py`, instead of being hard-coded in the module. Dense-retriever memo rows now also carry
   truncation telemetry (`seq_len_cap`, `page_token_lens`, `truncated_pages`) so you can see
   which pages the cap clipped; the fields are additive (the memo loader ignores unknown
   keys) and populate only for embedders exposing an HF tokenizer (qwen3-embedding, not
