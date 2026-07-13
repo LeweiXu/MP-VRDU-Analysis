@@ -6,14 +6,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import DEFAULT_PATHS
+from config import DEFAULT_PATHS, SCANNED_MIN_CHARS_PER_PAGE
 from data.loader import resolve_pdf
 from schema import Page, Question, TextSpan
-
-
-# A page with fewer than this many embedded characters is treated as having no
-# text layer (scanned).
-SCANNED_MIN_CHARS_PER_PAGE = 20
 
 
 def safe_stem(name: str) -> str:

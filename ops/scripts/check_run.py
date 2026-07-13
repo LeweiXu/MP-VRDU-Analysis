@@ -7,7 +7,7 @@ how many are missing versus expected. It exits nonzero if any task looks broken,
 it can gate a run. Read-only: it never touches the caches.
 
     python -m ops.scripts.check_run --spec ops/specs/h100.yaml
-    python -m ops.scripts.check_run --check-all   # every ops/specs/*.yaml + a summary table
+    python -m ops.scripts.check_run --all   # every ops/specs/*.yaml + a summary table
 """
 
 # kaya: target=login
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -27,6 +28,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 DEFAULT_SPEC = ROOT / "ops" / "specs" / "h100.yaml"
+# Spec files skipped by the --all sweep: templates and smoke-test specs are not real
+# runs, so they have no cells to check.
+ALL_SKIP_RE = re.compile(r"(template|smoke)", re.IGNORECASE)
 # Fraction of oom+error cells at or above which a task is called broken. On an
 # H100 a healthy run is ~0; a nonzero cluster usually means a broken parser env or
 # a bad model load, not sporadic noise.
@@ -96,8 +100,9 @@ DETAIL_HEADER = f"{'verdict':7} {'run_tag':24} {'task':20} {'ok':>6} {'oom':>4} 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC, help="spec file to check (default: h100.yaml)")
-    parser.add_argument("--check-all", action="store_true",
-                        help="check every ops/specs/*.yaml and print a cross-run summary table")
+    parser.add_argument("--all", dest="check_all", action="store_true",
+                        help="check every ops/specs/*.yaml (skipping *template*/*smoke* specs) "
+                             "and print a cross-run summary table")
     parser.add_argument("--fail-rate", type=float, default=DEFAULT_FAIL_RATE,
                         help="oom+error fraction at/above which a task fails (default 0.02)")
     parser.add_argument("--no-expected", action="store_true",
@@ -200,7 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     from experiments.corpus.yaml_spec import config_from_spec, load_yaml_specs
 
     if args.check_all:
-        spec_files = sorted((ROOT / "ops" / "specs").glob("*.yaml"))
+        spec_files = [p for p in sorted((ROOT / "ops" / "specs").glob("*.yaml"))
+                      if not ALL_SKIP_RE.search(p.name)]
     else:
         spec_files = [args.spec]
 

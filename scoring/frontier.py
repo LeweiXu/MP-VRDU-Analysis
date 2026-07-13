@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from config import REPRESENTATION_LADDER
 
-RUNG_ORDER: tuple[str, ...] = ("T", "TL", "TLV", "V")
+RUNG_ORDER: tuple[str, ...] = REPRESENTATION_LADDER
 
 
 @dataclass(frozen=True)

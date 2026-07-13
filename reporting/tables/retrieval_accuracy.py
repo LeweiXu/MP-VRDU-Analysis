@@ -61,3 +61,28 @@ def build_overall(retrieval_rows: Sequence[Any]) -> Table:
         columns=columns,
         rows=table_rows,
     )
+
+
+def build_by_dpi(retrieval_rows: Sequence[Any]) -> Table:
+    """One row per (retriever, k, dpi): the render-resolution sweep for visual retrieval.
+
+    Reads the same rows as the other retrieval tables; a run stamps each row with its
+    render `dpi`, so pointing the build at a merged multi-dpi `retrieval.jsonl` yields
+    the P/R/F1-vs-dpi comparison. Single-dpi builds show one dpi per method.
+    """
+
+    columns = ["retriever", "modality", "k", "dpi", "P", "R", "F1", "n"]
+    by_group = group_by(
+        retrieval_rows,
+        lambda r: (getattr(r, "retriever", ""), getattr(r, "modality", ""),
+                   int(getattr(r, "k", 0)), int(getattr(r, "dpi", 0))),
+    )
+    table_rows: list[list[str]] = []
+    for (retriever, modality, k, dpi) in sorted(by_group, key=lambda t: (t[0], t[1], t[2], t[3])):
+        table_rows.append([retriever, modality, str(k), str(dpi), *_metrics(by_group[(retriever, modality, k, dpi)])])
+    return Table(
+        key="retrieval_dpi",
+        title="Retrieval accuracy: page P/R/F1 by method and render DPI",
+        columns=columns,
+        rows=table_rows,
+    )

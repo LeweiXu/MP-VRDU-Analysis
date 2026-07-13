@@ -1,5 +1,6 @@
 """Run knobs shared across the pipeline: filesystem paths, model specs, named
-visual-resolution presets, and sampling defaults."""
+visual-resolution presets, sampling defaults, and the scoring/evaluation constants
+(bootstrap CI, abstention forms, judge rubric and models, representation ladder)."""
 
 from __future__ import annotations
 
@@ -39,8 +40,14 @@ DEFAULT_PATHS = ProjectPaths()
 
 # Manual-annotation modality bins, ordered text -> visual. The bin axis is the
 # whole thesis and is labelled by hand (data.annotations), not derived from the
-# native doc_type.
+# native doc_type. Single source of truth: data.annotations.BIN_LABELS and
+# data.binning.BINS import this.
 DEFAULT_BINS: tuple[str, ...] = ("text-dominant", "mixed-modality", "visual-dominant")
+
+# The cost-ordered representation ladder (rungs the reasoner climbs). Single source
+# of truth: scoring.frontier.RUNG_ORDER and pipeline.representation.RUNGS import this,
+# and it is the default for ExperimentConfig.representations.
+REPRESENTATION_LADDER: tuple[str, ...] = ("T", "TL", "TLV", "V")
 
 DEFAULT_REASONER_SPEC = "qwen3vl-8b-local"
 SMOKE_REASONER_SPEC = "qwen3vl-2b-local"
@@ -85,6 +92,53 @@ VISUAL_RESOLUTION_PRESETS: dict[str, int] = {
 # in retrievers/text.py; raise the cap (or drop batching) only on a larger GPU.
 QWEN3_EMBEDDING_MAX_SEQ_LEN = 4096
 QWEN3_EMBEDDING_ENCODE_BATCH = 1
+
+
+# -- Scoring / evaluation constants (the science params) ---------------------
+# These define how results are measured; centralised here so a run's evaluation
+# is visible in one place rather than buried in scoring/ and pipeline/.
+
+# Document-level bootstrap CI (scoring.accuracy): number of resamples, RNG seed,
+# and the two-sided quantiles (2.5% / 97.5% = a 95% interval).
+N_BOOTSTRAP = 1000
+BOOTSTRAP_SEED = 0
+BOOTSTRAP_CI_LOW = 0.025
+BOOTSTRAP_CI_HIGH = 0.975
+
+# Normalised refusal / no-evidence surface forms an answer counts as abstention
+# (scoring.abstention). Matched as substrings against the casefolded answer.
+ABSTENTION_FORMS: tuple[str, ...] = (
+    "not answerable",
+    "cannot be answered",
+    "can not be answered",
+    "cannot answer",
+    "unanswerable",
+    "insufficient information",
+    "not enough information",
+    "no answer",
+    "unknown from the document",
+    "not mentioned",
+    "not provided",
+)
+
+# A page is "text" if it has at least this many extracted characters; a document
+# with too few is auto-labelled scanned (data.render). This is the digital/scanned
+# corpus split threshold.
+SCANNED_MIN_CHARS_PER_PAGE = 20
+
+# LLM judge (pipeline.judge): the shared rubric and the two judge model ids. The
+# judge model and prompt *are* the evaluation, so they live here.
+JUDGE_GPT_MODEL = "gpt-4o-mini"
+JUDGE_GEMINI_MODEL = "gemini-2.5-flash"
+JUDGE_SYSTEM_PROMPT = """You judge answers to document questions.
+Return only JSON with keys:
+- verdict: one of correct, incorrect, abstained
+- extracted_answer: the answer extracted from the model response, or empty string
+- rationale: a short reason
+
+Mark correct when the model answer is semantically equivalent to the gold answer.
+For unanswerable questions, mark correct only when the model abstains.
+"""
 
 
 # The single fixed resolution used by every table except the scientific sweep.
@@ -191,7 +245,7 @@ class ExperimentConfig:
     prompt_modes: tuple[str, ...] = G3_PROMPT_MODES
 
     # Representation ladder (cost-ordered; names historical, mechanism in tools/).
-    representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
+    representations: tuple[str, ...] = REPRESENTATION_LADDER
 
     # PDF parser feeding the TL/TLV text channel. The parser comparison varies
     # this per run (as its own run_tag); T and V never use it.

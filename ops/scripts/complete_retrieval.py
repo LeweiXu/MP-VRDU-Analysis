@@ -43,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="'matched' zips the text+vision method lists into joints")
     parser.add_argument("--single-ks", default="", help="override single-method k values (default: the spec's)")
     parser.add_argument("--joint-ks", default="", help="override joint k values (default: the spec's)")
+    parser.add_argument("--parser-dpi", type=int, default=None,
+                        help="override the spec's render DPI (for the visual-retrieval DPI sweep); "
+                             "each DPI keys its own memo, so runs never collide")
     parser.add_argument("--filename", default="retrieval_extra.jsonl",
                         help="benchmark output file beside the run (NOT retrieval.jsonl)")
     parser.add_argument("--fresh", action="store_true",
@@ -72,6 +75,9 @@ def main(argv: list[str] | None = None) -> int:
 
     spec = load_yaml_specs(args.spec)[0]
     config = config_from_spec(spec)
+    if args.parser_dpi is not None:
+        from dataclasses import replace
+        config = replace(config, dpi=int(args.parser_dpi))
     ensure_cache_env(config)
 
     single_ks = _ints(args.single_ks) or (tuple(config.k_values) or (1,))

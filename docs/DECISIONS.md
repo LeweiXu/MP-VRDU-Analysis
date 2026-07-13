@@ -10,6 +10,36 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**Centralised Tier-1/2 experiment knobs into `config.py` (2026-07-13).**
+Followed up the qwen3-seq-cap move. Now single-sourced in `config.py`, with the old
+homes importing back: the **representation ladder** `("T","TL","TLV","V")` as
+`REPRESENTATION_LADDER` (was re-declared in `scoring/frontier.RUNG_ORDER`,
+`pipeline/representation.RUNGS`, and the `ExperimentConfig.representations` default), and
+the **modality bins** as `DEFAULT_BINS` (`data/annotations.BIN_LABELS` now imports it;
+`data/binning.BINS` already did). Science params moved out of modules into `config.py`:
+bootstrap `N_BOOTSTRAP`/`BOOTSTRAP_SEED`/`BOOTSTRAP_CI_LOW`/`_HIGH` (`scoring/accuracy`),
+`ABSTENTION_FORMS` (`scoring/abstention`), `SCANNED_MIN_CHARS_PER_PAGE` (`data/render`), and
+`JUDGE_SYSTEM_PROMPT` + `JUDGE_GPT_MODEL`/`JUDGE_GEMINI_MODEL` (`pipeline/judge`). No cycle:
+`config.py` imports only stdlib. Tier-3 (vision embed knobs, model-ID registry, prompt
+headers) deferred. Frozen interfaces untouched (only defaults moved).
+
+**Cheap visual-retrieval DPI sweep (2026-07-13).** New retrieval-only study: re-embed and
+re-rank pages at several render DPIs, compare page P/R/F1. `RetrievalEvalRow` gained a `dpi`
+field (set from `config.dpi`); `reporting/tables/retrieval_accuracy.build_by_dpi` builds a
+`retrieval_dpi` table grouped by (retriever, k, dpi), wired into `G2_retrieval`. Old rows
+get `dpi` backfilled from `config.dpi` at build (`_enrich_retrieval_rows`, alongside the
+doc_type backfill). `complete_retrieval.py --parser-dpi N` overrides the render DPI so one
+spec sweeps DPIs (each keys its own memo, so runs never collide). Spec: `kaya_g2_dpi.yaml`
+(vision-only; methods come from `--vision-methods`). Cheap because retrieval-only (no
+reasoner, no judge), vision-only (text spans are dpi-independent), and lower DPI is faster
+than the 200 baseline. Caveat: the colqwen processors resize internally, so the informative
+range is low→moderate DPI.
+
+**`check_run.py`: `--check-all` renamed to `--all`, skips template/smoke specs (2026-07-13).**
+The all-specs sweep now filters out any `ops/specs/*.yaml` whose name matches
+`(template|smoke)` (regex `ALL_SKIP_RE`), since those aren't real runs. Flag renamed
+`--check-all` → `--all` (dest still `check_all`).
+
 **Added `retrieval_accuracy_overall` table (2026-07-13).** A second retrieval table
 alongside `retrieval_accuracy`, grouped by (retriever, modality, k) only (no doc_type
 split), one macro P/R/F1 row per method/k over all 847 questions. `build_overall` in

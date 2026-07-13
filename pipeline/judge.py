@@ -10,6 +10,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, TypeVar
 
+from config import JUDGE_GEMINI_MODEL, JUDGE_GPT_MODEL, JUDGE_SYSTEM_PROMPT
 from schema import Prediction, Question, Score
 from scoring.abstention import is_abstention
 
@@ -104,17 +105,6 @@ class StubJudge(Judge):
         )
 
 
-JUDGE_SYSTEM_PROMPT = """You judge answers to document questions.
-Return only JSON with keys:
-- verdict: one of correct, incorrect, abstained
-- extracted_answer: the answer extracted from the model response, or empty string
-- rationale: a short reason
-
-Mark correct when the model answer is semantically equivalent to the gold answer.
-For unanswerable questions, mark correct only when the model abstains.
-"""
-
-
 def _response_text(response: Any) -> str:
     """Extract text from OpenAI chat-completion-like response objects."""
 
@@ -200,7 +190,7 @@ class GPT4oMiniJudge(Judge):
 
     spec = "gpt4o-mini-judge"
 
-    def __init__(self, *, model: str = "gpt-4o-mini", client: Any | None = None, spec: str | None = None) -> None:
+    def __init__(self, *, model: str = JUDGE_GPT_MODEL, client: Any | None = None, spec: str | None = None) -> None:
         self.model = model
         self.spec = spec or self.spec
         if client is None:
@@ -252,7 +242,7 @@ class GeminiJudge(Judge):
 
     spec = "gemini-flash-judge"
 
-    def __init__(self, *, model: str = "gemini-2.5-flash", client: Any | None = None, spec: str | None = None) -> None:
+    def __init__(self, *, model: str = JUDGE_GEMINI_MODEL, client: Any | None = None, spec: str | None = None) -> None:
         self.model = model
         self.spec = spec or self.spec
         self._index = 0  # sticky: once a key is exhausted we stay on the fallback

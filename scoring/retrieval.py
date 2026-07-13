@@ -40,6 +40,9 @@ class RetrievalEvalRow:
     # over the corpus (the same amortized value on every row for a method).
     retrieval_latency_s: float = 0.0
     index_build_amortized_s: float = 0.0
+    # Render DPI the pages were rasterised at for this ranking. Only vision retrieval
+    # depends on it (text spans are dpi-independent); the DPI sweep varies it.
+    dpi: int = 0
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ def score_retrieval(
     k: int,
     retrieval_latency_s: float = 0.0,
     index_build_amortized_s: float = 0.0,
+    dpi: int = 0,
 ) -> RetrievalEvalRow:
     """Build one retrieval metric row for a question."""
 
@@ -97,6 +101,7 @@ def score_retrieval(
         f1=prf.f1,
         retrieval_latency_s=float(retrieval_latency_s),
         index_build_amortized_s=float(index_build_amortized_s),
+        dpi=int(dpi),
     )
 
 

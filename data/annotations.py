@@ -9,12 +9,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Mapping
 
-from config import ROOT
+from config import DEFAULT_BINS, ROOT
 
 # Default location of the hand-labelled document table. One row per document.
 ANNOTATION_SHEET = ROOT / "annotations" / "doc_labels.csv"
 
-BIN_LABELS = ("text-dominant", "mixed-modality", "visual-dominant")
+BIN_LABELS = DEFAULT_BINS
 SCAN_LABELS = ("digital", "scanned")
 # dominant_visual is exploratory and multi-valued; these are the allowed tokens.
 VISUAL_KINDS = ("tables", "charts", "figures", "photos", "none")

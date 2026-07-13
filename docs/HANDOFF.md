@@ -136,5 +136,5 @@ mmlongbench = 1091 = 847 answerable (657 digital) + 244 unanswerable.
 - **`retrieval.jsonl` vs `predictions.jsonl`:** predictions is key-cached (edits survive,
   reduced-spec reruns skip done cells, leave orphans); `retrieval.jsonl` is rewritten each
   stage-1 run unless `--skip-retrieval`.
-- **check_run** `--check-all` sweeps every spec (uncommitted flag; `--no-push` on the login
+- **check_run** `--all` sweeps every spec except `*template*`/`*smoke*` (uncommitted flag; `--no-push` on the login
   node).

@@ -6,6 +6,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
+from config import REPRESENTATION_LADDER
 from schema import Modality, Page, Part, Payload, TextPart
 from tools.parser import DEFAULT_PARSER, parser_markdown
 from tools.text import embedded_text
@@ -15,7 +16,7 @@ from tools.visual import visual_channel
 # The four cost-ordered rungs. The ladder is not cumulative: TL's parser text
 # replaces T's embedded text rather than adding to it, and there is no separate
 # layout channel (the "L" is historical). V is the image-only reference point.
-RUNGS: tuple[str, ...] = ("T", "TL", "TLV", "V")
+RUNGS: tuple[str, ...] = REPRESENTATION_LADDER
 
 
 class Representation(ABC):

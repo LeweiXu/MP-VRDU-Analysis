@@ -38,17 +38,25 @@ def group_rows(rows: Iterable[Any]) -> dict[tuple, list[Any]]:
     return groups
 
 
-def _backfill_retrieval_doc_type(rows: Sequence[Any], config: Any) -> None:
-    """Fill a blank `doc_type` on retrieval rows from the corpus, in place.
+def _enrich_retrieval_rows(rows: Sequence[Any], config: Any) -> None:
+    """Backfill `doc_type` and `dpi` on retrieval rows in place (older artifacts).
 
-    The retrieval side-artifact only started carrying `doc_type` recently, so an
-    older `retrieval.jsonl` leaves it blank and the doc_type breakdown collapses
-    to `(unknown)`. doc_type is a property of the document, so we recover it by
-    doc_id from the loaded corpus. Best-effort: if the dataset can't be loaded the
-    rows are left as they are (the table still builds, just bucketed as unknown).
+    Both fields were added to the retrieval side-artifact after some `retrieval.jsonl`
+    files were written, so older rows leave them blank: `doc_type` would collapse the
+    breakdown to `(unknown)`, and `dpi` would read 0. `doc_type` is a property of the
+    document (recovered by doc_id from the corpus); `dpi` is the run's render setting
+    (`config.dpi`), correct for a single-run build. Best-effort: if the corpus can't
+    load, `doc_type` is left blank and the table still builds.
     """
 
-    if not rows or all(_field(row, "doc_type") for row in rows):
+    if not rows:
+        return
+    run_dpi = int(getattr(config, "dpi", 0) or 0)
+    if run_dpi:
+        for row in rows:
+            if not _field(row, "dpi") and hasattr(row, "__dict__"):
+                row.dpi = run_dpi
+    if all(_field(row, "doc_type") for row in rows):
         return
     data_dir = getattr(getattr(config, "paths", None), "data_dir", None) or getattr(config, "data_dir", None)
     doc_type_by_id: dict[str, str] = {}
@@ -87,7 +95,7 @@ def load_result_rows(path: str | Path) -> list[dict[str, Any]]:
 # `reporting.tables` consume the grouped rows.
 TASK_TO_TABLES: Mapping[str, tuple[str, ...]] = {
     "G1_oracle_ladder": ("headline", "parser", "resolution", "scale", "composition", "routing"),
-    "G2_retrieval": ("matched_cross", "kdepth", "retrieval_accuracy", "retrieval_accuracy_overall"),
+    "G2_retrieval": ("matched_cross", "kdepth", "retrieval_accuracy", "retrieval_accuracy_overall", "retrieval_dpi"),
     "G3_hallucination": ("hallucination", "routing"),
 }
 
@@ -154,7 +162,7 @@ def assemble_tables(task_paths: Mapping[str, Any], *, config: Any = None, margin
     g1 = results("G1_oracle_ladder")
     g2 = results("G2_retrieval")
     g2_retrieval = side("G2_retrieval", "retrieval.jsonl")
-    _backfill_retrieval_doc_type(g2_retrieval, config)
+    _enrich_retrieval_rows(g2_retrieval, config)
     g3 = results("G3_hallucination")
     classifier_rows = side("G3_hallucination", "classifier.jsonl")
 
@@ -173,6 +181,7 @@ def assemble_tables(task_paths: Mapping[str, Any], *, config: Any = None, margin
     if g2_retrieval:
         candidates.append(_safe(retrieval_accuracy.build, g2_retrieval))
         candidates.append(_safe(retrieval_accuracy.build_overall, g2_retrieval))
+        candidates.append(_safe(retrieval_accuracy.build_by_dpi, g2_retrieval))
     if g3:
         candidates.append(_safe(hallucination.build, g3))
     return [t for t in candidates if t is not None]

@@ -150,7 +150,7 @@ def write_retrieval_eval(
                 for k in single_ks:
                     _emit(handle, score_retrieval(
                         q, rmap[q.id][:k], retriever=name, modality=modalities[name], k=k,
-                        retrieval_latency_s=lmap[q.id], index_build_amortized_s=idx))
+                        retrieval_latency_s=lmap[q.id], index_build_amortized_s=idx, dpi=int(config.dpi)))
             handle.flush()
             retriever.unload()
             free_gpu()
@@ -170,7 +170,7 @@ def write_retrieval_eval(
                     merged = union(rankings[tname][q.id][:k], rankings[vname][q.id][:k])
                     _emit(handle, score_retrieval(
                         q, merged, retriever=joint_name, modality="joint", k=k,
-                        retrieval_latency_s=lat, index_build_amortized_s=idx))
+                        retrieval_latency_s=lat, index_build_amortized_s=idx, dpi=int(config.dpi)))
             handle.flush()
 
 

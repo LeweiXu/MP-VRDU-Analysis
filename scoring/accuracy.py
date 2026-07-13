@@ -8,6 +8,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from config import BOOTSTRAP_CI_HIGH, BOOTSTRAP_CI_LOW, BOOTSTRAP_SEED, N_BOOTSTRAP
+
 
 class AccuracyRow(Protocol):
     """Minimal row surface required for accuracy aggregation."""
@@ -48,7 +50,8 @@ def _quantile(values: Sequence[float], q: float) -> float:
     return float(ordered[lower] * (1 - weight) + ordered[upper] * weight)
 
 
-def accuracy_summary(rows: Iterable[AccuracyRow], *, n_bootstrap: int = 1000, seed: int = 0) -> AccuracySummary:
+def accuracy_summary(rows: Iterable[AccuracyRow], *, n_bootstrap: int = N_BOOTSTRAP,
+                     seed: int = BOOTSTRAP_SEED) -> AccuracySummary:
     """Return mean accuracy and a document-level bootstrap 95% CI.
 
     The point estimate is the row-level mean over all questions in `rows`.
@@ -81,6 +84,6 @@ def accuracy_summary(rows: Iterable[AccuracyRow], *, n_bootstrap: int = 1000, se
         n_rows=len(materialized),
         n_docs=len(doc_ids),
         accuracy=accuracy,
-        ci_low=_quantile(samples, 0.025),
-        ci_high=_quantile(samples, 0.975),
+        ci_low=_quantile(samples, BOOTSTRAP_CI_LOW),
+        ci_high=_quantile(samples, BOOTSTRAP_CI_HIGH),
     )

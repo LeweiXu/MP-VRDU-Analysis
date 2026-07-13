@@ -4,20 +4,7 @@ from __future__ import annotations
 
 import re
 
-#: Normalised refusal / no-evidence surface forms.
-ABSTENTION_FORMS: tuple[str, ...] = (
-    "not answerable",
-    "cannot be answered",
-    "can not be answered",
-    "cannot answer",
-    "unanswerable",
-    "insufficient information",
-    "not enough information",
-    "no answer",
-    "unknown from the document",
-    "not mentioned",
-    "not provided",
-)
+from config import ABSTENTION_FORMS
 
 
 def is_abstention(text: str) -> bool:
