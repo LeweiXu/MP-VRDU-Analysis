@@ -10,6 +10,23 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**g3 `<image>` sentinel collision fixed (2026-07-14).** g3 recorded 18 errors on one doc
+(`2306.05425v1.pdf`, a VLM paper): its text literally contains `<image>`, which is also the
+`IMAGE_PLACEHOLDER` sentinel, so the backends' placeholder-count-vs-image check rejected the
+prompt (`prompt has N image placeholders but M images`), even in text-only rungs. Fix:
+`ModelInput.to_local_prompt` (`models/payload.py`) now replaces a literal `<image>` in
+document text with `[image]` before inserting real sentinels, so only true image slots are
+counted (covers both qwen3vl and internvl local backends). Behaviour fix inside the frozen
+`ModelInput`; signature unchanged and the prediction cache key does not include prompt text,
+so no cached cells are invalidated. Regression: `tests/test_image_placeholder_collision.py`.
+
+**InternVL3-8B einops fix + failed-cell rerun specs (2026-07-14).** The post-run sweep found
+InternVL3-8B produced zero valid cells (3388) because its remote modeling code imports `einops`,
+which was absent from the Kaya `core` env. Added `einops==0.8.2` to `docs/requirements/core.txt`
+and installed it into `envs/core`; verified via transformers `check_imports` (no submit). New
+specs `kaya_failed_rerun.yaml` (the 4 failed run_tags, verbatim configs, run with `--failed-only`)
+and `kaya_failed_rerun_smoke.yaml` (same, 1 question each, isolated `*-smoke` run_tags, run fresh).
+
 **Centralised Tier-1/2 experiment knobs into `config.py` (2026-07-13).**
 Followed up the qwen3-seq-cap move. Now single-sourced in `config.py`, with the old
 homes importing back: the **representation ladder** `("T","TL","TLV","V")` as

@@ -56,13 +56,19 @@ class ModelInput:
 
         Images are returned in order so the local backend can bind each
         `<image>` placeholder to the right pixels via the model's processor.
+
+        The `<image>` sentinel is inserted here only for real image parts, so any
+        literal `<image>` inside document text (some PDFs and parser markdown
+        contain it, e.g. VLM papers) is neutralised to `[image]` first. Otherwise
+        it would be miscounted as an image slot and the backends' placeholder-vs-image
+        check would reject the prompt.
         """
 
         pieces: list[str] = []
         images: list[ImagePart] = []
         for part in self.parts:
             if isinstance(part, TextPart):
-                pieces.append(part.text)
+                pieces.append(part.text.replace(IMAGE_PLACEHOLDER, "[image]"))
             else:
                 pieces.append(IMAGE_PLACEHOLDER)
                 images.append(part)
