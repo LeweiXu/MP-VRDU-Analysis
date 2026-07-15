@@ -10,6 +10,23 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**Judge re-judge no-op + coverage line, reporting guards, mined tables (2026-07-14).**
+For the judge+build+mine pass over the near-complete cache: (1) `ops/judge.py::judge_run`
+now checks the result cache **before** calling `judge.score()` on an `ok` cell, so a
+re-judge of an already-scored cell makes no Gemini call (a true no-op top-up after the
+pending reruns land, not just a zero-write); it also prints a per-run coverage line
+(cells/ok/oom/err + answerable/unanswerable). (2) Reporting safeguards: a shared
+`restrict_to_primary_spec` (`reporting/tables/_common.py`) keeps the single-reasoner
+tables (headline/parser/resolution/composition/routing) from silently pooling a
+multi-`model_spec` sweep into one accuracy cell; `scale` (the model-size/quant sweep)
+keeps every spec. `scale` and `routing` gained a clean `prefill_ms` column with a
+caveat that `latency_ms` is decode-inflated (~20x by the verbose-answer change). (3)
+Six `mined_*` deployment tables (`reporting/tables/mined_*.py`) driven by `ops/mine.py`
+(kept out of the task->table routing so they never misfire on the wrong run_tag), with
+a candidates summary at `docs/generated/mined_tables.md`; the H100-dependent
+evidence-survival table is defined-but-blocked. Additive only; frozen contracts and
+cache keys untouched.
+
 **g3 `<image>` sentinel collision fixed (2026-07-14).** g3 recorded 18 errors on one doc
 (`2306.05425v1.pdf`, a VLM paper): its text literally contains `<image>`, which is also the
 `IMAGE_PLACEHOLDER` sentinel, so the backends' placeholder-count-vs-image check rejected the

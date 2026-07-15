@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from config import DEFAULT_REASONER_SPEC
 from scoring.accuracy import accuracy_summary
 from scoring.cost import cost_summary
 from scoring.frontier import RUNG_ORDER, FrontierCell, sufficiency_frontier
+
+log = logging.getLogger("mpvrdu.build")
 
 # The tables group by the native mmlongbench doc_type label. These are the seven
 # classes the dataset ships; anything else (e.g. a longdocurl task tag) sorts after
@@ -75,6 +79,40 @@ def load_ok_rows(path: str | Path) -> list[Any]:
         if current is None or (getattr(current, "status", "") != "ok" and getattr(row, "status", "") == "ok"):
             best[key] = row
     return [row for row in best.values() if getattr(row, "status", "") == "ok"]
+
+
+def restrict_to_primary_spec(rows: Sequence[Any]) -> list[Any]:
+    """Keep one reasoner when a cache pools several model_specs.
+
+    The single-reasoner tables (headline/parser/resolution/composition/routing)
+    group by doc_type/rung only, so a multi-spec run_tag (the reasoner or quant
+    sweeps) would silently average 2B/4B/8B/32B into one accuracy cell. When more
+    than one model_spec is present, keep the primary (`DEFAULT_REASONER_SPEC`), or
+    the most common spec if the primary is absent, and warn. `scale` and the mined
+    quant table deliberately skip this so they can compare specs.
+    """
+
+    rows = list(rows)
+    specs = {getattr(r, "model_spec", "") for r in rows}
+    if len(specs) <= 1:
+        return rows
+    counts: dict[str, int] = {}
+    for r in rows:
+        spec = getattr(r, "model_spec", "")
+        counts[spec] = counts.get(spec, 0) + 1
+    keep = DEFAULT_REASONER_SPEC if DEFAULT_REASONER_SPEC in specs else max(counts, key=counts.get)
+    log.warning(
+        "table build: %d model_specs pooled (%s); restricting to %r to avoid mixing reasoners",
+        len(specs), ", ".join(sorted(specs)), keep,
+    )
+    return [r for r in rows if getattr(r, "model_spec", "") == keep]
+
+
+def prefill_ms(rows: Sequence[Any]) -> str:
+    """Mean prefill latency in milliseconds (the decode-free, uncontaminated cost)."""
+
+    rows = list(rows)
+    return f"{cost_summary(rows).prefill_s * 1000:.0f}" if rows else "-"
 
 
 def doc_type_of(row: Any) -> str:

@@ -7,7 +7,15 @@ from typing import Any
 
 from scoring.frontier import RUNG_ORDER
 
-from ._common import Table, acc_cell, doc_type_of, frontier_rung, group_by, ordered_doc_types
+from ._common import (
+    Table,
+    acc_cell,
+    doc_type_of,
+    frontier_rung,
+    group_by,
+    ordered_doc_types,
+    restrict_to_primary_spec,
+)
 
 
 def _present_rungs(rows: Sequence[Any], allowed: Sequence[str]) -> list[str]:
@@ -51,7 +59,7 @@ def build(rows: Sequence[Any], *, margin_points: float = 3.0) -> Table:
 
     oracle = [r for r in rows if getattr(r, "condition", "") == "oracle"]
     return ladder_by_doc_type(
-        oracle or rows,
+        restrict_to_primary_spec(oracle or rows),
         key="headline",
         title="Headline: cost-ordered ladder accuracy by doc_type (oracle pages)",
         margin_points=margin_points,

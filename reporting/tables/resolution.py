@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from ._common import Table, acc_cell, doc_type_of, group_by, ordered_doc_types
+from ._common import Table, acc_cell, doc_type_of, group_by, ordered_doc_types, restrict_to_primary_spec
 
 # Presets in ascending pixel budget, so the swept columns read cheap -> expensive.
 RES_ORDER = ("low", "med", "high")
@@ -19,7 +19,9 @@ def build(rows: Sequence[Any], *, resolution_label: str = "", margin_points: flo
     """Accuracy of the image-bearing rungs (TLV, V) by doc_type and resolution preset."""
 
     oracle = [r for r in rows if getattr(r, "condition", "") == "oracle"]
-    image_rows = [r for r in (oracle or rows) if getattr(r, "representation", "") in ("TLV", "V")]
+    image_rows = restrict_to_primary_spec(
+        [r for r in (oracle or rows) if getattr(r, "representation", "") in ("TLV", "V")]
+    )
 
     seen_res = {getattr(r, "visual_resolution", "") for r in image_rows}
     present_res = [res for res in RES_ORDER if res in seen_res]

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from ._common import Table
+from ._common import Table, restrict_to_primary_spec
 from .headline import ladder_by_doc_type
 
 
@@ -20,7 +20,7 @@ def build(rows: Sequence[Any], *, parser_label: str = "", margin_points: float =
     oracle = [r for r in rows if getattr(r, "condition", "") == "oracle"]
     note = f"parser = {parser_label}" if parser_label else ""
     return ladder_by_doc_type(
-        oracle or rows,
+        restrict_to_primary_spec(oracle or rows),
         key="parser",
         title="Parser comparison: TL/TLV accuracy by doc_type",
         rungs=("TL", "TLV"),

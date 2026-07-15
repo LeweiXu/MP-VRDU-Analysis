@@ -58,26 +58,45 @@ def judge_run(config, task_name: str, questions: dict, judge) -> int:
     predictions = PredictionCache(paths.predictions)
     results = ResultCache(paths.results)
     written = 0
+    total = ok = oom = err = other = unanswerable = 0
     for record in predictions:
         question = questions.get(record.question_id)
         if question is None:
             raise KeyError(f"{task_name}: question {record.question_id!r} not found in dataset {config.dataset!r}")
+        total += 1
+        if record.is_unanswerable:
+            unanswerable += 1
+        if record.status == "ok":
+            ok += 1
+        elif record.status == "oom":
+            oom += 1
+        elif record.status == "error":
+            err += 1
+        else:
+            other += 1
+        result_key = make_result_key(
+            record.question_id, record.doc_id, record.condition, record.representation,
+            record.model_spec, record.page_indices, judge.spec, record.visual_resolution,
+        )
+        # Check the result cache before scoring so a re-judge of an already-scored cell
+        # is a true no-op: no wasted judge API call (matters for the Gemini day-quota).
+        if results.get(result_key) is not None:
+            continue
         if record.status == "ok":
             score = judge.score(question, record.as_prediction())
         else:
             # A failed cell has nothing to score; carry it through with the judge
             # spec set so results.jsonl has one row per predictions.jsonl row.
             score = Score(value=0.0, correct=False, abstained=False, judge_spec=judge.spec)
-        result_key = make_result_key(
-            record.question_id, record.doc_id, record.condition, record.representation,
-            record.model_spec, record.page_indices, judge.spec, record.visual_resolution,
-        )
-        if results.get(result_key) is not None:
-            continue
         results.put(record.to_result_row(score, result_key))
         written += 1
-    log.info("judge %s: scored %d prediction(s) (judge=%s) -> %s",
-             task_name, written, judge.spec, paths.results)
+    other_note = f" other={other}" if other else ""
+    log.info(
+        "judge %s: coverage cells=%d ok=%d oom=%d err=%d%s answerable=%d unanswerable=%d "
+        "| judged_this_pass=%d (judge=%s) -> %s",
+        task_name, total, ok, oom, err, other_note, total - unanswerable, unanswerable,
+        written, judge.spec, paths.results,
+    )
     return written
 
 

@@ -246,6 +246,9 @@ class GeminiJudge(Judge):
         self.model = model
         self.spec = spec or self.spec
         self._index = 0  # sticky: once a key is exhausted we stay on the fallback
+        # Offline scorer used for the rare cell whose Gemini response is empty /
+        # non-JSON (e.g. a safety block), so one bad response can't abort the run.
+        self._fallback = StubJudge(self.spec)
         if client is not None:
             self._clients: list[Any] = [client]
             return
@@ -263,32 +266,62 @@ class GeminiJudge(Judge):
             response_mime_type="application/json",
         )
         contents = _judge_user_payload(question, prediction)
-        response = self._generate_with_fallback(
-            lambda client: client.models.generate_content(model=self.model, contents=contents, config=config)
-        )
-        payload = _extract_json_object(response.text or "")
-        return _score_from_verdict(question, prediction, payload, judge_spec=self.spec, model=self.model)
+        # An empty or non-JSON response is not a transient API error (so _with_retry
+        # does not cover it); retry the call a couple of times, then fall back to the
+        # offline heuristic for this one cell rather than crashing the whole run.
+        for attempt in range(3):
+            response = self._generate_with_fallback(
+                lambda client: client.models.generate_content(model=self.model, contents=contents, config=config)
+            )
+            text = response.text or ""
+            try:
+                payload = _extract_json_object(text)
+            except (json.JSONDecodeError, ValueError):
+                if attempt < 2:
+                    continue
+                log.warning(
+                    "judge: unparseable Gemini response after %d tries (text len=%d) for q=%s; "
+                    "using offline fallback score",
+                    attempt + 1, len(text.strip()), question.id,
+                )
+                return self._fallback.score(question, prediction)
+            return _score_from_verdict(question, prediction, payload, judge_spec=self.spec, model=self.model)
 
-    def _generate_with_fallback(self, call: Callable[[Any], Any]) -> Any:
-        """Try the active key (with retry); on a quota error roll to the next key."""
+    def _generate_with_fallback(self, call: Callable[[Any], Any], *, max_rounds: int = 8) -> Any:
+        """Try each key (with retry); on a per-minute rate limit across all keys, back
+        off and retry the whole sweep rather than crash. A per-day quota still raises
+        (retrying the same day is pointless) so the run stops cleanly and resumes later.
+
+        The key index is reset each sweep (non-sticky) so a transient blip on the
+        strong primary key never permanently strands the run on a weak fallback key.
+        """
 
         last_exc: Exception | None = None
-        while self._index < len(self._clients):
-            client = self._clients[self._index]
-            try:
-                return _with_retry(lambda: call(client))
-            except Exception as exc:
-                last_exc = exc
-                if self._index + 1 < len(self._clients) and _is_quota_error(exc):
-                    log.warning(
-                        "judge key #%d hit quota/rate limit (%s); falling back to key #%d",
-                        self._index + 1,
-                        type(exc).__name__,
-                        self._index + 2,
-                    )
-                    self._index += 1
-                    continue
-                raise
+        for round_i in range(max_rounds):
+            self._index = 0
+            quota_this_round = daily_this_round = False
+            while self._index < len(self._clients):
+                client = self._clients[self._index]
+                try:
+                    return _with_retry(lambda: call(client))
+                except Exception as exc:
+                    last_exc = exc
+                    if not _is_quota_error(exc):
+                        raise  # non-quota (auth/bad-request/parse) -> propagate now
+                    quota_this_round = True
+                    daily_this_round = daily_this_round or _is_daily_quota(exc)
+                    if self._index + 1 < len(self._clients):
+                        log.warning("judge key #%d rate/quota limited (%s); trying key #%d",
+                                    self._index + 1, type(exc).__name__, self._index + 2)
+                        self._index += 1
+                        continue
+                    break  # every key hit quota this sweep
+            if not quota_this_round or daily_this_round:
+                break  # nothing to retry, or a per-day cap that won't clear soon
+            wait = min(60.0, 15.0 * (round_i + 1))
+            log.warning("all judge keys rate-limited (round %d/%d); backing off %.0fs before retry",
+                        round_i + 1, max_rounds, wait)
+            time.sleep(wait)
         assert last_exc is not None  # loop entered at least once (>=1 client)
         raise last_exc
 
