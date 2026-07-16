@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser(
         "status",
-        help="print GPU partition node/queue/start-estimate status (read-only, over SSH)",
+        help="print GPU partition node, queue, and recent-job status (read-only, over SSH)",
     )
     add_status_args(status)
 

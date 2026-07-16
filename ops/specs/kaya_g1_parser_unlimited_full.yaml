@@ -1,0 +1,27 @@
+# Full Unlimited-OCR parser run, on its own (mineru already completed). Explicit
+# run_tag so a single-parser list still targets the existing g1-parser-full-unlimited
+# cache (the loader only auto-suffixes when >1 parser). Submit with --failed-only to
+# re-run the 1680 cells that errored (ParserCacheMiss) before the worker fix; parser
+# warming is included in the failed-only path, so the now-working Unlimited-OCR warms
+# the markdown first, then the 8B reasoner reads it. 2x V100 (8B needs two).
+task_name: G1_oracle_ladder
+run_tag: g1-parser-full-unlimited
+dataset: [mmlongbench]
+corpus: {scan: any, pool: answerable, sampling: full}
+parser_dpi: 200
+parser: [unlimited]
+retrieval_representation: [oracle]
+text_retrievers: []
+vision_retrievers: []
+joints: []
+k_values: []
+joint_k_values: []
+inference_text_retriever: none
+inference_vision_retriever: none
+inference_joint: false
+reasoner_spec: [qwen3vl-8b-local]
+quantization: [bf16]
+visual_resolution: [med]
+reasoner_representations: [TL, TLV]
+prompt_modes: [none]
+classifier: none

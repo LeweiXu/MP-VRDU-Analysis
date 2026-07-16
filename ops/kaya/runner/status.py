@@ -1,5 +1,5 @@
-"""Kaya GPU partition status: node/GPU/memory usage, the running/pending queue, the
-user's jobs, and scheduler start estimates. Read-only, over SSH.
+"""Kaya GPU partition status: node/GPU/memory usage, the running/pending queue,
+the user's jobs, and recently completed jobs. Read-only, over SSH.
 
 Reachable as `python -m ops.kaya.kaya status` (or standalone `python -m
 ops.kaya.runner.status`)."""
@@ -54,18 +54,19 @@ class QueueRow:
 
 
 @dataclass(frozen=True)
-class StartEstimate:
-    """One `squeue --start` estimate row."""
+class CompletedJob:
+    """One completed SLURM allocation from sacct."""
 
     job_id: str
     name: str
     user: str
     state: str
-    start_time_raw: str
-    start_time_scheduler: str
-    wait: str
-    wait_seconds: int | None
-    reason_or_nodelist: str
+    elapsed: str
+    time_limit: str
+    started: str
+    ended: str
+    partition: str
+    alloc_tres: str
 
 
 def add_status_args(parser: argparse.ArgumentParser) -> None:
@@ -76,7 +77,6 @@ def add_status_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--user", help="user for the 'Your Jobs' section; defaults to remote whoami")
     parser.add_argument("--limit", type=int, default=25, help="maximum rows in the Your Jobs section")
     parser.add_argument("--json", action="store_true", help="emit JSON")
-    parser.add_argument("--no-start", action="store_true", help="skip squeue --start estimates")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -308,63 +308,35 @@ def load_queue(
     return parse_queue(remote(ssh_alias, command), scheduler_tz=scheduler_tz)
 
 
-def parse_start_estimates(
-    output: str,
-    *,
-    scheduler_tz: tzinfo,
-    scheduler_tz_name: str,
-    now: datetime | None = None,
-) -> list[StartEstimate]:
-    """Parse pipe-delimited `squeue --start` output."""
+def parse_completed_jobs(
+    output: str, *, partition: str | None = None, limit: int = 10
+) -> list[CompletedJob]:
+    """Parse completed sacct allocations, newest end time first."""
 
-    rows: list[StartEstimate] = []
-    current_time = now or datetime.now(scheduler_tz)
+    rows: list[CompletedJob] = []
     for line in output.splitlines():
-        if not line.strip() or line.startswith("JOBID|"):
+        if not line.strip():
             continue
-        parts = line.split("|", 5)
-        if len(parts) == 6:
-            raw_start = parts[4]
-            if raw_start == "N/A":
-                rows.append(StartEstimate(*parts[:4], raw_start, "N/A", "N/A", None, parts[5]))
-                continue
-            scheduler_start = parse_slurm_time(raw_start, scheduler_tz)
-            if scheduler_start is None:
-                rows.append(StartEstimate(*parts[:4], raw_start, raw_start, "unknown", None, parts[5]))
-                continue
-            wait_seconds = max(0, int((scheduler_start - current_time).total_seconds()))
-            rows.append(
-                StartEstimate(
-                    *parts[:4],
-                    raw_start,
-                    format_dt(scheduler_start, scheduler_tz_name),
-                    format_wait(timedelta(seconds=wait_seconds)),
-                    wait_seconds,
-                    parts[5],
-                )
-            )
-    return sorted(rows, key=lambda row: (row.wait_seconds is None, row.wait_seconds or 0))
+        parts = line.split("|", 9)
+        state = parts[3].split() if len(parts) == 10 else []
+        if state and state[0] == "COMPLETED" and (partition is None or parts[8] == partition):
+            rows.append(CompletedJob(*parts))
+    rows.sort(key=lambda row: row.ended if row.ended not in ("", "Unknown") else "", reverse=True)
+    return rows[:limit]
 
 
-def load_start_estimates(
-    ssh_alias: str,
-    partition: str,
-    *,
-    scheduler_tz: tzinfo,
-    scheduler_tz_name: str,
-) -> list[StartEstimate]:
-    """Load scheduler start estimates for pending jobs."""
+def load_completed_jobs(
+    ssh_alias: str, partition: str, *, user: str, limit: int = 10
+) -> list[CompletedJob]:
+    """Load the user's recently completed jobs from the last 30 days."""
 
-    fmt = "%i|%j|%u|%t|%S|%R"
+    fields = "JobIDRaw,JobName,User,State,Elapsed,Timelimit,Start,End,Partition,AllocTRES"
     command = (
-        f"squeue -p {shlex.quote(partition)} -t PENDING "
-        f"--start -h -o {shlex.quote(fmt)}"
+        "start=$(date -d '30 days ago' +%Y-%m-%d); "
+        f"sacct -X -n -P -u {shlex.quote(user)} -S \"$start\" "
+        f"--format={shlex.quote(fields)}"
     )
-    return parse_start_estimates(
-        remote(ssh_alias, command),
-        scheduler_tz=scheduler_tz,
-        scheduler_tz_name=scheduler_tz_name,
-    )
+    return parse_completed_jobs(remote(ssh_alias, command), partition=partition, limit=limit)
 
 
 def summarize(nodes: list[NodeStatus]) -> dict[str, Any]:
@@ -402,7 +374,7 @@ def print_text(
     nodes: list[NodeStatus],
     queue: list[QueueRow],
     mine: list[QueueRow],
-    starts: list[StartEstimate],
+    completed: list[CompletedJob],
     limit: int,
     scheduler_tz_name: str,
 ) -> None:
@@ -442,30 +414,9 @@ def print_text(
     print()
     print("Your Jobs")
     print_queue(mine[:limit], show_queue_time=True)
-    if starts:
-        print()
-        print("Scheduler Start Estimates")
-        print_table(
-            ["job_id", "state", "scheduler_time", "wait", "name", "user", "reason/nodelist"],
-            [
-                [
-                    row.job_id,
-                    row.state,
-                    row.start_time_scheduler,
-                    row.wait,
-                    row.name,
-                    row.user,
-                    row.reason_or_nodelist,
-                ]
-                for row in starts
-            ],
-        )
-        print()
-        print(
-            "Start estimates come from `squeue --start`. Treat them as best-effort "
-            "backfill predictions, not reservations; priority, reservations, and "
-            "other jobs can change them."
-        )
+    print()
+    print("Recently Completed Jobs")
+    print_completed_jobs(completed)
 
 
 def print_queue(rows: list[QueueRow], *, show_queue_time: bool = False) -> None:
@@ -497,6 +448,30 @@ def print_queue(rows: list[QueueRow], *, show_queue_time: bool = False) -> None:
     print_table(headers, table_rows)
 
 
+def print_completed_jobs(rows: list[CompletedJob]) -> None:
+    """Print recently completed jobs or an empty message."""
+
+    if not rows:
+        print("(none)")
+        return
+    print_table(
+        ["job_id", "elapsed", "limit", "started", "ended", "name", "partition", "resources"],
+        [
+            [
+                row.job_id,
+                row.elapsed,
+                row.time_limit,
+                row.started,
+                row.ended,
+                row.name,
+                row.partition,
+                row.alloc_tres,
+            ]
+            for row in rows
+        ],
+    )
+
+
 def run_status(args: argparse.Namespace) -> int:
     """Gather and print Kaya status from a parsed namespace (config/ssh_alias/...)."""
 
@@ -510,17 +485,12 @@ def run_status(args: argparse.Namespace) -> int:
         if user
         else []
     )
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-    starts = (
-        []
-        if args.no_start
-        else load_start_estimates(
-            ssh_alias,
-            args.partition,
-            scheduler_tz=scheduler_tz,
-            scheduler_tz_name=scheduler_tz_name,
-        )
+    completed = (
+        load_completed_jobs(ssh_alias, args.partition, user=user, limit=10)
+        if user
+        else []
     )
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
 
     if args.json:
         print(
@@ -535,10 +505,7 @@ def run_status(args: argparse.Namespace) -> int:
                     "nodes": [asdict(node) for node in nodes],
                     "queue": [asdict(row) for row in queue],
                     "my_jobs": [asdict(row) for row in mine],
-                    "start_estimates": [asdict(row) for row in starts],
-                    "start_estimate_note": (
-                        "squeue --start estimates are best-effort scheduler predictions, not guarantees"
-                    ),
+                    "recently_completed_jobs": [asdict(row) for row in completed],
                 },
                 indent=2,
                 sort_keys=True,
@@ -552,7 +519,7 @@ def run_status(args: argparse.Namespace) -> int:
         nodes=nodes,
         queue=queue,
         mine=mine,
-        starts=starts,
+        completed=completed,
         limit=max(1, args.limit),
         scheduler_tz_name=scheduler_tz_name,
     )

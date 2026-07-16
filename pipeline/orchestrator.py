@@ -41,7 +41,14 @@ class ResultCache:
                 line = line.strip()
                 if not line:
                     continue
-                row = ResultRow.from_dict(json.loads(line))
+                try:
+                    row = ResultRow.from_dict(json.loads(line))
+                except (json.JSONDecodeError, TypeError, KeyError) as exc:
+                    # A process killed mid-write (e.g. a host reboot) leaves a truncated
+                    # last line; skip it rather than bricking the whole judge run. The
+                    # judge is idempotent, so the dropped cell is simply re-scored.
+                    log.warning("result cache %s: skipping malformed line (%s)", self.path.name, exc)
+                    continue
                 self._index[row.result_key] = row
 
     def get(self, result_key: str) -> ResultRow | None:
@@ -81,7 +88,12 @@ class PredictionCache:
                 line = line.strip()
                 if not line:
                     continue
-                record = PredictionRow.from_dict(json.loads(line))
+                try:
+                    record = PredictionRow.from_dict(json.loads(line))
+                except (json.JSONDecodeError, TypeError, KeyError) as exc:
+                    # Tolerate a truncated last line from a process killed mid-write.
+                    log.warning("prediction cache %s: skipping malformed line (%s)", self.path.name, exc)
+                    continue
                 self._index[record.prediction_key] = record
 
     def get(self, prediction_key: str) -> PredictionRow | None:

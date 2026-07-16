@@ -112,7 +112,7 @@ envs/mpvrdu/bin/python -m ops.kaya.kaya watch [job_id]
 envs/mpvrdu/bin/python -m ops.kaya.kaya status
 ```
 
-`status` prints partition node/queue/start-estimate state (read-only, over SSH);
+`status` prints partition node/queue state plus your 10 most recently completed jobs (read-only, over SSH);
 the same report is also runnable standalone as `python -m ops.kaya.runner.status`.
 It does not contain task-specific subcommands. Setup, prestage, GPU smoke, and
 probe commands are separate runnable scripts:

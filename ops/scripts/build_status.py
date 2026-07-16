@@ -19,10 +19,11 @@ G1, G2, G3 = "G1_oracle_ladder", "G2_retrieval", "G3_hallucination"
 PLANNED = [
     ("headline", G1, "g1-representation-full", ""),
     ("composition", G1, "g1-representation-full", ""),
-    ("parser", G1, "g1-representation-full", "single parser only (paddleocrvl); a comparison needs more parser run_tags"),
+    ("parser (paddleocrvl)", G1, "g1-representation-full", "paddleocrvl TL/TLV; mineru is a second parser (g1-parser-full-mineru), a merged comparison needs a cross-run_tag build"),
+    ("parser (mineru)", G1, "g1-parser-full-mineru", "mineru TL/TLV; build once judged"),
     ("scale (model-size)", G1, "g1-reasoner-full", ""),
     ("scale (quantization)", G1, "g1-quantization-full", ""),
-    ("resolution", G1, "g1-resolution-full", "PARTIAL: 488 CUDA-launch-fault cells; build over survivors, reduced n"),
+    ("resolution", G1, "g1-resolution-full", "the 488 CUDA-fault cells were rerun and fixed (err=0); remaining gap is the OOM tail + unjudged new cells"),
     ("routing", G1, "g1-representation-full", "needs g3 classifier price for predicted_routing"),
     # internvl_family is special-cased in render(): built once the reasoner run has
     # judged internvl cells, else blocked on the einops --failed-only rerun.
@@ -30,9 +31,9 @@ PLANNED = [
     ("retrieval_accuracy (doc_type)", G2, "g2-retrieval-full", "side artifact (benchmark complete), no judge needed"),
     ("retrieval_accuracy_overall", G2, "g2-retrieval-full", "side artifact (benchmark complete), no judge needed"),
     ("retrieval_dpi", G2, "g2-dpi", "BLOCKED: DPI sweep not run (separate retrieval-only pass)"),
-    ("matched_cross", G2, "g2-retrieval-full", "BLOCKED: reasoner inference ~14%; finishes on the H100"),
-    ("kdepth", G2, "g2-retrieval-full", "BLOCKED: reasoner inference ~14%; finishes on the H100"),
-    ("hallucination", G3, "g3-hallucination-full", ""),
+    ("matched_cross", G2, "g2-retrieval-full", "BLOCKED: reasoner inference 4137/15246; resuming on Kaya job 1061344, else finishes on H100"),
+    ("kdepth", G2, "g2-retrieval-full", "BLOCKED: reasoner inference 4137/15246; resuming on Kaya job 1061344, else finishes on H100"),
+    ("hallucination", G3, "g3-hallucination-full", "243 cells CUDA-faulted (node fault, not judged); builds from the ok cells"),
 ]
 
 

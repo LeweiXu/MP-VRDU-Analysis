@@ -78,13 +78,13 @@ _OCR_PROMPT = "Convert this document page to clean Markdown. Output only the Mar
 
 
 def _load_vlm(model_id: str):
-    """Load an OCR VLM with the correct auto-class + its processor, cached in `_HF`.
+    """Load a chat-style OCR VLM with the correct auto-class + processor (mineru).
 
-    These are vision-language models, not causal LMs: MinerU 2.5 is a Qwen2-VL
-    (`Qwen2VLConfig`) and Unlimited-OCR a custom image-text-to-text model
-    (`UnlimitedOCRConfig`). `AutoModelForCausalLM` rejects both ("Unrecognized
-    configuration class"), so load through the vision auto-classes, newest first,
-    falling back across transformers versions.
+    MinerU 2.5 is a Qwen2-VL (`Qwen2VLConfig`) served through the standard vision
+    auto-classes. `AutoModelForCausalLM` rejects it ("Unrecognized configuration
+    class"), so load through the vision auto-classes, newest first, falling back
+    across transformers versions. (Unlimited-OCR is NOT loaded here — its custom
+    config maps to `AutoModel`, see `_load_unlimited`.)
     """
 
     import transformers
@@ -109,11 +109,10 @@ def _load_vlm(model_id: str):
 
 
 def _hf_vlm_markdown(image_path: str, model_id: str) -> str:
-    """Transformers image->markdown for the VLM parser backends (mineru / unlimited).
+    """Transformers image->markdown for the chat-style VLM parser backend (mineru).
 
-    Runs a single OCR-to-markdown generation on one page. The parser stacks are
-    pinned in their own Kaya envs (parse-mineru / parse-unlimited) and exercised
-    there, not locally.
+    Runs a single OCR-to-markdown generation on one page. The stack is pinned in
+    its own Kaya env (parse-mineru) and exercised there, not locally.
     """
 
     import torch
@@ -131,9 +130,77 @@ def _hf_vlm_markdown(image_path: str, model_id: str) -> str:
     return processor.decode(trimmed, skip_special_tokens=True).strip()
 
 
+# -- Unlimited-OCR -----------------------------------------------------------
+# Baidu Unlimited-OCR is a DeepSeek-OCR-style model: its custom `UnlimitedOCRConfig`
+# is registered (via auto_map) to `AutoModel`, not the image-text-to-text classes,
+# and it has its own `model.infer(...)` OCR entry point instead of `.generate()` +
+# a chat template. The "gundam" args below (base_size/image_size/crop_mode) are the
+# upstream-recommended document-parsing config.
+
+_UNLIMITED_PROMPT = "<image>document parsing."
+
+
+def _load_unlimited(model_id: str):
+    """Load Unlimited-OCR via `AutoModel` + `AutoTokenizer` (trust_remote_code)."""
+
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+
+    if model_id in _HF:
+        return _HF[model_id]
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    model = AutoModel.from_pretrained(
+        model_id, trust_remote_code=True, use_safetensors=True, torch_dtype=torch.bfloat16,
+    )
+    model = model.eval()
+    if torch.cuda.is_available():
+        model = model.cuda()
+    _HF[model_id] = (tokenizer, model)
+    return _HF[model_id]
+
+
+def _unlimited_markdown(image_path: str, model_id: str) -> str:
+    """Unlimited-OCR page->markdown via `model.infer(...)`.
+
+    `infer` returns None in normal mode but writes `{output_path}/result.md` when
+    `save_results=True`; we point it at a throwaway dir and read that file back
+    (falling back to `eval_mode=True`, which returns the same text, if the file is
+    missing).
+    """
+
+    import tempfile
+
+    tokenizer, model = _load_unlimited(model_id)
+    with tempfile.TemporaryDirectory() as out_dir:
+        model.infer(
+            tokenizer,
+            prompt=_UNLIMITED_PROMPT,
+            image_file=image_path,
+            output_path=out_dir,
+            base_size=1024,
+            image_size=640,
+            crop_mode=True,
+            max_length=32768,
+            no_repeat_ngram_size=35,
+            ngram_window=128,
+            save_results=True,
+        )
+        result = Path(out_dir) / "result.md"
+        if result.exists():
+            return result.read_text(encoding="utf-8").strip()
+    text = model.infer(
+        tokenizer, prompt=_UNLIMITED_PROMPT, image_file=image_path, output_path="",
+        base_size=1024, image_size=640, crop_mode=True, max_length=32768,
+        no_repeat_ngram_size=35, ngram_window=128, eval_mode=True,
+    )
+    return (text or "").strip()
+
+
 def _markdown(parser_tool: str, model_id: str, image_path: str) -> str:
     if parser_tool == "paddleocrvl":
         return _paddleocrvl(image_path, model_id)
+    if parser_tool == "unlimited":
+        return _unlimited_markdown(image_path, model_id)
     return _hf_vlm_markdown(image_path, model_id)
 
 
