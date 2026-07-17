@@ -12,6 +12,7 @@ from typing import Any
 from scoring.frontier import RUNG_ORDER
 
 from ._common import Table, group_by
+from ._load import column_n_footer
 
 # Page-count buckets keep per-cell n large enough to read a rate.
 _PAGE_BUCKETS = ((1, 1, "1"), (2, 5, "2-5"), (6, 10, "6-10"), (11, 20, "11-20"), (21, 10**9, "21+"))
@@ -58,3 +59,30 @@ def build(rows: Sequence[Any]) -> Table:
         rows=table_rows,
         note="rate = oom cells / all cells in the group, over the 16 GB V100 runs.",
     )
+
+
+def summary(rows: Sequence[Any]) -> Table:
+    """Overall OOM rate by rung × resolution, pooled over page-count buckets."""
+
+    usable = list(rows)
+    seen_res = sorted({getattr(r, "visual_resolution", "") for r in usable})
+    present_rungs = [r for r in RUNG_ORDER if any(getattr(x, "representation", "") == r for x in usable)]
+    columns = ["rung", *seen_res, "n_total"]
+    n_by_col = {res: 0 for res in seen_res}
+    table_rows: list[list[str]] = []
+    for rung in present_rungs:
+        rung_rows = [r for r in usable if getattr(r, "representation", "") == rung]
+        by_res = group_by(rung_rows, lambda r: getattr(r, "visual_resolution", ""))
+        cells: list[str] = []
+        for res in seen_res:
+            group = by_res.get(res, [])
+            n_by_col[res] += len(group)
+            if group:
+                rate = sum(1 for r in group if getattr(r, "status", "") == "oom") / len(group)
+                cells.append(f"{rate * 100:.1f}")
+            else:
+                cells.append("-")
+        table_rows.append([rung, *cells, str(len(rung_rows))])
+    return Table(key="oom_frontier_summary", title="OOM frontier (overall): OOM rate by rung and resolution",
+                 columns=columns, rows=table_rows, footer=column_n_footer(columns, n_by_col),
+                 note="rate = oom cells / all cells; pooled over page buckets and G1 runs.")

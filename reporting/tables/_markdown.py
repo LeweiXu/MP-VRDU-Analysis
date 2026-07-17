@@ -8,25 +8,41 @@ from collections.abc import Sequence
 from ._common import Table
 
 
+def _cell(value: object) -> str:
+    """A markdown table cell: escape `|` so joint names like `bm25|colqwen` don't
+    split the row into extra columns."""
+
+    return str(value).replace("|", "\\|")
+
+
+def _grid_row(cells: Sequence[object]) -> str:
+    return "| " + " | ".join(_cell(c) for c in cells) + " |"
+
+
 def render_table(table: Table) -> str:
-    """Render one table as a markdown section: title, optional note, grid."""
+    """Render one table as a markdown section: title, caption, optional note, grid,
+    footer rows."""
 
     lines = [f"### {table.title}", ""]
+    if table.caption:
+        lines += ["> " + " · ".join(f"**{k}**: {_cell(v)}" for k, v in table.caption.items()), ""]
     if table.note:
         lines += [f"_{table.note}_", ""]
-    header = "| " + " | ".join(table.columns) + " |"
-    rule = "| " + " | ".join("---" for _ in table.columns) + " |"
-    lines += [header, rule]
+    lines += [_grid_row(table.columns), "| " + " | ".join("---" for _ in table.columns) + " |"]
     if table.rows:
-        for row in table.rows:
-            lines.append("| " + " | ".join(str(cell) for cell in row) + " |")
+        lines += [_grid_row(row) for row in table.rows]
     else:
         lines.append("| " + " | ".join("" for _ in table.columns) + " |")
+    lines += [_grid_row(foot) for foot in table.footer]
     lines.append("")
     return "\n".join(lines)
 
 
-def render_report(tables: Sequence[Table]) -> str:
-    """Render several tables into one markdown document."""
+def render_report(tables: Sequence[Table], *, preamble: str = "") -> str:
+    """Render several tables into one markdown document, with an optional preamble
+    (e.g. the shared baseline every table's caption is measured against)."""
 
-    return "# Tables\n\n" + "\n".join(render_table(t) for t in tables)
+    head = "# Tables\n\n"
+    if preamble:
+        head += preamble.rstrip() + "\n\n"
+    return head + "\n".join(render_table(t) for t in tables)

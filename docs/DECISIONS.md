@@ -10,6 +10,26 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**Build rewritten to the base+sweeps design; one explainable table per variable (2026-07-17).**
+The generation side moved to base+sweeps (one variable off a fixed baseline) back in the
+yaml-expander change (2026-07-10), but `reporting/build.py` was knowingly left routing tables
+by *task identity* (`TASK_TO_TABLES`), so every G1 run emitted the same six tables regardless
+of what it swept (the reasoner run's `parser.csv` was meaningless), non-swept axes were stamped
+with `config` scalar defaults, output fragmented into `results/tables/full-<run_tag>/` dirs, and
+several builders (`parser`/`routing`/`hallucination`) silently misfired on the current
+`condition` format (`oracle__none`, matched by the `or list(rows)` fallback). Rewrote it
+plan-driven: a new `reporting/plan.py` maps each analysis table to its source run_tag(s) + swept
+axis + builder; `config.BASELINE` holds the per-task baseline as the source of truth; `ops.build`
+writes one CSV per table plus a combined `results/tables/all_tables.md`, flat. Every table now
+carries a caption stating its swept axis and the held-fixed baseline (so results are explainable
+on their own) and accuracy grids carry a per-column `n` footer (columns differ under OOM). Tables
+comparing out-of-key axes merge across run_tags (parser paddle+mineru+unlimited; digital+scanned
+scan-merge). Added `reporting/tables/_load.py` (cross-run loaders + footer), condition helpers
+(`split_condition`/`base_condition`) in `_common`, and folded `ops/mine.py` (deleted, with its
+`docs/generated/mined_tables.md`) into the build. Fixed a stale `prompt-<mode>` condition in
+`tests/test_mined_and_guards.py`. Build only reads caches/specs; frozen interfaces
+(`schema.py`, `pipeline/` ABCs, orchestrator cache key/`ResultRow`) untouched; 243 tests green.
+
 **Judge re-judge no-op + coverage line, reporting guards, mined tables (2026-07-14).**
 For the judge+build+mine pass over the near-complete cache: (1) `ops/judge.py::judge_run`
 now checks the result cache **before** calling `judge.score()` on an `ok` cell, so a

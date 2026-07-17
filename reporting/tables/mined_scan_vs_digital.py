@@ -11,7 +11,7 @@ from typing import Any
 
 from scoring.frontier import RUNG_ORDER
 
-from ._common import Table, acc_cell, doc_type_of, group_by, ordered_doc_types, restrict_to_primary_spec
+from ._common import Table, acc_cell, base_condition, doc_type_of, group_by, ordered_doc_types, restrict_to_primary_spec
 
 # Digital first, then scanned; anything else sorts after.
 _SCAN_ORDER = {"digital": 0, "scanned": 1}
@@ -24,7 +24,7 @@ def scan_label_of(row: Any) -> str:
 def build(rows: Sequence[Any]) -> Table:
     """doc_type x rung accuracy split by scan_label (digital vs scanned)."""
 
-    oracle = restrict_to_primary_spec([r for r in rows if getattr(r, "condition", "") == "oracle"] or list(rows))
+    oracle = restrict_to_primary_spec([r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"] or list(rows))
     labels = sorted({scan_label_of(r) for r in oracle}, key=lambda s: (_SCAN_ORDER.get(s, 99), s))
     present_rungs = [r for r in RUNG_ORDER if any(getattr(x, "representation", "") == r for x in oracle)]
 
@@ -46,3 +46,23 @@ def build(rows: Sequence[Any]) -> Table:
         rows=table_rows,
         note="oracle pages, primary reasoner. Empty T on scans is by design (no embedded text).",
     )
+
+
+def summary(rows: Sequence[Any]) -> Table:
+    """Overall ladder accuracy split by scan_label, pooled across doc_types (rung × scan)."""
+
+    oracle = restrict_to_primary_spec(
+        [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"] or list(rows)
+    )
+    labels = sorted({scan_label_of(r) for r in oracle}, key=lambda s: (_SCAN_ORDER.get(s, 99), s))
+    present_rungs = [r for r in RUNG_ORDER if any(getattr(x, "representation", "") == r for x in oracle)]
+    columns = ["rung", *labels, *(f"n_{lab}" for lab in labels)]
+    table_rows: list[list[str]] = []
+    for rung in present_rungs:
+        rung_rows = [r for r in oracle if getattr(r, "representation", "") == rung]
+        by_scan = group_by(rung_rows, scan_label_of)
+        accs = [acc_cell(by_scan.get(lab, [])) for lab in labels]
+        counts = [str(len(by_scan.get(lab, []))) for lab in labels]
+        table_rows.append([rung, *accs, *counts])
+    return Table(key="scan_vs_digital_summary", title="Scanned vs digital (overall): ladder accuracy by rung",
+                 columns=columns, rows=table_rows, note="empty T on scans is by design (no embedded text).")

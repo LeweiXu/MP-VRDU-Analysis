@@ -9,7 +9,7 @@ from typing import Any
 from scoring.accuracy import accuracy_summary
 from scoring.cost import cost_summary
 
-from ._common import Table, doc_type_of, frontier_rung, group_by, restrict_to_primary_spec
+from ._common import Table, base_condition, doc_type_of, frontier_rung, group_by, restrict_to_primary_spec
 
 
 def _acc_pct(rows: Sequence[Any]) -> float:
@@ -38,7 +38,7 @@ def build(rows: Sequence[Any], classifier_rows: Sequence[Any] = (), *, margin_po
     """Four routing policies: accuracy and mean latency (predicted adds the
     classifier's own latency)."""
 
-    oracle = restrict_to_primary_spec([r for r in rows if getattr(r, "condition", "") == "oracle"] or list(rows))
+    oracle = restrict_to_primary_spec([r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"] or list(rows))
     by_rung = group_by(oracle, lambda r: getattr(r, "representation", ""))
     routed = _oracle_rows(oracle, margin_points=margin_points)
     clf_ms = (

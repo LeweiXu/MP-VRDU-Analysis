@@ -49,3 +49,17 @@ def build(rows: Sequence[Any]) -> Table:
         rows=table_rows,
         note="headroom_mb = 16384 - peak_vram_mb_max; a negative value means the config OOMs a V100.",
     )
+
+
+def summary(rows: Sequence[Any]) -> Table:
+    """Worst-case peak VRAM + headroom per model_spec, pooled over all rungs/resolutions."""
+
+    usable = [r for r in rows if getattr(r, "peak_vram_bytes", 0)]
+    columns = ["model_spec", "peak_vram_mb_max", "headroom_mb", "n"]
+    table_rows: list[list[str]] = []
+    for spec, group in sorted(group_by(usable, lambda r: getattr(r, "model_spec", "")).items()):
+        max_mb = max(int(getattr(r, "peak_vram_bytes", 0)) for r in group) / 1e6
+        table_rows.append([spec, f"{max_mb:.0f}", f"{V100_CEILING_MB - max_mb:.0f}", str(len(group))])
+    return Table(key="vram_headroom_summary", title="VRAM headroom (overall): worst-case peak per model_spec",
+                 columns=columns, rows=table_rows,
+                 note="peak = max over all rungs/resolutions; negative headroom means the spec OOMs a V100 at its heaviest config.")

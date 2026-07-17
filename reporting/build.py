@@ -1,11 +1,24 @@
-"""Routes tasks to tables, assembles the routing table at build time, and writes CSV and markdown."""
+"""Assembles every analysis table from the build plan, captions each with the
+baseline it holds fixed, and writes one CSV per table plus a combined all_tables.md."""
 
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterable, Mapping, Sequence
+from importlib import import_module
+from inspect import signature
 from pathlib import Path
 from typing import Any
+
+from config import BASELINE, ExperimentConfig
+from reporting.plan import G3, PLAN, caption_for
+from reporting.tables import _common as common
+from reporting.tables import _load
+from reporting.tables import _markdown as md
+from reporting.tables._common import Table
+
+log = logging.getLogger("mpvrdu.build")
 
 # Fields that together identify one prediction (a cell without its judge). Rows
 # sharing these belong to the same cell, so grouping on them collapses a
@@ -89,44 +102,7 @@ def load_result_rows(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
-# Which task(s) feed which content-named table. Routing is explicit so one task
-# can feed several tables; the routing table itself is assembled at build time
-# from G1's ladder rows plus G3's classifier price. The per-table builders in
-# `reporting.tables` consume the grouped rows.
-TASK_TO_TABLES: Mapping[str, tuple[str, ...]] = {
-    "G1_oracle_ladder": ("headline", "parser", "resolution", "scale", "composition", "routing"),
-    "G2_retrieval": ("matched_cross", "kdepth", "retrieval_accuracy", "retrieval_accuracy_overall", "retrieval_dpi"),
-    "G3_hallucination": ("hallucination", "routing"),
-}
-
-
-def tables_for_task(task_name: str) -> Sequence[str]:
-    """Return the content-named tables a task feeds."""
-
-    return TASK_TO_TABLES.get(task_name, ())
-
-
-# -- build-time table assembly ----------------------------------------------
-
-import logging  # noqa: E402
-
-from reporting.tables import _common as common  # noqa: E402
-from reporting.tables import _markdown as md  # noqa: E402
-from reporting.tables import (  # noqa: E402
-    composition,
-    hallucination,
-    headline,
-    kdepth,
-    matched_cross,
-    parser as parser_table,
-    resolution,
-    retrieval_accuracy,
-    routing,
-    scale,
-)
-from reporting.tables._common import Table  # noqa: E402
-
-log = logging.getLogger("mpvrdu.build")
+# -- plan-driven table assembly ---------------------------------------------
 
 
 def _safe(build_fn, *args, **kwargs) -> Table | None:
@@ -135,69 +111,109 @@ def _safe(build_fn, *args, **kwargs) -> Table | None:
     try:
         return build_fn(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - one bad table must not sink the rest
-        log.warning("table build failed (%s): %s", getattr(build_fn, "__module__", build_fn), exc)
+        log.warning("table build failed (%s): %s", getattr(build_fn, "__name__", build_fn), exc)
         return None
 
 
-def assemble_tables(task_paths: Mapping[str, Any], *, config: Any = None, margin_points: float = 3.0) -> list[Table]:
-    """Build every table its inputs are available for, across tasks.
+def _resolve_builder(dotted: str):
+    """Resolve a `"<module>.<fn>"` name to the builder in `reporting.tables`."""
 
-    `task_paths` maps a task name to its `ExperimentPaths`. Routing is assembled
-    once from G1's ladder rows plus G3's classifier price; the rest read a single
-    task's results or side-artifact. Missing inputs yield an empty table, not a
-    crash.
+    module_name, fn_name = dotted.split(".")
+    return getattr(import_module(f"reporting.tables.{module_name}"), fn_name)
+
+
+def _load_rows(entry) -> list[Any]:
+    """Load the rows one plan entry reads (judged results, predictions, or a side file)."""
+
+    if entry.reads == "predictions":
+        return _load.load_predictions(entry.run_tags, entry.task)
+    if entry.reads.startswith("side:"):
+        name = entry.reads.split(":", 1)[1]
+        rows = _load.load_side(entry.run_tags, entry.task, name)
+        _enrich_retrieval_rows(rows, ExperimentConfig(run_tag=entry.run_tags[0]))
+        return rows
+    return _load.load_ok(entry.run_tags, entry.task)
+
+
+def _build_entry(entry, *, margin_points: float) -> Table:
+    """Load an entry's rows and run its builder (parser and routing are special-cased)."""
+
+    builder = _resolve_builder(entry.builder)
+    if entry.parser_by_tag:
+        labeled = [(entry.parser_by_tag[tag], _load.load_ok((tag,), entry.task)) for tag in entry.run_tags]
+        return builder(labeled, margin_points=margin_points)
+    if entry.key == "routing":
+        g1 = _load.load_ok(entry.run_tags, entry.task)
+        classifier = _load.load_side((G3,), "G3_hallucination", "classifier.jsonl")
+        return builder(g1, classifier, margin_points=margin_points)
+    rows = _load_rows(entry)
+    kwargs = {"margin_points": margin_points} if "margin_points" in signature(builder).parameters else {}
+    return builder(rows, **kwargs)
+
+
+def _build_summary(entry, *, margin_points: float) -> Table:
+    """Build an entry's doc_type-collapsed summary from the same rows as its detail."""
+
+    builder = _resolve_builder(entry.summary)
+    if entry.parser_by_tag:
+        labeled = [(entry.parser_by_tag[tag], _load.load_ok((tag,), entry.task)) for tag in entry.run_tags]
+        return builder(labeled, margin_points=margin_points)
+    rows = _load_rows(entry)
+    kwargs = {"margin_points": margin_points} if "margin_points" in signature(builder).parameters else {}
+    return builder(rows, **kwargs)
+
+
+def assemble_from_plan(plan: Sequence[Any] = PLAN, *, margin_points: float = 3.0) -> list[Table]:
+    """Build every table in the plan, attaching each one's baseline caption.
+
+    A table whose source run_tags have no cache builds empty; a builder that raises
+    is logged and skipped, so one bad table never sinks the rest. Entries with a
+    `summary` also emit a doc_type-collapsed, markdown-only summary table.
     """
 
-    def results(task: str) -> list[Any]:
-        paths = task_paths.get(task)
-        return common.load_ok_rows(paths.results) if paths else []
-
-    def side(task: str, name: str) -> list[Any]:
-        paths = task_paths.get(task)
-        return common.read_jsonl(Path(paths.side_dir) / name) if paths else []
-
-    parser_label = getattr(config, "parser_tool", "") if config else ""
-    resolution_label = getattr(config, "visual_resolution", "") if config else ""
-
-    g1 = results("G1_oracle_ladder")
-    g2 = results("G2_retrieval")
-    g2_retrieval = side("G2_retrieval", "retrieval.jsonl")
-    _enrich_retrieval_rows(g2_retrieval, config)
-    g3 = results("G3_hallucination")
-    classifier_rows = side("G3_hallucination", "classifier.jsonl")
-
-    candidates: list[Table | None] = []
-    if g1:
-        candidates += [
-            _safe(headline.build, g1, margin_points=margin_points),
-            _safe(parser_table.build, g1, parser_label=parser_label, margin_points=margin_points),
-            _safe(resolution.build, g1, resolution_label=resolution_label, margin_points=margin_points),
-            _safe(scale.build, g1),
-            _safe(composition.build, g1),
-            _safe(routing.build, g1, classifier_rows, margin_points=margin_points),
-        ]
-    if g2:
-        candidates += [_safe(matched_cross.build, g2), _safe(kdepth.build, g2)]
-    if g2_retrieval:
-        candidates.append(_safe(retrieval_accuracy.build, g2_retrieval))
-        candidates.append(_safe(retrieval_accuracy.build_overall, g2_retrieval))
-        candidates.append(_safe(retrieval_accuracy.build_by_dpi, g2_retrieval))
-    if g3:
-        candidates.append(_safe(hallucination.build, g3))
-    return [t for t in candidates if t is not None]
+    tables: list[Table] = []
+    for entry in plan:
+        table = _safe(_build_entry, entry, margin_points=margin_points)
+        if table is not None:
+            table.key = entry.key
+            table.caption = caption_for(entry)
+            table.md = entry.detail_md
+            tables.append(table)
+        if entry.summary:
+            summary = _safe(_build_summary, entry, margin_points=margin_points)
+            if summary is not None:
+                summary.key = f"{entry.key}_summary"
+                summary.caption = {"view": "summary — pooled across all doc_types", **caption_for(entry)}
+                summary.md = True
+                summary.csv = False
+                tables.append(summary)
+    return tables
 
 
-def write_tables(tables: Sequence[Table], out_dir: str | Path) -> list[Path]:
+def baseline_preamble() -> str:
+    """A short preamble naming the shared baseline every table's caption pins."""
+
+    items = " · ".join(f"**{k}**: {v}" for k, v in BASELINE["G1_oracle_ladder"].items())
+    return (
+        "Every table changes ONE variable off the shared baseline below and holds the rest "
+        "fixed; each caption states what it swept and what it pinned. G2 uses retrieved pages, "
+        "G3 the unanswerable pool.\n\n> " + items
+    )
+
+
+def write_tables(tables: Sequence[Table], out_dir: str | Path, *, preamble: str = "") -> list[Path]:
     """Write each table to CSV plus one combined `all_tables.md`; return paths."""
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for table in tables:
+        if not table.csv:
+            continue
         csv_path = out / f"{table.key}.csv"
         common.write_csv(table, csv_path)
         written.append(csv_path)
     report = out / "all_tables.md"
-    report.write_text(md.render_report(tables))
+    report.write_text(md.render_report([t for t in tables if t.md], preamble=preamble))
     written.append(report)
     return written

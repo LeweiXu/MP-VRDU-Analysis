@@ -72,6 +72,54 @@ DEFAULT_PROMPT_MODE = "targeted"
 # its baseline, so all three ride their own cache cells.
 G3_PROMPT_MODES: tuple[str, ...] = ("none", "generic", "targeted")
 
+# The single baseline configuration each run is measured against. The experiment
+# is one pipeline run at this baseline, and every sweep changes exactly one axis
+# off it while holding the rest here fixed. The table build reads this as the
+# source of truth for the held-fixed values it prints in each table's caption, so
+# every result is explainable on its own. Per task; a swept axis overrides its
+# entry for that table only.
+BASELINE: dict[str, dict[str, str]] = {
+    "G1_oracle_ladder": {
+        "dataset": "mmlongbench",
+        "scan": "any",
+        "sampling": "full",
+        "parser": "paddleocrvl",
+        "reasoner_spec": "qwen3vl-8b-local",
+        "quantization": "bf16",
+        "visual_resolution": "med",
+        "representation": "T/TL/TLV/V",
+        "pool": "answerable",
+        "page_selection": "oracle",
+        "prompt_mode": "none",
+    },
+    "G2_retrieval": {
+        "dataset": "mmlongbench",
+        "scan": "any",
+        "sampling": "full",
+        "parser": "paddleocrvl",
+        "reasoner_spec": "qwen3vl-8b-local",
+        "quantization": "bf16",
+        "visual_resolution": "med",
+        "representation": "TLV/V",
+        "pool": "answerable",
+        "page_selection": "retrieved (bm25 text / colqwen2.5 vision / joint)",
+        "prompt_mode": "none",
+    },
+    "G3_hallucination": {
+        "dataset": "mmlongbench",
+        "scan": "any",
+        "sampling": "full",
+        "parser": "paddleocrvl",
+        "reasoner_spec": "qwen3vl-8b-local",
+        "quantization": "bf16",
+        "visual_resolution": "med",
+        "representation": "TLV",
+        "pool": "unanswerable",
+        "page_selection": "similarity (bm25, k=3)",
+        "prompt_mode": "none",
+    },
+}
+
 
 # Named visual-resolution presets. Value = per-page pixel cap = tokens_per_page *
 # 28 * 28 (Qwen packs a 28x28 patch per vision token). One preset is fixed as the

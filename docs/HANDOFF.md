@@ -1,104 +1,101 @@
-# Handoff (2026-07-16): judge/build/mine done; unlimited-parser + g2 inference running on Kaya
-
-## Deadline
-
-Kaya goes down **Fri 2026-07-17 17:00** for migration. The running jobs and any
-resume must land (and be pulled) before then.
+# Handoff (2026-07-17, end of day): parser+g3 recovered, build rewritten to base+sweeps
 
 ## One-line status
 
-Core judge+build+mine landed and is committed (`f4c77d6 "build mine"`). The stable
-G1/G3 arms are judged and their tables built. Three Kaya jobs are finishing: g3
-recovery is **done and complete**, the Unlimited-OCR parser rerun and the G2
-inference are still running. A few late fixes are uncommitted (see below).
+Kaya went down at **17:00 for migration** (hostname no longer resolves). The parser
+(unlimited) and g3 arms are fully recovered, judged, and in the tables (error=0). g2
+inference is partial (~36%). The big deliverable is a **from-scratch rewrite of the
+table build** to the base+sweeps design, plus doc_type-collapsed summary tables.
+**Nothing is committed** — the whole session is in the working tree for review.
 
-## Kaya jobs (as of ~16:00 AWST 2026-07-16)
+## Data state (all local, judging needs no Kaya)
 
-| job | id | state | notes |
-| --- | --- | --- | --- |
-| g3-hallucination-full (recovery) | 1061557 | **COMPLETED** | distinct=2928 (full), ok=2698 oom=230 err=0. No missing cells. The 243 old CUDA-faults resolved (34→ok, ~209 are genuine big-context V100 OOMs). Needs pulling + judging. |
-| g1-parser-full-unlimited | 1061530 | RUNNING | still in the **parser-warm pre-pass** (~1041/~1224 pages), reasoner not started (14 cells). 24h wall, ~17h left. |
-| g2-retrieval-full (inference) | 1061344 | RUNNING | banking reduced-k inference (`--skip-retrieval --skip-oom`), ~17h left. Incomplete (was 4137/15246). |
+| arm | state |
+| --- | --- |
+| parser (unlimited) | **DONE** — 1585 ok / 109 oom / **0 error**, judged, in tables. |
+| parser (paddle, mineru) | done (paddle = the representation run; mineru judged). |
+| g3 hallucination | **DONE** — 2698 ok / 230 oom / 0 error, judged. |
+| all G1 sweeps (representation, reasoner/size+family, quant, resolution, scanned halves) | done + judged. |
+| g2 retrieval | **PARTIAL** — 5563/15246 (~36%) pulled locally; judging still running (`logs/g2_judge_now.log`, slow). |
 
-**Will unlimited finish in its 24h wall? Borderline — likely not quite.** The
-Unlimited-OCR warm pass is slow (~8h for ~1224 pages), leaving ~16h for the 1680
-reasoner cells (~14–15h needed at ~33s/cell, more with TLV + OOM retries). It will
-either just finish or time out with a modest reasoner remainder. **If it times out,
-recover with a NORMAL resume (NOT --failed-only)** — see the interrupt-safety note
-below: `ops.kaya.kaya submit --gres gpu:v100:2 --time 12:00:00 ops/generate.py --
---spec ops/specs/kaya_g1_parser_unlimited_full.yaml`. **Do NOT cancel it** (that
-loses cells). With the Fri 17:00 shutdown the resume window is tight.
+The remaining `oom` cells (parser 109, g3 230, g2 ~1.25k) are genuine reasoner OOMs on
+the 16 GB V100 — not fixable on Kaya; need an A100/H100 `--failed-only` sweep if/when
+one is available.
 
-## Judging status
+## What happened today (recovery)
 
-`ops.judge` (gemini-flash, Tier-1 ~10k/day). Fully judged and stable: representation,
-quantization, resolution, reasoner (incl. all InternVL), reasoner-scanned, mineru.
-A background chain (`logs/judge_resume.log`) is finishing the last scanned companions
-(quant-scanned ~1341/1488, resolution-scanned pending) then rebuilds + mine + pytest.
+1. **Parser ParserCacheMiss (144 cells, 12 landscape docs) fixed.** Root cause was
+   Unlimited-OCR **gundam crop-mode CUDA OOM** (not an aspect crash) — the worker
+   swallowed it, so it surfaced downstream as `ParserCacheMiss`. Fix in
+   `tools/parser_worker.py`: `_unlimited_markdown` now falls back gundam → base-1024 →
+   base-640 and sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments`. Smoke (job 1063873)
+   recovered 4/4. Recovered via a **normal resume** (job 1063881, `--skip-oom`, NOT
+   `--failed-only`) after dropping the 144 error rows from the remote predictions
+   (backup kept). 138 → ok, 6 → genuine reasoner OOM.
+2. **Verdict-cache poisoning cleaned (HANDOFF §42 risk, hit for real).** The earlier
+   judge chain had written stale `error`/`oom` verdicts for cells that recovery later
+   turned `ok`, so a re-judge scored 0. Dropped the stale verdicts (backups kept) and
+   re-judged: parser 144 rescored, g3 35 rescored. **Audited every arm** for this — only
+   the two recovered arms (parser, g3) were affected; both fixed.
 
-**Not yet judged (deferred, needs the Kaya jobs done + a pull):**
-- g1-parser-full-unlimited — its local cache is still the stale 1680 error rows;
-  judging it now would poison the result cache (error verdict keyed same as the
-  future ok cell). Judge only AFTER its job completes and a fresh pull.
-- g3 recovery's new ok cells (pull g3 first, then re-judge).
-- g2 inference — leave until inference is complete (else partial matched_cross/kdepth).
+## The build rewrite (main deliverable)
 
-A one-shot catch-all judge cron is scheduled: **d2e49a7b, 2026-07-17 15:20 AWST** —
-pulls, judges everything still unjudged (unlimited, g3, g2-if-complete), rebuilds,
-pytest. Delete it (`CronDelete d2e49a7b`) if you'd rather do it by hand.
+The generation side moved to base+sweeps in the 2026-07-10 yaml-expander change, but
+`reporting/build.py` was knowingly left routing by task identity. Rewrote it end to end:
 
-## Tables (docs/generated/build_status.md)
+- **`config.BASELINE`** — per-task baseline (one value per axis), the source of truth
+  for held-fixed caption values.
+- **`reporting/plan.py`** — a declarative registry: each analysis table's source
+  run_tag(s), swept axis, builder, caption. Replaces `TASK_TO_TABLES`.
+- **`reporting/tables/_load.py`** — cross-run loaders (scan-merge, parser/scale/quant
+  merges) + the per-column-n footer helper.
+- **`ops.build`** writes one CSV per table + a combined **`results/tables/all_tables.md`,
+  flat** (no more `full-<run_tag>/` dirs). Each table carries a **caption** (swept axis +
+  full held-fixed baseline, so it is explainable on its own) and accuracy grids carry a
+  **per-column `n` footer**. Cross-run merges give a real 3-parser comparison and an
+  all-specs scale table (the old per-task fragmentation is gone).
+- **`ops/mine.py` folded in and deleted** (its `docs/generated/mined_tables.md` too).
+- **Summary tables (markdown-only).** Nine long/doc_type-repeated tables also emit a
+  doc_type-collapsed summary (headline, parser, resolution, quantization,
+  scan_vs_digital, prefill_cost, vram_headroom, oom_frontier). The 217-row
+  retrieval_accuracy detail is **hidden from the .md** (CSV kept) and replaced there by a
+  compact best-F1-per-method summary. Summaries are `<key>_summary`, `md`-only.
+- Condition-format fixes across 7 builders (the stale `condition=="oracle"` filters that
+  silently fell back), rewrote `parser.build` (multi-parser) and `hallucination`'s
+  prompt-mode parse, and escaped `|` in markdown cells (joint retriever names).
+- **Frozen interfaces untouched** (build only reads caches/specs). **243 tests pass.**
+- Docs: `docs/AGENT_GUIDE.md` now documents the generation + build paradigm;
+  `docs/DECISIONS.md` has the changelog entry.
 
-Built: headline, composition, parser (paddleocrvl + mineru once its build runs),
-scale (model-size + quantization), routing, **InternVL family**, hallucination,
-retrieval accuracy (overall + doc_type), + 6 mined_* tables. Partial/blocked:
-resolution (OOM tail), matched_cross/kdepth (g2 inference incomplete), retrieval_dpi
-(DPI sweep never run), parser comparison as a *merged* paddle-vs-mineru-vs-unlimited
-table needs a small cross-run_tag builder (each parser currently builds its own).
+Run it: `python -m ops.build` → `results/tables/all_tables.md` + 18 CSVs.
 
-## Cell-count audit (no silent missing data)
+## Background processes still running (harmless)
 
-`scratchpad/audit_cells.py` verified theoretical (from yaml) == produced for every
-G1/G3/parser/scanned run. Only g2 inference is short (known, still running). OOM
-rates: ~5% G1/G3, 13.5% mineru, 21.5% g2; the OOM cells need a bigger GPU than the
-16 GB V100 (supervisor A100/H100 --failed-only sweep).
+- `logs/g2_judge_now.log` (pid ~6396) — judging the local g2 (5563 cells), slow. Its
+  final rebuild step calls the **old** `ops.build --task/--run-tag` CLI which no longer
+  exists → it will log a harmless failure. **After it finishes, just re-run
+  `python -m ops.build`** to fold g2's judged accuracy into the tables.
+- `logs/g2_final_watch.log` (pid ~6318) — polling a now-dead Kaya; it will fail to pull
+  and eventually give up. The g2 resume's extra cells (beyond 5563) are stranded on
+  Kaya and lost to the migration unless Kaya returns.
 
-## Uncommitted changes (this session, for your review/commit)
+## Uncommitted (this session, for review/commit)
 
-- **`tools/parser_worker.py`** — Unlimited-OCR fix: it's a DeepSeek-OCR-style model
-  (custom `UnlimitedOCRConfig` → `AutoModel`, custom `model.infer(...)`, not the
-  vision auto-classes). New `_load_unlimited` / `_unlimited_markdown` path
-  (prompt `"<image>document parsing."`, gundam args, reads back `result.md`).
-  Smoke-tested green on Kaya (job 1061368). setup_env/prestage were already correct
-  (parse-unlimited env + baidu/Unlimited-OCR staging); no change needed there.
-- **`pipeline/orchestrator.py`** — Result/Prediction caches now skip a truncated
-  last line (from a host reboot killing a writer) instead of crashing the whole run.
-- **`ops/scripts/build_status.py`** + regenerated `docs/generated/{build_status,mined_tables}.md`
-  — dynamic InternVL row, refreshed resolution/parser/g2 reasons.
-- New specs: `ops/specs/kaya_g1_parser_unlimited_full.yaml` (unlimited-only, explicit
-  run_tag, --failed-only), `kaya_g1_parser_mineru_full.yaml` (mineru-only judge
-  target), `kaya_g1_parser_unlimited_smoke.yaml` (1-GPU smoke).
-- (Not mine: `ops/kaya/kaya.py`, `runner/status.py`, `KAYA_AGENT_GUIDE.md`,
-  `tests/test_kaya_status.py` were already-uncommitted kaya WIP at session start.)
-
-## Known issues / recommendations
-
-1. **Interrupt-unsafe `--failed-only`** (`experiments/engine/driver.py::_prepare_failed_only`):
-   it rewrites predictions.jsonl dropping all failed rows up front, then recomputes.
-   A cancel/kill/timeout mid-reprocess **loses** the dropped-not-yet-recomputed cells
-   (this bit us on g3 — 261 cells lost after two cancellations, since recovered via a
-   normal resume). Rules: **never cancel a running --failed-only job; recover with a
-   normal resume** (runs missing cells non-destructively). Recommended fix: make
-   --failed-only force-recompute the failed keys via an in-memory skip set + merge at
-   the end, leaving on-disk rows intact until completion.
-2. **Gemini daily cap ~10k/day** — full judging spans ~2 days on these keys; a paid
-   key removes the cap. Judging is idempotent (re-judge = 0-cost on scored cells).
-3. **OOM cells** (~1.7k across G1/G3 + g2's) need a bigger GPU; Kaya is all V100.
+Build rewrite: `config.py` (BASELINE), `ops/build.py`, `reporting/build.py`, new
+`reporting/plan.py` + `reporting/tables/_load.py`, `reporting/tables/_{common,markdown}.py`,
+the builder fixes/summaries (`headline, parser, resolution, scale, composition, routing,
+hallucination, mined_*`), `tests/test_mined_and_guards.py` (stale fixture), deleted
+`ops/mine.py` + `docs/generated/mined_tables.md`, docs (`AGENT_GUIDE`, `DECISIONS`).
+Parser fix: `tools/parser_worker.py`. Regenerated `docs/generated/build_status.md`.
+(Pre-existing at session start: `docs/G1_Representation.md` / `docs/G2_Retrieval.md`
+deletions.) Scratchpad holds the transient recovery scripts.
 
 ## Next steps
 
-1. Let unlimited + g2 run; do NOT cancel. Pull when they finish (before Fri 17:00).
-2. After pull: judge g3 (recovery cells), unlimited, and g2 (if inference complete);
-   rebuild tables + mine + build_status; run pytest. (The d2e49a7b cron does this.)
-3. Review + commit the uncommitted fixes above.
-4. Optional: fix interrupt-unsafe --failed-only; add a merged parser-comparison builder.
+1. Review + commit the working tree (build rewrite + parser fix).
+2. When `g2_judge_now` finishes, re-run `python -m ops.build` for final g2 numbers.
+3. When Kaya returns: an A100/H100 `--failed-only` sweep for the OOM cells (parser 109,
+   g3 230, g2 ~1.25k) and, if wanted, finishing g2 inference (was ~36%).
+4. Still-open known issue: interrupt-unsafe `--failed-only`
+   (`experiments/engine/driver.py::_prepare_failed_only`) — we avoided it this session by
+   using normal resumes; the recommended fix (in-memory skip set + merge) is unimplemented.

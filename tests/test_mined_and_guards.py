@@ -148,8 +148,8 @@ def test_mined_oom_frontier_reads_status():
 def test_mined_abstention_by_doctype():
     from reporting.tables import mined_abstention_by_doctype
 
-    rows = [_row(is_unanswerable=True, condition="similarity__prompt-targeted", abstained=True),
-            _row(is_unanswerable=True, condition="similarity__prompt-none", abstained=False)]
+    rows = [_row(is_unanswerable=True, condition="similarity__targeted", abstained=True),
+            _row(is_unanswerable=True, condition="similarity__none", abstained=False)]
     table = mined_abstention_by_doctype.build(rows)
     assert "targeted" in table.columns and "none" in table.columns and table.rows
 

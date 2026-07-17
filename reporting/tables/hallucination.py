@@ -3,21 +3,21 @@ behaviour is abstaining, so the abstention rate is the score."""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from typing import Any
 
-from ._common import Table, group_by
-
-_PROMPT = re.compile(r"prompt-(?P<mode>\w+)")
+from ._common import Table, group_by, split_condition
 
 
 def prompt_mode_of(row: Any) -> str:
-    """The prompt mode carried in the condition name (falls back to the whole name)."""
+    """The prompt mode carried as the condition's `__<mode>` suffix.
+
+    Falls back to the whole condition when it carries no suffix.
+    """
 
     cond = getattr(row, "condition", "")
-    m = _PROMPT.search(cond)
-    return m.group("mode") if m else cond
+    _, mode = split_condition(cond)
+    return mode or cond
 
 
 # Present the sweep cheapest-guidance first.

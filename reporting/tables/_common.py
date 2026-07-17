@@ -7,7 +7,7 @@ import csv
 import json
 import logging
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -39,15 +39,39 @@ UNKNOWN_DOC_TYPE = "(unknown)"
 IDENTITY_FIELDS = ("question_id", "doc_id", "condition", "representation", "model_spec", "visual_resolution")
 
 
+def split_condition(cond: str) -> tuple[str, str]:
+    """Split a condition into (base, prompt_mode).
+
+    Conditions are `<base>__<prompt_mode>` (e.g. `oracle__none`,
+    `retrieved_text_k3__targeted`). A condition with no `__` has no prompt mode.
+    """
+
+    base, sep, mode = (cond or "").partition("__")
+    return (base, mode) if sep else (base, "")
+
+
+def base_condition(cond: str) -> str:
+    """The base of a condition, dropping the `__<prompt_mode>` suffix."""
+
+    return split_condition(cond)[0]
+
+
 @dataclass
 class Table:
-    """A built table: a key, a human title, column headers, and string rows."""
+    """A built table: a key, title, column headers, string rows, an optional
+    structured caption (config held fixed vs swept), and optional footer rows
+    (e.g. the per-column n count). `csv`/`md` gate which outputs it lands in
+    (doc_type-collapsed summary tables are markdown-only)."""
 
     key: str
     title: str
     columns: list[str]
     rows: list[list[str]]
     note: str = ""
+    caption: dict[str, str] = field(default_factory=dict)
+    footer: list[list[str]] = field(default_factory=list)
+    csv: bool = True
+    md: bool = True
 
 
 def as_row(data: Any) -> Any:
@@ -174,11 +198,18 @@ def peak_vram_mb(rows: Sequence[Any]) -> str:
 
 
 def write_csv(table: Table, path: str | Path) -> None:
-    """Write one table to CSV (header + string rows)."""
+    """Write one table to CSV: caption comment rows, header, data rows, footer rows.
+
+    The caption is written as leading `# <field>,<value>` rows so the held-fixed
+    config travels with the CSV; the footer rows (e.g. per-column n) follow the data.
+    """
 
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w", newline="") as handle:
         writer = csv.writer(handle)
+        for key, value in table.caption.items():
+            writer.writerow([f"# {key}", value])
         writer.writerow(table.columns)
         writer.writerows(table.rows)
+        writer.writerows(table.footer)

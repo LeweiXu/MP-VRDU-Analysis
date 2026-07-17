@@ -8,9 +8,16 @@ and nothing from the project is imported, so a minimal parser env can run it.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
+
+# Reduce CUDA fragmentation across a long batch: the worker parses every page in
+# one process and gundam-mode OCR allocates large activations, so a fragmented
+# heap can OOM later pages even when total free memory would fit. Must be set
+# before torch initialises CUDA (backends import torch lazily, below).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 def _page_image(job: dict, dpi: int) -> str:
@@ -159,41 +166,64 @@ def _load_unlimited(model_id: str):
     return _HF[model_id]
 
 
-def _unlimited_markdown(image_path: str, model_id: str) -> str:
-    """Unlimited-OCR page->markdown via `model.infer(...)`.
+# infer settings, tried in order. Gundam crop mode (tiling) is the default and
+# gives the best fidelity, but its tiling path blows up on extreme aspect ratios
+# (wide slide decks) and is the most memory-hungry. Base mode (crop_mode=False)
+# feeds the whole page as one image: it handles any aspect ratio and uses less
+# VRAM, so it recovers pages that crop mode drops. Smaller base_size is the last
+# resort for pages that still OOM.
+_UNLIMITED_MODES = (
+    dict(base_size=1024, image_size=640, crop_mode=True),
+    dict(base_size=1024, image_size=1024, crop_mode=False),
+    dict(base_size=640, image_size=640, crop_mode=False),
+)
 
-    `infer` returns None in normal mode but writes `{output_path}/result.md` when
-    `save_results=True`; we point it at a throwaway dir and read that file back
-    (falling back to `eval_mode=True`, which returns the same text, if the file is
-    missing).
-    """
+
+def _infer_unlimited(tokenizer, model, image_path: str, mode: dict) -> str:
+    """One `model.infer` call in the given mode; read back `result.md` or eval text."""
 
     import tempfile
 
-    tokenizer, model = _load_unlimited(model_id)
+    common = dict(
+        prompt=_UNLIMITED_PROMPT, image_file=image_path, max_length=32768,
+        no_repeat_ngram_size=35, ngram_window=128, **mode,
+    )
     with tempfile.TemporaryDirectory() as out_dir:
-        model.infer(
-            tokenizer,
-            prompt=_UNLIMITED_PROMPT,
-            image_file=image_path,
-            output_path=out_dir,
-            base_size=1024,
-            image_size=640,
-            crop_mode=True,
-            max_length=32768,
-            no_repeat_ngram_size=35,
-            ngram_window=128,
-            save_results=True,
-        )
+        model.infer(tokenizer, output_path=out_dir, save_results=True, **common)
         result = Path(out_dir) / "result.md"
         if result.exists():
             return result.read_text(encoding="utf-8").strip()
-    text = model.infer(
-        tokenizer, prompt=_UNLIMITED_PROMPT, image_file=image_path, output_path="",
-        base_size=1024, image_size=640, crop_mode=True, max_length=32768,
-        no_repeat_ngram_size=35, ngram_window=128, eval_mode=True,
-    )
+    text = model.infer(tokenizer, output_path="", eval_mode=True, **common)
     return (text or "").strip()
+
+
+def _unlimited_markdown(image_path: str, model_id: str) -> str:
+    """Unlimited-OCR page->markdown, falling back through `_UNLIMITED_MODES`.
+
+    Tries gundam crop mode first, then base modes, so a page whose tiling path
+    fails (or OOMs) still gets parsed. Logs each failed mode to stderr and only
+    re-raises if every mode fails.
+    """
+
+    tokenizer, model = _load_unlimited(model_id)
+    last_exc: Exception | None = None
+    for mode in _UNLIMITED_MODES:
+        try:
+            return _infer_unlimited(tokenizer, model, image_path, mode)
+        except Exception as exc:  # noqa: BLE001 - try a safer mode before giving up
+            last_exc = exc
+            print(
+                f"parser_worker: unlimited mode {mode} failed on {image_path}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            try:
+                import torch
+
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001 - empty_cache is best-effort
+                pass
+    raise last_exc  # type: ignore[misc]
 
 
 def _markdown(parser_tool: str, model_id: str, image_path: str) -> str:

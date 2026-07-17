@@ -53,8 +53,9 @@ agent-facing view: which file owns which paper-facing responsibility.
 | `experiments/engine/` | The generate driver (robustness, `--failed-only`), side-artifact writers, cache/table paths + cell keys. |
 | `experiments/corpus/` | Question-set resolver + sampling; flat YAML spec loader. |
 | `experiments/registry.py` | Any `task_name` label → the unified `Task`. |
-| `reporting/build.py` | Task → table routing, cell grouping, build-time routing assembly; writes CSV + `.md`. |
-| `reporting/tables/` | Content-named table builders (headline, parser, resolution, matched_cross, kdepth, retrieval_accuracy, hallucination, routing, scale, composition). |
+| `reporting/plan.py` | The build plan: each analysis table's source run_tag(s), swept axis, builder, and baseline caption. |
+| `reporting/build.py` | Plan-driven table assembly + cell-grouping readers; writes one CSV per table + `all_tables.md` flat to `results/tables/`. |
+| `reporting/tables/` | Per-table builders (headline, parser, resolution, scale, composition, routing, matched_cross, kdepth, retrieval_accuracy, hallucination, and the mined telemetry tables) + shared `_common` / `_markdown` / `_load` helpers. |
 | `ops/{generate,judge,build}.py` | The three role entry points. |
 | `ops/kaya/` | SLURM sync/submit runner + config + cluster guide. |
 | `ops/specs/` | YAML run specs. |
@@ -133,6 +134,14 @@ all run config. Judge and build are **artifact-driven**: they read
 manifests / predictions / results / side artifacts under a run tag, so they never
 repeat the generate flags.
 
+- **One-variable-at-a-time design (base + sweeps).** The experiment is one
+  end-to-end pipeline measured at a single baseline configuration; each run changes
+  exactly one variable (a *sweep*) off that baseline and holds the rest fixed, so
+  every result isolates one variable's effect. The per-task baseline lives in
+  `config.BASELINE`. Axes in the frozen cache key (`reasoner_spec` incl. quant
+  suffix, `visual_resolution`) sweep under ONE run_tag as a driver-looped list; axes
+  not in the key (`parser`, `dataset`) get one run_tag per value. The flat spec files
+  are the per-sweep expansion of this design (one file = one sweep).
 - **Specs.** `ops/specs/template.yaml` is the reference menu plus the three worked
   tasks; `kaya.yaml` / `h100_main.yaml` are the real runs and
   `kaya_smoke_g{1,2,3}.yaml` the per-task smokes. Cache dirs are
@@ -140,9 +149,10 @@ repeat the generate flags.
 - **Bridge.** `experiments/corpus/yaml_spec.py` loads YAML into flat `Spec`s and
   `experiments/engine/` owns the generate loop, reasoner / retriever construction,
   the parse pre-pass, and cache writes.
-- **Flat spec format.** Every run lists the full variable set explicitly under a
-  `task_name` — there is no `base`, no `sweeps`, and no `task` type. A list-valued
-  axis is the set of values to run over (cross-product). `dataset` and `parser`
+- **Flat spec format.** Every flat spec lists the full variable set explicitly under
+  a `task_name` (the expanded per-sweep form of the base+sweeps design above;
+  `task_name` is a label, not a type). A list-valued axis is the set of values to run
+  over (cross-product). `dataset` and `parser`
   expand to one run_tag each (`<run_tag>-<dataset>-<parser>`); `reasoner_spec` x
   `quantization` fold into the driver-looped `reasoner_specs` (`bf16` = no suffix);
   `visual_resolution` becomes `visual_resolutions`; `reasoner_representations` /
@@ -161,16 +171,24 @@ repeat the generate flags.
   reasoner cells (gated on `config.text_retrievers`), persisting rankings the
   inference arms reuse; the classifier runs after inference. `run_side` /
   `run_retrieval_benchmark` are not frozen interfaces.
-- **Table routing.** `reporting/build.py`'s routing registry declares each table's
-  source task(s); routing is a build-time assembly over G1's rows (plus the
-  classifier price). A table is only correct when handed exactly its source tasks'
-  rows.
+- **Build (plan-driven, one table per swept variable).** `reporting/plan.py` declares
+  each analysis table: its source run_tag(s), the swept axis, and the builder.
+  `ops.build` assembles them all and writes one CSV per table plus a combined
+  `results/tables/all_tables.md` (flat, no per-run_tag dirs). Each table carries a
+  caption naming the swept axis and the held-fixed baseline (from `config.BASELINE`),
+  so it is explainable on its own; accuracy grids also carry a per-column `n` footer
+  (columns differ where cells OOM). Tables that compare an out-of-key axis merge
+  across run_tags (parser: paddle from the representation run + mineru + unlimited;
+  scan: a digital run_tag + its scanned half). The mined telemetry tables (prefill
+  cost, VRAM headroom, OOM frontier, quant sensitivity, scan-vs-digital) are folded
+  into this build. G3 hallucination keeps its own classification shape (abstention by
+  prompt mode over the unanswerable pool).
 - **Why roles split across machines.** The reasoner / retrievers / classifier need
   a GPU; the judge needs the internet — on Kaya those never coexist. Generation
   runs on the cluster (GPU, offline); `ops.judge` and `ops.build` run locally after
   a pull. Judge loads no models; it scores `predictions.jsonl` directly. Judge keys
   stay in the local `.env` (only `HF_TOKEN` is forwarded to the cluster).
-  Run-tagged builds write tables to `results/tables/<mode>-<run-tag>/`.
+  `ops.build` writes every table flat to `results/tables/` (one CSV each + `all_tables.md`).
 
 **Sampling for full runs.** A full MMLongBench run resolves its corpus from the
 YAML `corpus:` scope: `full` (all 1091), `per_bin: N` (draw **whole documents** per
