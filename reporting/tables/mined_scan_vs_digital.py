@@ -12,6 +12,7 @@ from typing import Any
 from scoring.frontier import RUNG_ORDER
 
 from ._common import Table, acc_cell, base_condition, doc_type_of, group_by, ordered_doc_types, restrict_to_primary_spec
+from ._load import column_n_footer
 
 # Digital first, then scanned; anything else sorts after.
 _SCAN_ORDER = {"digital": 0, "scanned": 1}
@@ -39,12 +40,14 @@ def build(rows: Sequence[Any]) -> Table:
             accs = [acc_cell(by_scan.get(lab, [])) for lab in labels]
             counts = [str(len(by_scan.get(lab, []))) for lab in labels]
             table_rows.append([dt, rung, *accs, *counts])
+    n_by_col = {lab: sum(1 for r in oracle if scan_label_of(r) == lab) for lab in labels}
     return Table(
         key="mined_scan_vs_digital",
         title="Mined: ladder accuracy, scanned vs digital, by doc_type and rung",
         columns=columns,
         rows=table_rows,
         note="oracle pages, primary reasoner. Empty T on scans is by design (no embedded text).",
+        footer=column_n_footer(columns, n_by_col),
     )
 
 
@@ -64,5 +67,7 @@ def summary(rows: Sequence[Any]) -> Table:
         accs = [acc_cell(by_scan.get(lab, [])) for lab in labels]
         counts = [str(len(by_scan.get(lab, []))) for lab in labels]
         table_rows.append([rung, *accs, *counts])
+    n_by_col = {lab: sum(1 for r in oracle if scan_label_of(r) == lab) for lab in labels}
     return Table(key="scan_vs_digital_summary", title="Scanned vs digital (overall): ladder accuracy by rung",
-                 columns=columns, rows=table_rows, note="empty T on scans is by design (no embedded text).")
+                 columns=columns, rows=table_rows, note="empty T on scans is by design (no embedded text).",
+                 footer=column_n_footer(columns, n_by_col))

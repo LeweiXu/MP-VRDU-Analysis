@@ -67,12 +67,15 @@ def summary(labeled: Sequence[tuple[str, Sequence[Any]]], *, margin_points: floa
 
     columns = ["parser", *_RUNGS, "n"]
     table_rows: list[list[str]] = []
+    n_by_col = {rung: 0 for rung in _RUNGS}
     for label, rows in labeled:
         oracle = [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle" and _rung(r) in _RUNGS]
         if not oracle:
             continue
         by_rung = group_by(oracle, _rung)
         cells = [acc_cell(by_rung.get(rung, [])) for rung in _RUNGS]
+        for rung in _RUNGS:
+            n_by_col[rung] += len(by_rung.get(rung, []))
         table_rows.append([label, *cells, str(len({getattr(r, "question_id", "") for r in oracle}))])
     return Table(key="parser_summary", title="Parser comparison (overall): TL/TLV accuracy per parser",
-                 columns=columns, rows=table_rows)
+                 columns=columns, rows=table_rows, footer=column_n_footer(columns, n_by_col))

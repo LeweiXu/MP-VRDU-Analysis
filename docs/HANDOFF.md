@@ -63,6 +63,12 @@ The generation side moved to base+sweeps in the 2026-07-10 yaml-expander change,
 - Condition-format fixes across 7 builders (the stale `condition=="oracle"` filters that
   silently fell back), rewrote `parser.build` (multi-parser) and `hallucination`'s
   prompt-mode parse, and escaped `|` in markdown cells (joint retriever names).
+- **Per-column `n` footer on every table** (`-` where inapplicable, e.g. routing/retrieval
+  metric columns; real per-level n on the grids). **scan_vs_digital** no longer shows an
+  unlabelled column — `_load` backfills a blank `scan_label` from `annotations/auto_scan.csv`
+  (every doc is labelled there; ~28 docs were generated before the auto-scan pass). And a
+  **generation report** (cells / ok / oom / error / OOM% per run_tag, + a total) now heads
+  `all_tables.md`, above the baseline preamble.
 - **Frozen interfaces untouched** (build only reads caches/specs). **243 tests pass.**
 - Docs: `docs/AGENT_GUIDE.md` now documents the generation + build paradigm;
   `docs/DECISIONS.md` has the changelog entry.

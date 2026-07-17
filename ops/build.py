@@ -7,7 +7,7 @@ import argparse
 
 from config import ROOT, ExperimentConfig
 from experiments.engine.paths import configure_logging, log
-from reporting.build import assemble_from_plan, baseline_preamble, write_tables
+from reporting.build import assemble_from_plan, baseline_preamble, generation_report, write_tables
 from reporting.plan import PLAN
 
 
@@ -24,7 +24,8 @@ def main(argv: list[str] | None = None) -> int:
     plan = tuple(e for e in PLAN if e.key == args.only) if args.only else PLAN
     tables = assemble_from_plan(plan, margin_points=ExperimentConfig().sufficiency_margin)
     out_dir = ROOT / "results" / "tables"
-    written = write_tables(tables, out_dir, preamble=baseline_preamble())
+    preamble = generation_report() + "\n\n" + baseline_preamble()
+    written = write_tables(tables, out_dir, preamble=preamble)
     for table in tables:
         log.info("build: %s (%d rows)", table.key, len(table.rows))
     log.info("build: wrote %d tables + all_tables.md to %s", len(tables), out_dir)

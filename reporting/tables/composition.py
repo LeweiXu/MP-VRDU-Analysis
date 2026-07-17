@@ -9,6 +9,7 @@ from typing import Any
 from scoring.frontier import RUNG_ORDER
 
 from ._common import Table, acc_cell, base_condition, group_by, restrict_to_primary_spec
+from ._load import column_n_footer
 
 
 def build(rows: Sequence[Any]) -> Table:
@@ -36,9 +37,11 @@ def build(rows: Sequence[Any]) -> Table:
         by_rung = group_by(source_rows, lambda r: getattr(r, "representation", ""))
         cells = [acc_cell(by_rung.get(rung, [])) for rung in present]
         table_rows.append([source, *cells, str(len(source_rows))])
+    n_by_col = {rung: sum(1 for r in oracle if getattr(r, "representation", "") == rung) for rung in present}
     return Table(
         key="composition",
         title="Composition: accuracy by evidence source and rung (appendix)",
         columns=columns,
         rows=table_rows,
+        footer=column_n_footer(columns, n_by_col),
     )

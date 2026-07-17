@@ -13,6 +13,7 @@ from typing import Any
 from scoring.frontier import RUNG_ORDER
 
 from ._common import Table, base_condition, doc_type_of, group_by, ordered_doc_types, prefill_ms, restrict_to_primary_spec
+from ._load import column_n_footer
 
 
 def _mean_input_tokens(rows: Sequence[Any]) -> float:
@@ -44,6 +45,7 @@ def build(rows: Sequence[Any]) -> Table:
         columns=columns,
         rows=table_rows,
         note="prefill latency + input tokens are unaffected by the verbose-answer inflation.",
+        footer=column_n_footer(columns, {}),
     )
 
 
@@ -63,4 +65,5 @@ def summary(rows: Sequence[Any]) -> Table:
         table_rows.append([rung, prefill_ms(group), f"{_mean_input_tokens(group):.0f}", str(len(group))])
     return Table(key="prefill_cost_summary", title="Prefill cost (overall): per rung across all doc_types",
                  columns=columns, rows=table_rows,
-                 note="prefill latency + input tokens are unaffected by the verbose-answer inflation.")
+                 note="prefill latency + input tokens are unaffected by the verbose-answer inflation.",
+                 footer=column_n_footer(columns, {}))

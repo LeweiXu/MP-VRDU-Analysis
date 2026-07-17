@@ -3,6 +3,7 @@ baseline it holds fixed, and writes one CSV per table plus a combined all_tables
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 from collections.abc import Iterable, Mapping, Sequence
@@ -188,6 +189,50 @@ def assemble_from_plan(plan: Sequence[Any] = PLAN, *, margin_points: float = 3.0
                 summary.csv = False
                 tables.append(summary)
     return tables
+
+
+def _cell_status_counts(pred_rows: Sequence[Any]) -> collections.Counter:
+    """Distinct-cell status tally: collapse a cell's rows to its best status (ok>oom>error)."""
+
+    rank = {"ok": 3, "oom": 2, "error": 1}
+    best: dict[tuple, str] = {}
+    for row in pred_rows:
+        key = group_key(row)
+        status = _field(row, "status", "") or "ok"
+        if key not in best or rank.get(status, 0) > rank.get(best[key], 0):
+            best[key] = status
+    return collections.Counter(best.values())
+
+
+def generation_report() -> str:
+    """Markdown table of what actually ran per run_tag: cells, ok/oom/error, OOM rate.
+
+    Reads predictions.jsonl (status rows), collapsing re-runs to one row per cell, so
+    the counts are the real generation outcome behind the analysis tables.
+    """
+
+    seen: dict[tuple[str, str], None] = {}
+    for entry in PLAN:
+        for tag in entry.run_tags:
+            seen[(tag, entry.task)] = None
+    lines = ["## Generation report (actual cells run)", "",
+             "| run_tag | task | cells | ok | oom | error | oom % |",
+             "| --- | --- | --- | --- | --- | --- | --- |"]
+    totals: collections.Counter = collections.Counter()
+    for tag, task in sorted(seen):
+        counts = _cell_status_counts(_load.load_predictions((tag,), task))
+        cells = sum(counts.values())
+        if not cells:
+            continue
+        totals.update(counts)
+        oom_pct = f"{counts.get('oom', 0) / cells * 100:.1f}"
+        lines.append(f"| {tag} | {task} | {cells} | {counts.get('ok', 0)} | {counts.get('oom', 0)} | "
+                     f"{counts.get('error', 0)} | {oom_pct} |")
+    grand = sum(totals.values())
+    if grand:
+        lines.append(f"| **all** |  | **{grand}** | {totals.get('ok', 0)} | {totals.get('oom', 0)} | "
+                     f"{totals.get('error', 0)} | {totals.get('oom', 0) / grand * 100:.1f} |")
+    return "\n".join(lines)
 
 
 def baseline_preamble() -> str:

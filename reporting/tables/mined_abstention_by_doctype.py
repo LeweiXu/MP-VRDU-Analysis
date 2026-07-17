@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ._common import Table, doc_type_of, group_by, ordered_doc_types
+from ._load import column_n_footer
 from .hallucination import _MODE_ORDER, prompt_mode_of
 
 
@@ -33,9 +34,11 @@ def build(rows: Sequence[Any]) -> Table:
             rates.append(f"{abstained / len(group) * 100:.1f}" if group else "-")
             counts.append(str(len(group)))
         table_rows.append([dt, *rates, *counts])
+    n_by_col = {mode: sum(1 for r in unanswerable if prompt_mode_of(r) == mode) for mode in modes}
     return Table(
         key="mined_abstention_by_doctype",
         title="Mined: abstention rate on unanswerable questions by prompt mode and doc_type",
         columns=columns,
         rows=table_rows,
+        footer=column_n_footer(columns, n_by_col),
     )

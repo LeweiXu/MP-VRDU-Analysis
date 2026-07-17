@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ._common import Table, acc_cell, doc_type_of, group_by, ordered_doc_types
+from ._load import column_n_footer
 
 _COND = re.compile(r"(?:retrieved|similarity)_(?P<modality>text|vision|joint|bm25|bge|colqwen\w*)_k(?P<k>\d+)")
 
@@ -44,9 +45,11 @@ def build(rows: Sequence[Any]) -> Table:
         dt_rows = by_doc_type[dt]
         cells = [acc_cell([r for r in dt_rows if modality_of(r) == m]) for m in modalities]
         table_rows.append([dt, *cells, str(len(dt_rows))])
+    n_by_col = {m: sum(1 for _, mm in tagged if mm == m) for m in modalities}
     return Table(
         key="matched_cross",
         title="Matched vs cross: accuracy by retrieval modality and doc_type (TLV)",
         columns=columns,
         rows=table_rows,
+        footer=column_n_footer(columns, n_by_col),
     )

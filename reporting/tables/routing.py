@@ -10,6 +10,7 @@ from scoring.accuracy import accuracy_summary
 from scoring.cost import cost_summary
 
 from ._common import Table, base_condition, doc_type_of, frontier_rung, group_by, restrict_to_primary_spec
+from ._load import column_n_footer
 
 
 def _acc_pct(rows: Sequence[Any]) -> float:
@@ -67,4 +68,5 @@ def build(rows: Sequence[Any], classifier_rows: Sequence[Any] = (), *, margin_po
         note=("assembled from G1 ladder rows + G3 classifier price. "
               "latency_ms is end-to-end and decode-inflated (~20x by the verbose-answer "
               "change); prefill_ms is the clean ingestion cost."),
+        footer=column_n_footer(columns, {}),
     )

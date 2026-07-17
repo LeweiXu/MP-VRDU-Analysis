@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ._common import Table, group_by, split_condition
+from ._load import column_n_footer
 
 
 def prompt_mode_of(row: Any) -> str:
@@ -41,4 +42,5 @@ def build(rows: Sequence[Any]) -> Table:
         title="Hallucination: abstention rate on unanswerable questions by prompt",
         columns=columns,
         rows=table_rows,
+        footer=column_n_footer(columns, {}),
     )

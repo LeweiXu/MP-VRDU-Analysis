@@ -58,6 +58,7 @@ def build(rows: Sequence[Any]) -> Table:
         columns=columns,
         rows=table_rows,
         note="rate = oom cells / all cells in the group, over the 16 GB V100 runs.",
+        footer=column_n_footer(columns, {}),
     )
 
 

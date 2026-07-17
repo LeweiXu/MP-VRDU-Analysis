@@ -15,6 +15,7 @@ from scoring.accuracy import accuracy_summary
 from scoring.cost import cost_summary
 
 from ._common import Table, doc_type_of, group_by, ordered_doc_types
+from ._load import column_n_footer
 
 _QUANT_ORDER = {"4bit": 0, "8bit": 1, "16bit": 2}
 
@@ -62,6 +63,7 @@ def build(rows: Sequence[Any]) -> Table:
         columns=columns,
         rows=table_rows,
         note="delta is vs the 16-bit baseline of the same model; blank when no baseline is in the cache.",
+        footer=column_n_footer(columns, {}),
     )
 
 
@@ -84,4 +86,5 @@ def summary(rows: Sequence[Any]) -> Table:
         vram_delta = f"{vram - base_vram:+.0f}" if base_vram is not None else "-"
         table_rows.append([quant, f"{acc:.1f}", f"{vram:.0f}", acc_delta, vram_delta, str(len(group))])
     return Table(key="quantization_summary", title="Quantization sensitivity (overall): accuracy + VRAM per quant",
-                 columns=columns, rows=table_rows, note="delta vs the 16-bit baseline of the same model.")
+                 columns=columns, rows=table_rows, note="delta vs the 16-bit baseline of the same model.",
+                 footer=column_n_footer(columns, {}))

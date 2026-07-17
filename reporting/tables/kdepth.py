@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ._common import Table, acc_cell, group_by
+from ._load import column_n_footer
 from .matched_cross import parse_condition
 
 
@@ -27,9 +28,11 @@ def build(rows: Sequence[Any]) -> Table:
         at_k = by_k[k]
         cells = [acc_cell([r for r, m, _ in at_k if m == modality]) for modality in modalities]
         table_rows.append([str(k), *cells, str(len(at_k))])
+    n_by_col = {m: sum(1 for _, mm, _ in tagged if mm == m) for m in modalities}
     return Table(
         key="kdepth",
         title="Top-k sweep: accuracy vs retrieval depth by modality",
         columns=columns,
         rows=table_rows,
+        footer=column_n_footer(columns, n_by_col),
     )

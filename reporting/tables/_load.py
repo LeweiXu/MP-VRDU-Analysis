@@ -7,10 +7,12 @@ cross-run parser/scale/quant comparisons). Also builds the per-column n footer r
 
 from __future__ import annotations
 
+import csv
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from typing import Any
 
-from config import ExperimentConfig
+from config import ROOT, ExperimentConfig
 from experiments.engine.paths import experiment_paths
 
 from ._common import load_ok_rows, read_jsonl
@@ -20,13 +22,40 @@ def _paths(run_tag: str, task: str):
     return experiment_paths(ExperimentConfig(run_tag=run_tag), task)
 
 
+@lru_cache(maxsize=1)
+def _scan_labels() -> dict[str, str]:
+    """doc_id -> digital/scanned from annotations/auto_scan.csv (every doc is labelled)."""
+
+    path = ROOT / "annotations" / "auto_scan.csv"
+    if not path.exists():
+        return {}
+    with path.open() as handle:
+        return {row["doc_id"]: row["auto_scan"] for row in csv.DictReader(handle)}
+
+
+def _backfill_scan(rows: Sequence[Any]) -> list[Any]:
+    """Fill a blank `scan_label` from auto_scan.csv so no doc reads as unlabelled.
+
+    Some cells were generated before the auto-scan pass, so their rows carry an empty
+    `scan_label`; auto_scan.csv labels every document, so recover it by doc_id.
+    """
+
+    labels = _scan_labels()
+    for row in rows:
+        if not getattr(row, "scan_label", "") and hasattr(row, "__dict__"):
+            recovered = labels.get(getattr(row, "doc_id", ""))
+            if recovered:
+                row.scan_label = recovered
+    return list(rows)
+
+
 def load_ok(run_tags: Sequence[str], task: str) -> list[Any]:
     """Judged `ok` rows for a task, concatenated across run_tags (missing tags skipped)."""
 
     rows: list[Any] = []
     for tag in run_tags:
         rows += load_ok_rows(_paths(tag, task).results)
-    return rows
+    return _backfill_scan(rows)
 
 
 def load_predictions(run_tags: Sequence[str], task: str) -> list[Any]:
@@ -48,8 +77,8 @@ def load_side(run_tags: Sequence[str], task: str, name: str) -> list[Any]:
 
 
 def column_n_footer(columns: Sequence[str], n_by_col: Mapping[str, int]) -> list[list[str]]:
-    """One footer row giving n per column: the first column labels it, metric
-    columns show their count, other columns stay blank."""
+    """One footer row giving n per column: the first column labels it, columns with a
+    per-column count show it, and columns where n does not apply show `-`."""
 
     row: list[str] = []
     for i, col in enumerate(columns):
@@ -58,5 +87,5 @@ def column_n_footer(columns: Sequence[str], n_by_col: Mapping[str, int]) -> list
         elif col in n_by_col:
             row.append(str(n_by_col[col]))
         else:
-            row.append("")
+            row.append("-")
     return [row]

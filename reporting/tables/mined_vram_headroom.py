@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ._common import Table, group_by
+from ._load import column_n_footer
 
 # The V100 memory ceiling the deployment story is framed against.
 V100_CEILING_MB = 16384.0
@@ -48,6 +49,7 @@ def build(rows: Sequence[Any]) -> Table:
         columns=columns,
         rows=table_rows,
         note="headroom_mb = 16384 - peak_vram_mb_max; a negative value means the config OOMs a V100.",
+        footer=column_n_footer(columns, {}),
     )
 
 
@@ -62,4 +64,5 @@ def summary(rows: Sequence[Any]) -> Table:
         table_rows.append([spec, f"{max_mb:.0f}", f"{V100_CEILING_MB - max_mb:.0f}", str(len(group))])
     return Table(key="vram_headroom_summary", title="VRAM headroom (overall): worst-case peak per model_spec",
                  columns=columns, rows=table_rows,
-                 note="peak = max over all rungs/resolutions; negative headroom means the spec OOMs a V100 at its heaviest config.")
+                 note="peak = max over all rungs/resolutions; negative headroom means the spec OOMs a V100 at its heaviest config.",
+                 footer=column_n_footer(columns, {}))

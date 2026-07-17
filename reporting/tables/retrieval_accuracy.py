@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ._common import Table, doc_type_of, group_by
+from ._load import column_n_footer
 
 
 def _mean(values: Sequence[float]) -> str:
@@ -41,6 +42,7 @@ def build(retrieval_rows: Sequence[Any]) -> Table:
         title="Retrieval accuracy: page P/R/F1 by method and doc_type",
         columns=columns,
         rows=table_rows,
+        footer=column_n_footer(columns, {}),
     )
 
 
@@ -66,7 +68,8 @@ def summary(retrieval_rows: Sequence[Any]) -> Table:
     return Table(key="retrieval_accuracy_summary",
                  title="Retrieval accuracy (summary): best-F1 operating point per method",
                  columns=columns, rows=table_rows,
-                 note="best_k = the depth k with the highest mean F1 for that method (all doc_types).")
+                 note="best_k = the depth k with the highest mean F1 for that method (all doc_types).",
+                 footer=column_n_footer(columns, {}))
 
 
 def build_overall(retrieval_rows: Sequence[Any]) -> Table:
@@ -85,6 +88,7 @@ def build_overall(retrieval_rows: Sequence[Any]) -> Table:
         title="Retrieval accuracy: page P/R/F1 by method (all doc_types)",
         columns=columns,
         rows=table_rows,
+        footer=column_n_footer(columns, {}),
     )
 
 
@@ -110,4 +114,5 @@ def build_by_dpi(retrieval_rows: Sequence[Any]) -> Table:
         title="Retrieval accuracy: page P/R/F1 by method and render DPI",
         columns=columns,
         rows=table_rows,
+        footer=column_n_footer(columns, {}),
     )
