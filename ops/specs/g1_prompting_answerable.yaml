@@ -1,0 +1,30 @@
+# Unblocks: a real RQ3 prompt-lever table, and the RQ1 faithfulness reading on the
+# answerable side. Every answerable run so far pinned prompt_modes: [none], so the
+# abstention instruction has only ever been measured on the unanswerable G3 pool.
+# That shows what the instruction buys but never what it costs: the false-abstention
+# tax on questions that DO have an answer. This spec supplies those cells.
+# Cells: 847 answerable q x 1 rung x 3 prompt modes x 1 spec = 2541.
+# Hardware: 1x V100 16GB is enough (8B bf16 at med, TLV). ~33 s/cell observed, so
+# budget ~24 h wall clock; the full T/TL/TLV/V ladder would be 10164 cells (~4x) and
+# needs a bigger allocation, so this pins the TLV rung only.
+task_name: G1_oracle_ladder
+run_tag: g1-prompting-answerable
+dataset: [mmlongbench]
+corpus: {scan: any, pool: answerable, sampling: full}
+parser_dpi: 200
+parser: [paddleocrvl]
+retrieval_representation: [oracle]
+text_retrievers: []
+vision_retrievers: []
+joints: []
+k_values: []
+joint_k_values: []
+inference_text_retriever: none
+inference_vision_retriever: none
+inference_joint: false
+reasoner_spec: [qwen3vl-8b-local]
+quantization: [bf16]
+visual_resolution: [med]
+reasoner_representations: [TLV]
+prompt_modes: [none, generic, targeted]
+classifier: none
