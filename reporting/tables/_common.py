@@ -61,7 +61,8 @@ class Table:
     """A built table: a key, title, column headers, string rows, an optional
     structured caption (config held fixed vs swept), and optional footer rows
     (e.g. the per-column n count). `csv`/`md` gate which outputs it lands in
-    (doc_type-collapsed summary tables are markdown-only)."""
+    (doc_type-collapsed summary tables are markdown-only); `rq` is the research
+    question the table answers, which is the section it lands under in the report."""
 
     key: str
     title: str
@@ -72,6 +73,7 @@ class Table:
     footer: list[list[str]] = field(default_factory=list)
     csv: bool = True
     md: bool = True
+    rq: str = ""
 
 
 def as_row(data: Any) -> Any:

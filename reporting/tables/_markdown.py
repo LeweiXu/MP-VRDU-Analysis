@@ -40,9 +40,29 @@ def render_table(table: Table) -> str:
 
 def render_report(tables: Sequence[Table], *, preamble: str = "") -> str:
     """Render several tables into one markdown document, with an optional preamble
-    (e.g. the shared baseline every table's caption is measured against)."""
+    (e.g. the shared baseline every table's caption is measured against).
+
+    Tables are grouped into research-question sections in `RQ_SECTIONS` order,
+    keeping plan order within each section. A table whose `rq` matches no known
+    section falls into the appendix rather than disappearing.
+    """
+
+    from reporting.plan import APPENDIX, RQ_SECTIONS
 
     head = "# Tables\n\n"
     if preamble:
         head += preamble.rstrip() + "\n\n"
-    return head + "\n".join(render_table(t) for t in tables)
+
+    known = {rq for rq, _ in RQ_SECTIONS}
+    by_rq: dict[str, list[Table]] = {rq: [] for rq, _ in RQ_SECTIONS}
+    for table in tables:
+        by_rq[table.rq if table.rq in known else APPENDIX].append(table)
+
+    parts: list[str] = []
+    for rq, heading in RQ_SECTIONS:
+        section = by_rq[rq]
+        if not section:
+            continue
+        parts.append(f"## {heading}\n")
+        parts += [render_table(t) for t in section]
+    return head + "\n".join(parts)

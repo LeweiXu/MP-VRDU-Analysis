@@ -179,6 +179,7 @@ def assemble_from_plan(plan: Sequence[Any] = PLAN, *, margin_points: float = 3.0
             table.key = entry.key
             table.caption = caption_for(entry)
             table.md = entry.detail_md
+            table.rq = entry.rq
             tables.append(table)
         if entry.summary:
             summary = _safe(_build_summary, entry, margin_points=margin_points)
@@ -187,6 +188,7 @@ def assemble_from_plan(plan: Sequence[Any] = PLAN, *, margin_points: float = 3.0
                 summary.caption = {"view": "summary — pooled across all doc_types", **caption_for(entry)}
                 summary.md = True
                 summary.csv = False
+                summary.rq = entry.rq
                 tables.append(summary)
     return tables
 
