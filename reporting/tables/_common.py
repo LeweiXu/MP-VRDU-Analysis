@@ -132,6 +132,45 @@ def restrict_to_primary_spec(rows: Sequence[Any]) -> list[Any]:
     return [r for r in rows if getattr(r, "model_spec", "") == keep]
 
 
+def rows_for_condition(rows: Sequence[Any], base: str) -> list[Any]:
+    """Rows whose base condition (the `__<prompt_mode>` suffix dropped) equals `base`.
+
+    When nothing matches, warn and fall back to every row so the table still builds.
+    That fallback used to be a silent `[... == base] or list(rows)` in each builder,
+    which meant a condition-format drift (e.g. `oracle` becoming `oracle__none`) would
+    quietly pool *every* condition into the "oracle" table instead of surfacing. The
+    warning turns that class of aggregation bug from silent into visible; today the
+    filter matches, so this changes no numbers.
+    """
+
+    rows = list(rows)
+    kept = [r for r in rows if base_condition(getattr(r, "condition", "")) == base]
+    if kept or not rows:
+        return kept
+    sample = getattr(rows[0], "condition", "")
+    log.warning(
+        "table build: no rows matched base condition %r (e.g. condition=%r); falling back to "
+        "all %d rows — likely a condition-format drift, so this table may pool conditions",
+        base, sample, len(rows),
+    )
+    return rows
+
+
+def unanswerable_rows(rows: Sequence[Any]) -> list[Any]:
+    """Rows flagged `is_unanswerable` (the G3 pool), with the same de-silenced fallback
+    as `rows_for_condition`: warn and keep all rows if none are flagged."""
+
+    rows = list(rows)
+    kept = [r for r in rows if getattr(r, "is_unanswerable", False)]
+    if kept or not rows:
+        return kept
+    log.warning(
+        "table build: no rows flagged is_unanswerable; falling back to all %d rows — "
+        "the source run_tag may not be the unanswerable pool", len(rows),
+    )
+    return rows
+
+
 def prefill_ms(rows: Sequence[Any]) -> str:
     """Mean prefill latency in milliseconds (the decode-free, uncontaminated cost)."""
 

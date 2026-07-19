@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from ._common import Table, group_by, split_condition
+from ._common import Table, group_by, split_condition, unanswerable_rows
 from ._load import column_n_footer
 
 
@@ -28,7 +28,7 @@ _MODE_ORDER = {"none": 0, "generic": 1, "targeted": 2}
 def build(rows: Sequence[Any]) -> Table:
     """One row per prompt condition: abstention rate over unanswerable questions."""
 
-    unanswerable = [r for r in rows if getattr(r, "is_unanswerable", False)] or list(rows)
+    unanswerable = unanswerable_rows(rows)
     columns = ["prompt_condition", "abstention_rate", "answered", "n"]
     by_mode = group_by(unanswerable, prompt_mode_of)
     table_rows: list[list[str]] = []

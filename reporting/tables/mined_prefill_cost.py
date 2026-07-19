@@ -12,7 +12,15 @@ from typing import Any
 
 from scoring.frontier import RUNG_ORDER
 
-from ._common import Table, base_condition, doc_type_of, group_by, ordered_doc_types, prefill_ms, restrict_to_primary_spec
+from ._common import (
+    Table,
+    doc_type_of,
+    group_by,
+    ordered_doc_types,
+    prefill_ms,
+    restrict_to_primary_spec,
+    rows_for_condition,
+)
 from ._load import column_n_footer
 
 
@@ -27,7 +35,7 @@ def _mean_input_tokens(rows: Sequence[Any]) -> float:
 def build(rows: Sequence[Any]) -> Table:
     """doc_type x rung -> mean prefill latency (ms) and mean input tokens."""
 
-    oracle = restrict_to_primary_spec([r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"] or list(rows))
+    oracle = restrict_to_primary_spec(rows_for_condition(rows, "oracle"))
     present_rungs = [r for r in RUNG_ORDER if any(getattr(x, "representation", "") == r for x in oracle)]
 
     columns = ["doc_type", "rung", "prefill_ms", "input_tokens", "n"]
@@ -52,9 +60,7 @@ def build(rows: Sequence[Any]) -> Table:
 def summary(rows: Sequence[Any]) -> Table:
     """Overall prefill cost per rung, pooled across all doc_types."""
 
-    oracle = restrict_to_primary_spec(
-        [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"] or list(rows)
-    )
+    oracle = restrict_to_primary_spec(rows_for_condition(rows, "oracle"))
     present_rungs = [r for r in RUNG_ORDER if any(getattr(x, "representation", "") == r for x in oracle)]
     columns = ["rung", "prefill_ms", "input_tokens", "n"]
     table_rows: list[list[str]] = []

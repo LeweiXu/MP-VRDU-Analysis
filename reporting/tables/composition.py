@@ -8,7 +8,7 @@ from typing import Any
 
 from scoring.frontier import RUNG_ORDER
 
-from ._common import Table, acc_cell, base_condition, group_by, restrict_to_primary_spec
+from ._common import Table, acc_cell, group_by, restrict_to_primary_spec, rows_for_condition
 from ._load import column_n_footer
 
 
@@ -19,9 +19,7 @@ def build(rows: Sequence[Any]) -> Table:
     each source's row; the row count reflects those repeats.
     """
 
-    oracle = restrict_to_primary_spec(
-        [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"] or list(rows)
-    )
+    oracle = restrict_to_primary_spec(rows_for_condition(rows, "oracle"))
     present = [r for r in RUNG_ORDER if any(getattr(x, "representation", "") == r for x in oracle)]
 
     by_source: dict[str, list[Any]] = {}

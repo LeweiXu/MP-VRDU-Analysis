@@ -8,7 +8,7 @@ from typing import Any
 
 from scoring.frontier import RUNG_ORDER
 
-from ._common import Table, acc_cell, base_condition, group_by, latency_ms, peak_vram_mb, prefill_ms
+from ._common import Table, acc_cell, group_by, latency_ms, peak_vram_mb, prefill_ms, rows_for_condition
 from ._load import column_n_footer
 
 
@@ -21,7 +21,7 @@ def build(rows: Sequence[Any]) -> Table:
     the model-size / quantization sweep), so it never restricts to one reasoner.
     """
 
-    oracle = [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"] or list(rows)
+    oracle = rows_for_condition(rows, "oracle")
     present = [r for r in RUNG_ORDER if any(getattr(x, "representation", "") == r for x in oracle)]
     columns = ["model_spec", *present, "peak_vram_mb", "prefill_ms", "latency_ms", "n"]
     by_spec = group_by(oracle, lambda r: getattr(r, "model_spec", ""))

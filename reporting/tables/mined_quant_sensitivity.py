@@ -14,7 +14,7 @@ from config import DEFAULT_REASONER_SPEC
 from scoring.accuracy import accuracy_summary
 from scoring.cost import cost_summary
 
-from ._common import Table, doc_type_of, group_by, ordered_doc_types
+from ._common import Table, doc_type_of, group_by, ordered_doc_types, rows_for_condition
 from ._load import column_n_footer
 
 _QUANT_ORDER = {"4bit": 0, "8bit": 1, "16bit": 2}
@@ -39,8 +39,7 @@ def build(rows: Sequence[Any]) -> Table:
     """doc_type x quant -> accuracy and peak VRAM, plus deltas vs the 16-bit baseline."""
 
     # Only the primary reasoner's own quant levels, so 4/8/16-bit compare the same model.
-    # Conditions carry a prompt suffix (e.g. "oracle__none"), so match the oracle prefix.
-    candidate = [r for r in rows if getattr(r, "condition", "").split("__", 1)[0] == "oracle"] or list(rows)
+    candidate = rows_for_condition(rows, "oracle")
     oracle = [r for r in candidate if _base_spec(getattr(r, "model_spec", "")) == DEFAULT_REASONER_SPEC]
     columns = ["doc_type", "quant", "accuracy", "vram_mb", "acc_delta_vs_16bit", "vram_delta_mb", "n"]
     table_rows: list[list[str]] = []
@@ -70,7 +69,7 @@ def build(rows: Sequence[Any]) -> Table:
 def summary(rows: Sequence[Any]) -> Table:
     """Overall accuracy + VRAM per quant level, pooled across all doc_types."""
 
-    candidate = [r for r in rows if getattr(r, "condition", "").split("__", 1)[0] == "oracle"] or list(rows)
+    candidate = rows_for_condition(rows, "oracle")
     oracle = [r for r in candidate if _base_spec(getattr(r, "model_spec", "")) == DEFAULT_REASONER_SPEC]
     by_quant = group_by(oracle, lambda r: quant_of(getattr(r, "model_spec", "")))
     baseline = by_quant.get("16bit", [])

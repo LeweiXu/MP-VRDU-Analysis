@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from ._common import Table, doc_type_of, group_by, ordered_doc_types
+from ._common import Table, doc_type_of, group_by, ordered_doc_types, unanswerable_rows
 from ._load import column_n_footer
 from .hallucination import _MODE_ORDER, prompt_mode_of
 
@@ -18,7 +18,7 @@ from .hallucination import _MODE_ORDER, prompt_mode_of
 def build(rows: Sequence[Any]) -> Table:
     """prompt_mode x doc_type -> abstention rate over unanswerable questions."""
 
-    unanswerable = [r for r in rows if getattr(r, "is_unanswerable", False)] or list(rows)
+    unanswerable = unanswerable_rows(rows)
     modes = sorted({prompt_mode_of(r) for r in unanswerable}, key=lambda m: (_MODE_ORDER.get(m, 99), m))
 
     columns = ["doc_type", *modes, *(f"n_{m}" for m in modes)]

@@ -10,6 +10,8 @@ Pivots are folded in here once implemented: the standalone `pivot_v4.md` and the
 v5 pivot notes (binning + the G4/routing collapse) are superseded by the entries
 below and should not be kept as separate live files.
 
+**`CODEBASE_GUIDE.md` + de-silenced oracle-filter fallback (2026-07-19).** Renamed the paper-facing `docs/methods_appendix.md` to `docs/CODEBASE_GUIDE.md` and added an operational layer (row schema, cache layout, the plan-driven build + table inventory + how-to-extend, current data state, spec-only vs code-change axes) for a non-coding collaborator; the methods content is preserved as Part B. Audited the table builders for the silent-pool class: the `[condition=="oracle"] or list(rows)` idiom (and the `is_unanswerable or list(rows)` twin) now route through `_common.rows_for_condition`/`unanswerable_rows`, which warn and name a condition-format drift before falling back instead of quietly pooling every condition. Behaviour-preserving (oracle rows exist, so `all_tables.md` is byte-identical and 243 tests pass); the earlier scan-label backfill and `restrict_to_primary_spec` fixes are verified still clean. Touched `_common.py` + 10 builders.
+
 **Build rewritten to the base+sweeps design; one explainable table per variable (2026-07-17).**
 The generation side moved to base+sweeps (one variable off a fixed baseline) back in the
 yaml-expander change (2026-07-10), but `reporting/build.py` was knowingly left routing tables

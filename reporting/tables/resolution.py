@@ -12,11 +12,11 @@ from typing import Any
 from ._common import (
     Table,
     acc_cell,
-    base_condition,
     doc_type_of,
     group_by,
     ordered_doc_types,
     restrict_to_primary_spec,
+    rows_for_condition,
 )
 from ._load import column_n_footer
 
@@ -27,9 +27,9 @@ RES_ORDER = ("low", "med", "high")
 def build(rows: Sequence[Any], *, resolution_label: str = "", margin_points: float = 3.0) -> Table:
     """Accuracy of the image-bearing rungs (TLV, V) by doc_type and resolution preset."""
 
-    oracle = [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"]
+    oracle = rows_for_condition(rows, "oracle")
     image_rows = restrict_to_primary_spec(
-        [r for r in (oracle or rows) if getattr(r, "representation", "") in ("TLV", "V")]
+        [r for r in oracle if getattr(r, "representation", "") in ("TLV", "V")]
     )
 
     seen_res = {getattr(r, "visual_resolution", "") for r in image_rows}
@@ -63,9 +63,9 @@ def build(rows: Sequence[Any], *, resolution_label: str = "", margin_points: flo
 def summary(rows: Sequence[Any], *, resolution_label: str = "", margin_points: float = 3.0) -> Table:
     """Overall TLV/V accuracy by resolution preset, pooled across doc_types (rung × resolution)."""
 
-    oracle = [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"]
+    oracle = rows_for_condition(rows, "oracle")
     image_rows = restrict_to_primary_spec(
-        [r for r in (oracle or rows) if getattr(r, "representation", "") in ("TLV", "V")]
+        [r for r in oracle if getattr(r, "representation", "") in ("TLV", "V")]
     )
     seen_res = {getattr(r, "visual_resolution", "") for r in image_rows}
     present_res = [res for res in RES_ORDER if res in seen_res]

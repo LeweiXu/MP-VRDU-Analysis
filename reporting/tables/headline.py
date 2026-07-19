@@ -10,12 +10,12 @@ from scoring.frontier import RUNG_ORDER
 from ._common import (
     Table,
     acc_cell,
-    base_condition,
     doc_type_of,
     frontier_rung,
     group_by,
     ordered_doc_types,
     restrict_to_primary_spec,
+    rows_for_condition,
 )
 from ._load import column_n_footer
 
@@ -61,9 +61,9 @@ def ladder_by_doc_type(
 def build(rows: Sequence[Any], *, margin_points: float = 3.0) -> Table:
     """Headline table: oracle-page accuracy across the four rungs, per doc_type."""
 
-    oracle = [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"]
+    oracle = rows_for_condition(rows, "oracle")
     return ladder_by_doc_type(
-        restrict_to_primary_spec(oracle or rows),
+        restrict_to_primary_spec(oracle),
         key="headline",
         title="Headline: cost-ordered ladder accuracy by doc_type (oracle pages)",
         margin_points=margin_points,
@@ -73,8 +73,7 @@ def build(rows: Sequence[Any], *, margin_points: float = 3.0) -> Table:
 def summary(rows: Sequence[Any], *, margin_points: float = 3.0) -> Table:
     """Overall ladder accuracy pooled across all doc_types (one row)."""
 
-    oracle = [r for r in rows if base_condition(getattr(r, "condition", "")) == "oracle"]
-    pooled = restrict_to_primary_spec(oracle or list(rows))
+    pooled = restrict_to_primary_spec(rows_for_condition(rows, "oracle"))
     present = _present_rungs(pooled, RUNG_ORDER)
     by_rung = group_by(pooled, lambda r: getattr(r, "representation", ""))
     columns = ["scope", *present, "frontier", "n"]
