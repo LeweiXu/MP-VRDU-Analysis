@@ -165,7 +165,7 @@ the judge block. **Materialised on the row** (written at generation/judge time):
 | answer | `answer` | raw model text |
 | tokens | `total_text_tokens`, `total_visual_tokens`, `text_tokens_fed`, `output_tokens`, `tokens_dropped`, `truncation_occurred` | `tokens_dropped`/`truncation_occurred` are a zero-canary (no input cap) |
 | latency | `latency_s`, `prefill_latency_s`, `decode_latency_s` | prefill ≈ ingestion cost; end-to-end/decode inflated ~20× by the 256-token verbosity (Part B §3, §9) |
-| memory | `peak_vram_bytes` | binding figure on the 16 GB card |
+| memory | `peak_vram_bytes` | device 0 only, a lower bound — see Part B §9 |
 | provenance | `machine`, `note`, `metadata.source_dataset` | `machine` drives nothing |
 
 **Derived at build time** (not trustworthy off the raw row, recomputed by the loaders):
@@ -746,6 +746,19 @@ swept (G3), Qwen3-VL-8B unless swept.
   end-to-end only (prefill/decode = 0).
 - `peak_vram_bytes` (`torch.cuda.max_memory_allocated`), `total_text_tokens`,
   `total_visual_tokens` (from Qwen `image_grid_thw`), `output_tokens`, `text_tokens_fed`.
+- ⚠ **`peak_vram_bytes` is device 0 only, and is a lower bound.** Cells ran on 2× V100
+  and the reasoner loads with `device_map="auto"`, which shards across both GPUs for
+  **every** spec (`_max_memory_map`, `models/qwen3vl.py:285`, triggers on GPU count,
+  not model size). But `reset_peak_memory_stats()` / `max_memory_allocated()` are
+  called with no device argument (`models/qwen3vl.py:388,404`), so only the current
+  device is measured. The evidence is in the data: reported minima sit at about half
+  each model's bf16 weight size (2B 2.15 GB, 4B 4.45 GB, 8B 7.82 GB, against ~4/8/16 GB
+  of weights), and 2B reads *higher* than 8B in `scale` because 8B's other shard is
+  invisible. Device 1's peak was never written to any row, so this is **missing data,
+  not a reporting bug**, and it is not recoverable from the cache — only a re-run with
+  per-device accounting would fix it. Recording is deliberately left as-is so the
+  34k existing rows stay internally comparable; the VRAM tables carry the caveat via
+  `_common.SINGLE_DEVICE_VRAM_NOTE`.
 - Cost metric = `latency_bs1` (batch-1 latency). Reminder: decode latency is inflated
   ~20× by the 256-token verbosity change, so prefill_ms is the cleaner cost column.
 - InternVL vision-token accounting: one 448px tile = (448/14)² = **1024 tokens/page**,

@@ -8,7 +8,16 @@ from typing import Any
 
 from scoring.frontier import RUNG_ORDER
 
-from ._common import Table, acc_cell, group_by, latency_ms, peak_vram_mb, prefill_ms, rows_for_condition
+from ._common import (
+    SINGLE_DEVICE_VRAM_NOTE,
+    Table,
+    acc_cell,
+    group_by,
+    latency_ms,
+    peak_vram_mb,
+    prefill_ms,
+    rows_for_condition,
+)
 from ._load import column_n_footer
 
 
@@ -40,6 +49,7 @@ def build(rows: Sequence[Any]) -> Table:
         columns=columns,
         rows=table_rows,
         note=("latency_ms is end-to-end and decode-inflated (~20x by the verbose-answer "
-              "change); prefill_ms and peak_vram_mb are the clean cost signals."),
+              "change); prefill_ms is the clean cost signal, and reads `-` for a backend "
+              "that cannot measure a prefill/decode split. " + SINGLE_DEVICE_VRAM_NOTE),
         footer=footer,
     )

@@ -242,8 +242,28 @@ def latency_ms(rows: Sequence[Any]) -> str:
     return f"{cost_summary(rows).latency_bs1_s * 1000:.0f}" if rows else "-"
 
 
+# Every VRAM figure in the tables carries this caveat, so it lives in one place and
+# the builders reference it rather than restating it.
+SINGLE_DEVICE_VRAM_NOTE = (
+    "⚠ VRAM is SINGLE-DEVICE and understates the true footprint. Cells were generated "
+    "on 2x V100, and the reasoner loads with device_map=\"auto\", which shards the "
+    "model across both GPUs for every spec (the shard is triggered by GPU count, not "
+    "model size). But peak memory is recorded with `torch.cuda.max_memory_allocated()` "
+    "and no device argument, so only device 0 is measured: reported minima land at "
+    "about half each model's bf16 weight size (8B: 7.82 GB against ~16 GB of weights). "
+    "Device 1's peak was never written to any row and is not recoverable from the "
+    "cache. Treat these as a device-0 lower bound, not a deployment budget. "
+    "See docs/CODEBASE_GUIDE.md Part B section 9."
+)
+
+
 def peak_vram_mb(rows: Sequence[Any]) -> str:
-    """Peak VRAM in MB across a group (the binding memory figure)."""
+    """Peak VRAM in MB across a group, as measured on device 0 only.
+
+    `cost_summary` takes the max over the group's rows, so this is the binding cell
+    rather than an average. It is a lower bound on the real footprint: see
+    `SINGLE_DEVICE_VRAM_NOTE`.
+    """
 
     rows = list(rows)
     return f"{cost_summary(rows).peak_vram_bytes / 1e6:.0f}" if rows else "-"

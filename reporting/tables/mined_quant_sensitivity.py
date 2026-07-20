@@ -15,7 +15,14 @@ from scoring.accuracy import accuracy_summary
 from scoring.cost import cost_summary
 from scoring.frontier import RUNG_ORDER
 
-from ._common import Table, doc_type_of, group_by, ordered_doc_types, rows_for_condition
+from ._common import (
+    SINGLE_DEVICE_VRAM_NOTE,
+    Table,
+    doc_type_of,
+    group_by,
+    ordered_doc_types,
+    rows_for_condition,
+)
 from ._load import column_n_footer
 
 _QUANT_ORDER = {"4bit": 0, "8bit": 1, "16bit": 2}
@@ -80,11 +87,7 @@ _SUMMARY_NOTE = (
     "cleaner comparison. "
     "`vram_mb` is the MAXIMUM peak over the level's rows, not an average, because it "
     "is a headroom figure and the binding cell is what matters. "
-    "⚠ It is also SINGLE-DEVICE: peak VRAM is recorded via "
-    "`torch.cuda.max_memory_allocated()` with no device argument, so on a "
-    "model-parallel load it reports device 0 only and understates the true "
-    "footprint. See docs/DECISIONS.md."
-)
+) + SINGLE_DEVICE_VRAM_NOTE
 
 
 def _metric_cells(group: Sequence[Any], base_acc: float | None, base_vram: float | None) -> list[str]:
