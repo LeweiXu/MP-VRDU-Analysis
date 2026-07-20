@@ -1,0 +1,14 @@
+model_spec,hf_repo,weights_bytes,method,quantizable_params
+internvl3-8b-local,OpenGVLab/InternVL3-8B,15888747520,exact,6751780864
+qwen3vl-2b-local,Qwen/Qwen3-VL-2B-Instruct,4255064064,exact,1635778560
+qwen3vl-2b-local-8bit,Qwen/Qwen3-VL-2B-Instruct,2619285504,derived,1635778560
+qwen3vl-2b-local-4bit,Qwen/Qwen3-VL-2B-Instruct,1827354624,derived,1635778560
+qwen3vl-32b-local,Qwen/Qwen3-VL-32B-Instruct,66714780128,exact,31509196800
+qwen3vl-32b-local-8bit,Qwen/Qwen3-VL-32B-Instruct,35205583328,derived,31509196800
+qwen3vl-32b-local-4bit,Qwen/Qwen3-VL-32B-Instruct,19951008803,derived,31509196800
+qwen3vl-4b-local,Qwen/Qwen3-VL-4B-Instruct,8875631616,exact,3859808256
+qwen3vl-4b-local-8bit,Qwen/Qwen3-VL-4B-Instruct,5015823360,derived,3859808256
+qwen3vl-4b-local-4bit,Qwen/Qwen3-VL-4B-Instruct,3147171072,derived,3859808256
+qwen3vl-8b-local,Qwen/Qwen3-VL-8B-Instruct,17534247392,exact,7249342464
+qwen3vl-8b-local-8bit,Qwen/Qwen3-VL-8B-Instruct,10284904928,derived,7249342464
+qwen3vl-8b-local-4bit,Qwen/Qwen3-VL-8B-Instruct,6775274531,derived,7249342464

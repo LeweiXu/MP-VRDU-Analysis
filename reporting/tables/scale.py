@@ -18,7 +18,7 @@ from ._common import (
     prefill_ms,
     rows_for_condition,
 )
-from ._load import column_n_footer
+from ._load import column_n_footer, weights_mb
 
 
 def build(rows: Sequence[Any]) -> Table:
@@ -32,14 +32,14 @@ def build(rows: Sequence[Any]) -> Table:
 
     oracle = rows_for_condition(rows, "oracle")
     present = [r for r in RUNG_ORDER if any(getattr(x, "representation", "") == r for x in oracle)]
-    columns = ["model_spec", *present, "peak_vram_mb", "prefill_ms", "latency_ms", "n"]
+    columns = ["model_spec", *present, "weights_mb", "peak_vram_mb", "prefill_ms", "latency_ms", "n"]
     by_spec = group_by(oracle, lambda r: getattr(r, "model_spec", ""))
     table_rows: list[list[str]] = []
     for spec in sorted(by_spec):
         spec_rows = by_spec[spec]
         by_rung = group_by(spec_rows, lambda r: getattr(r, "representation", ""))
         cells = [acc_cell(by_rung.get(rung, [])) for rung in present]
-        table_rows.append([spec, *cells, peak_vram_mb(spec_rows), prefill_ms(spec_rows),
+        table_rows.append([spec, *cells, weights_mb(spec), peak_vram_mb(spec_rows), prefill_ms(spec_rows),
                            latency_ms(spec_rows), str(len(spec_rows))])
     by_rung_all = group_by(oracle, lambda r: getattr(r, "representation", ""))
     footer = column_n_footer(columns, {rung: len(by_rung_all.get(rung, [])) for rung in present})

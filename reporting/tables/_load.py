@@ -76,6 +76,34 @@ def load_side(run_tags: Sequence[str], task: str, name: str) -> list[Any]:
     return rows
 
 
+@lru_cache(maxsize=1)
+def _weight_sizes() -> dict[str, tuple[int, str]]:
+    """model_spec -> (weight bytes, how it was obtained), from annotations."""
+
+    path = ROOT / "annotations" / "model_weights.csv"
+    if not path.exists():
+        return {}
+    with path.open() as handle:
+        return {row["model_spec"]: (int(row["weights_bytes"]), row["method"])
+                for row in csv.DictReader(handle)}
+
+
+def weights_mb(model_spec: str) -> str:
+    """Weight-only memory in MB for a spec, `-` when the spec is not annotated.
+
+    A static property of the checkpoint, so unlike the measured `peak_vram_bytes` it
+    is complete rather than device-0 only, and it needs no re-run. Derived rows (the
+    quantized variants) are marked with a trailing `~`. Regenerate the annotation with
+    `ops/scripts/model_weight_sizes.py`.
+    """
+
+    entry = _weight_sizes().get(model_spec)
+    if entry is None:
+        return "-"
+    total, method = entry
+    return f"{total / 1e6:.0f}{'~' if method != 'exact' else ''}"
+
+
 def column_n_footer(columns: Sequence[str], n_by_col: Mapping[str, int]) -> list[list[str]]:
     """One footer row giving n per column: the first column labels it, columns with a
     per-column count show it, and columns where n does not apply show `-`."""

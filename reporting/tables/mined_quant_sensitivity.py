@@ -23,7 +23,7 @@ from ._common import (
     ordered_doc_types,
     rows_for_condition,
 )
-from ._load import column_n_footer
+from ._load import column_n_footer, weights_mb
 
 _QUANT_ORDER = {"4bit": 0, "8bit": 1, "16bit": 2}
 
@@ -85,8 +85,16 @@ _SUMMARY_NOTE = (
     "and by level (16-bit TLV survives 717 cells against 4-bit's 762), so the pooled "
     "figures mix slightly different rung compositions and the per-rung cells are the "
     "cleaner comparison. "
+    "`weights_mb` is WEIGHTS ONLY, with no activations and no device-0 truncation: it "
+    "is a static property of the checkpoint (summed safetensors tensor bytes), so it "
+    "needs no re-run and is complete. The 16-bit figure is exact; a trailing `~` marks "
+    "a derived figure, computed by applying bitsandbytes' layout to the real tensor "
+    "shapes (int8 or packed NF4 plus double-quant constants for the 2D Linear weights, "
+    "compute dtype for embeddings, lm_head, norms and biases) rather than measured on "
+    "a loaded model. Regenerate with ops/scripts/model_weight_sizes.py. "
     "`vram_mb` is the MAXIMUM peak over the level's rows, not an average, because it "
-    "is a headroom figure and the binding cell is what matters. "
+    "is a headroom figure and the binding cell is what matters. Compare it against "
+    "`weights_mb` only with the caveat below in mind. "
 ) + SINGLE_DEVICE_VRAM_NOTE
 
 
@@ -119,6 +127,12 @@ def _rung_cell(group: Sequence[Any], base_acc: float | None) -> str:
     return f"{acc:.1f} ({acc - base_acc:+.1f})"
 
 
+def _spec_for_quant(group: Sequence[Any]) -> str:
+    """The model_spec a quant level's rows carry (they are all the same spec)."""
+
+    return next((getattr(r, "model_spec", "") for r in group), "")
+
+
 def _baseline_metrics(group: Sequence[Any]) -> tuple[float | None, float | None]:
     """The 16-bit accuracy and VRAM a delta is measured against (None when absent)."""
 
@@ -138,7 +152,8 @@ def summary(rows: Sequence[Any]) -> Table:
     pooled_base_acc, pooled_base_vram = _baseline_metrics(baseline)
     present = [r for r in RUNG_ORDER if any(_rung_of(x) == r for x in oracle)]
 
-    columns = ["quant", *present, "overall acc", "vram_mb (max)", "acc_delta_vs_16bit", "vram_delta_mb", "n"]
+    columns = ["quant", *present, "overall acc", "weights_mb", "vram_mb (max)",
+               "acc_delta_vs_16bit", "vram_delta_mb", "n"]
     table_rows: list[list[str]] = []
     for quant in sorted(by_quant, key=lambda q: _QUANT_ORDER.get(q, 99)):
         by_rung = group_by(by_quant[quant], _rung_of)
@@ -150,7 +165,9 @@ def summary(rows: Sequence[Any]) -> Table:
         # Aggregates are computed over the quant level's own rows, never summed across
         # the rung columns, which overlap on nothing but do not share a denominator.
         overall = _metric_cells(by_quant[quant], pooled_base_acc, pooled_base_vram)
-        table_rows.append([quant, *cells, *overall])
+        # overall = [acc, vram, acc_delta, vram_delta, n]; weights sits before vram.
+        spec = _spec_for_quant(by_quant[quant])
+        table_rows.append([quant, *cells, overall[0], weights_mb(spec), *overall[1:]])
 
     n_by_col = {rung: sum(1 for r in oracle if _rung_of(r) == rung) for rung in present}
     return Table(key="quantization_summary",
