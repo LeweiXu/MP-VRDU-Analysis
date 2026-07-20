@@ -94,6 +94,8 @@ def get_reasoner(
         kwargs = {}
         if max_new_tokens is not None:
             kwargs["max_new_tokens"] = max_new_tokens
+        if max_pixels is not None:
+            kwargs["max_pixels"] = max_pixels
         return InternVLBackend(parsed.name, **kwargs)
     from pipeline.reasoner import StubReasoner
 

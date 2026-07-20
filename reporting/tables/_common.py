@@ -174,10 +174,21 @@ def unanswerable_rows(rows: Sequence[Any]) -> list[Any]:
 
 
 def prefill_ms(rows: Sequence[Any]) -> str:
-    """Mean prefill latency in milliseconds (the decode-free, uncontaminated cost)."""
+    """Mean prefill latency in milliseconds (the decode-free, uncontaminated cost).
+
+    Not every backend can measure it: the prefill/decode split comes from a streamer
+    that times the first token, and a backend generating through a single blocking
+    call (InternVL's `chat()`) records the end-to-end latency only and leaves the
+    split at zero. Reporting that as `0` reads as "prefills instantly", the opposite
+    of the truth, so a group that ran but measured no prefill renders as `-`.
+    """
 
     rows = list(rows)
-    return f"{cost_summary(rows).prefill_s * 1000:.0f}" if rows else "-"
+    if not rows:
+        return "-"
+    if not any(float(getattr(r, "prefill_latency_s", 0.0) or 0.0) > 0.0 for r in rows):
+        return "-"
+    return f"{cost_summary(rows).prefill_s * 1000:.0f}"
 
 
 def doc_type_of(row: Any) -> str:
