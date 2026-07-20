@@ -1,0 +1,34 @@
+# Unblocks: the RQ1 fidelity question of whether the loss at TLV is partly an ORDERING
+# problem rather than a content problem. TLV sends one merged text block then every
+# page image, so on a multi-page cell nothing tells the model which text belongs to
+# which image. TLVi sends the same channels at the same token cost, ordered per page.
+# Running both rungs in one spec gives the paired within-question comparison directly:
+# same questions, same oracle pages, same reasoner, only the ordering differs, and the
+# existing fidelity_transition builder can pair TLV -> TLVi as-is.
+# Prediction: the gain should concentrate on multi-page questions (hop_rung shows TLV
+# falling 64.0% -> 42.3% from 1 to 2 evidence pages) and on Chart/Figure evidence,
+# where fidelity_transition already shows the image channel doing the work.
+# Cells: 847 answerable q x 2 rungs x 1 mode x 1 spec = 1694.
+# Hardware: 1x V100 16GB. TLVi costs the same tokens as TLV, so expect a comparable
+# OOM rate (TLV lost 130 of 847 on the headline run); pair with --skip-oom on a resume.
+task_name: G1_oracle_ladder
+run_tag: g1-interleaved-tlv
+dataset: [mmlongbench]
+corpus: {scan: any, pool: answerable, sampling: full}
+parser_dpi: 200
+parser: [paddleocrvl]
+retrieval_representation: [oracle]
+text_retrievers: []
+vision_retrievers: []
+joints: []
+k_values: []
+joint_k_values: []
+inference_text_retriever: none
+inference_vision_retriever: none
+inference_joint: false
+reasoner_spec: [qwen3vl-8b-local]
+quantization: [bf16]
+visual_resolution: [med]
+reasoner_representations: [TLV, TLVi]
+prompt_modes: [none]
+classifier: none

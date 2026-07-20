@@ -13,9 +13,10 @@ from tools.text import embedded_text
 from tools.visual import visual_channel
 
 
-# The four cost-ordered rungs. The ladder is not cumulative: TL's parser text
-# replaces T's embedded text rather than adding to it, and there is no separate
-# layout channel (the "L" is historical). V is the image-only reference point.
+# The cost-ordered rungs. The ladder is not cumulative: TL's parser text replaces T's
+# embedded text rather than adding to it, and there is no separate layout channel (the
+# "L" is historical). V is the image-only reference point, and TLVi is TLV's per-page
+# interleaved ordering at the same cost.
 RUNGS: tuple[str, ...] = REPRESENTATION_LADDER
 
 
@@ -37,11 +38,38 @@ def _text_block(label: str, chunks: Sequence[str]) -> list[Part]:
     return [TextPart(f"[{label}]\n{body}")] if body else []
 
 
-class LadderRepresentation(Representation):
-    """One of the four cost-ordered rungs.
+def _interleaved(pages: Sequence[Page], chunks: Sequence[str]) -> list[Part]:
+    """Emit each page's text immediately followed by that page's image.
 
-    T uses cheap embedded text; TL and TLV use the parser's markdown text (read
-    from the warmed disk cache) instead; TLV and V attach the page images.
+    The merged form (`_text_block` plus every image after it) gives the model no way
+    to tell which text belongs to which image: the per-page chunks are concatenated
+    with blank lines and the images carry no markers, so on a multi-page cell the
+    association is unrecoverable. Here each page contributes a `[page N]`-headed text
+    part and then its own image, so position alone carries the pairing. `N` is the
+    1-based document page number, matching what is printed on the page itself.
+
+    Pairing is positional and `visual_channel` is strictly one part per page (it
+    raises rather than skipping a page without an image), so the zip is total;
+    `strict` makes any future drift fail loudly instead of silently misaligning.
+    """
+
+    images = visual_channel(pages)
+    parts: list[Part] = []
+    for page, chunk, image in zip(pages, chunks, images, strict=True):
+        header = f"[page {page.index + 1}]"
+        body = (chunk or "").strip()
+        parts.append(TextPart(f"{header}\n{body}" if body else header))
+        parts.append(image)
+    return parts
+
+
+class LadderRepresentation(Representation):
+    """One of the cost-ordered rungs.
+
+    T uses cheap embedded text; TL, TLV and TLVi use the parser's markdown text (read
+    from the warmed disk cache) instead; TLV, TLVi and V attach the page images. TLV
+    emits one merged text block then every image; TLVi emits page text and that page's
+    image in turn.
     """
 
     def __init__(self, modality: str, parser_tool: str = DEFAULT_PARSER, dpi: int = 200) -> None:
@@ -58,6 +86,8 @@ class LadderRepresentation(Representation):
         elif self.modality == "TLV":
             parts += _text_block("text", parser_markdown(pages, self.parser_tool, self.dpi))
             parts += list(visual_channel(pages))
+        elif self.modality == "TLVi":
+            parts += _interleaved(pages, parser_markdown(pages, self.parser_tool, self.dpi))
         elif self.modality == "V":
             parts += list(visual_channel(pages))
         return Payload(self.modality, tuple(parts))

@@ -45,9 +45,19 @@ DEFAULT_PATHS = ProjectPaths()
 DEFAULT_BINS: tuple[str, ...] = ("text-dominant", "mixed-modality", "visual-dominant")
 
 # The cost-ordered representation ladder (rungs the reasoner climbs). Single source
-# of truth: scoring.frontier.RUNG_ORDER and pipeline.representation.RUNGS import this,
-# and it is the default for ExperimentConfig.representations.
-REPRESENTATION_LADDER: tuple[str, ...] = ("T", "TL", "TLV", "V")
+# of truth: scoring.frontier.RUNG_ORDER and pipeline.representation.RUNGS import this.
+#
+# TLVi is TLV's interleaved variant: the same parser text and the same page images at
+# the same cost, ordered per page (page text, that page's image, next page) instead of
+# one merged text block followed by every image. It sits next to TLV because it is not
+# a more expensive rung, and it sits AFTER TLV so a sufficiency tie resolves to the
+# plain ordering. It is a valid representation and appears in the tables whenever a run
+# produced it, but it is deliberately NOT in DEFAULT_REPRESENTATIONS: a run has to ask
+# for it, so no existing spec changes behaviour by picking up a new rung.
+REPRESENTATION_LADDER: tuple[str, ...] = ("T", "TL", "TLV", "TLVi", "V")
+
+# What a run generates when its spec does not say. The four canonical rungs only.
+DEFAULT_REPRESENTATIONS: tuple[str, ...] = ("T", "TL", "TLV", "V")
 
 DEFAULT_REASONER_SPEC = "qwen3vl-8b-local"
 SMOKE_REASONER_SPEC = "qwen3vl-2b-local"
@@ -293,7 +303,7 @@ class ExperimentConfig:
     prompt_modes: tuple[str, ...] = G3_PROMPT_MODES
 
     # Representation ladder (cost-ordered; names historical, mechanism in tools/).
-    representations: tuple[str, ...] = REPRESENTATION_LADDER
+    representations: tuple[str, ...] = DEFAULT_REPRESENTATIONS
 
     # PDF parser feeding the TL/TLV text channel. The parser comparison varies
     # this per run (as its own run_tag); T and V never use it.

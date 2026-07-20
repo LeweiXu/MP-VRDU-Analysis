@@ -708,12 +708,21 @@ swept (G3), Qwen3-VL-8B unless swept.
 ## 9. Additional details (regardless of relevance)
 
 ### Representation ladder T / TL / TLV / V (`pipeline/representation.py`)
-- Four cost-ordered rungs; **not cumulative**. T = PyMuPDF embedded text. TL =
+- Five cost-ordered rungs; **not cumulative**. T = PyMuPDF embedded text. TL =
   parser markdown text (replaces T's text, read from the warmed parser cache). TLV
-  = parser markdown text + page images. V = page images only (image-only reference).
+  = parser markdown text + page images. TLVi = the same channels and the same token
+  cost as TLV, ordered per page. V = page images only (image-only reference).
 - The "L" (layout) is historical — there is no separate bounding-box/layout channel.
-- Text channel is emitted as a single labelled block `[text]\n...`; images as ordered
-  `<image>` placeholders bound to the actual page images.
+- **Ordering differs between TLV and TLVi.** TLV emits the text channel as a single
+  labelled block `[text]\n...` holding every page's text joined by blank lines, then
+  every image after it, so on a multi-page cell nothing associates a text chunk with
+  an image. TLVi emits `[page N]` + that page's text, then that page's image, per
+  page, so adjacency carries the pairing (`N` is the 1-based document page number).
+  Both bind images to ordered `<image>` placeholders the same way.
+- **TLVi is opt-in.** It is in `REPRESENTATION_LADDER` (so it is valid anywhere a
+  rung is, and appears in the tables whenever a run produced it) but not in
+  `DEFAULT_REPRESENTATIONS`, so a spec must list it. `representation` is a cache-key
+  component, so TLVi cells never collide with TLV cells.
 - `<image>` collision fix: literal `<image>` inside document text is rewritten to
   `[image]` before real sentinels are inserted (`models/payload.py`, `docs/DECISIONS.md:50`).
 

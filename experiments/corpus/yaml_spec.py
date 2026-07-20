@@ -118,7 +118,9 @@ def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
         r if _is_bf16(q) else f"{r}-{q}" for r in reasoner_list for q in quant_list
     )
     visual_resolutions = tuple(_as_list(raw.get("visual_resolution")) or ["med"])
-    reps = tuple(raw.get("reasoner_representations") or ("T", "TL", "TLV", "V"))
+    from config import DEFAULT_REPRESENTATIONS
+
+    reps = tuple(raw.get("reasoner_representations") or DEFAULT_REPRESENTATIONS)
 
     retrieval_representation = tuple(raw.get("retrieval_representation") or ())
     text_retrievers = tuple(raw.get("text_retrievers") or ())

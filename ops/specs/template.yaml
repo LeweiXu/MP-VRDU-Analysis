@@ -42,7 +42,14 @@ runs:
     reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, qwen3vl-8b-local, qwen3vl-32b-local, internvl3-8b-local]
     quantization: [bf16, 8bit, 4bit]
     visual_resolution: [low, med, high]
-    reasoner_representations: [T, TL, TLV, V]
+    # T = PyMuPDF embedded text. TL = parser markdown text (replaces T's text).
+    # TLV = parser markdown + page images, emitted as ONE merged text block followed
+    # by every image. TLVi = the same channels at the same cost, ordered per page
+    # ("[page N]" + that page's text, then that page's image, then the next page), so
+    # a page's text and its image sit adjacent instead of the association being
+    # unrecoverable on a multi-page cell. V = page images only.
+    # TLVi is opt-in: valid anywhere a rung is, but not a default, so list it to get it.
+    reasoner_representations: [T, TL, TLV, TLVi, V]
     prompt_modes: [none, generic, targeted]
     classifier: qwen3vl-2b-local              # none | <classifier reasoner spec>
 
