@@ -14,19 +14,24 @@ from ._load import column_n_footer
 # full lift over the raw embedded text layer.
 PAIRINGS: tuple[tuple[str, str], ...] = (("TL", "TLV"), ("T", "TLV"))
 TRANSITIONS: tuple[tuple[str, bool, bool], ...] = (
-    ("wrong->right", False, True),
-    ("right->wrong", True, False),
-    ("right->right", True, True),
-    ("wrong->wrong", False, False),
+    ("wrong→right (%)", False, True),
+    ("right→wrong (%)", True, False),
+    ("right→right (%)", True, True),
+    ("wrong→wrong (%)", False, False),
 )
-ALL_SOURCES = "(all sources)"
+ALL_SOURCES = "**All sources**"
 NO_SOURCE = "(none)"
 NOTE = (
     "Paired on question_id over the same oracle pages: a question counts only when "
     "BOTH rungs produced a status==ok row, so the paired n is well below the pool and "
-    "is the discount signal. Rates are percentages of that source's paired n and sum "
-    "to 100 per row. A question citing several evidence sources is counted under each "
-    "of them, so the per-source n sums above the paired total."
+    "is the discount signal. "
+    "The four transition columns are PERCENTAGES of that row's paired n and sum to 100 "
+    "per row; the figure in parentheses is the raw question count behind the "
+    "percentage. "
+    "A question citing several evidence sources is counted under each of them, so the "
+    "per-source rows overlap and CANNOT be summed. The bolded All sources row closing "
+    "each block is therefore computed fresh over every paired question in that pairing, "
+    "each counted once, with its own paired n; it is a pooled total, not a column sum."
 )
 
 
@@ -92,9 +97,11 @@ def build(rows: Sequence[Any]) -> Table:
     totals: list[str] = []
 
     for label, pairs, by_source in _blocks(rows):
-        table_rows.append(_rate_row([label, ALL_SOURCES], pairs))
         for source in sorted(by_source):
             table_rows.append(_rate_row([label, source], by_source[source]))
+        # Closes the block. Computed over `pairs` (every paired question once), not by
+        # summing the per-source rows above, which overlap on multi-source questions.
+        table_rows.append(_rate_row([label, ALL_SOURCES], pairs))
         totals.append(f"{label}: {len(pairs)}")
 
     # Every row already carries its own paired n, so the footer states the paired

@@ -26,12 +26,13 @@ from ._load import column_n_footer
 # handful of answerable questions that recorded no gold evidence pages, so it has
 # no integration reading.
 HOPS = ("single", "multi")
-GAP_COLUMN = "single-multi gap"
+GAP_COLUMN = "M − S"
 NOTE = (
     "hop=none is dropped: those rows are answerable questions that recorded no gold "
     "evidence pages, not unanswerable ones, so they carry no integration signal. "
-    "Gap is single minus multi in accuracy points; positive means multi-page "
-    "evidence costs accuracy."
+    "Accuracy columns are percentages. `M − S` is multi-page accuracy MINUS "
+    "single-page accuracy, in points, so it reads as how multi-page evidence performs "
+    "relative to single-page: a NEGATIVE value means multi-page is worse."
 )
 
 
@@ -52,12 +53,12 @@ def _present_rungs(rows: Sequence[Any]) -> list[str]:
 
 
 def _gap_cell(by_hop: dict[str, list[Any]]) -> str:
-    """Single minus multi accuracy in points, or `-` when either side is empty."""
+    """Multi minus single accuracy in points, or `-` when either side is empty."""
 
     single, multi = by_hop.get("single", []), by_hop.get("multi", [])
     if not single or not multi:
         return "-"
-    delta = accuracy_summary(single).accuracy - accuracy_summary(multi).accuracy
+    delta = accuracy_summary(multi).accuracy - accuracy_summary(single).accuracy
     return f"{delta * 100:+.1f}"
 
 
