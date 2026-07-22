@@ -79,7 +79,7 @@ PLAN: tuple[AnalysisTable, ...] = (
                   "representation ladder T/TL/TLV/V", "headline.build", sweeps_key="representation",
                   summary="headline.summary", rq=RQ1),
     AnalysisTable("fidelity_transition", "G1_oracle_ladder", (G1_BASE,),
-                  "rung transition (TL→TLV, T→TLV) × evidence source", "fidelity_transition.build",
+                  "rung transition (TL→TLV, T→TL, T→TLV) × evidence source", "fidelity_transition.build",
                   sweeps_key="representation",
                   caption_extra={"pairing": "within-question, both rungs status==ok",
                                  "transition columns": "percentages summing to 100 per row "

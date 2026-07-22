@@ -9,10 +9,10 @@ from typing import Any
 from ._common import Table, group_by, restrict_to_primary_spec, rows_for_condition
 from ._load import column_n_footer
 
-# The two pairings that matter. TL->TLV isolates the page image added on top of
-# parser text (the "the parser dropped it, the image kept it" number); T->TLV is the
-# full lift over the raw embedded text layer.
-PAIRINGS: tuple[tuple[str, str], ...] = (("TL", "TLV"), ("T", "TLV"))
+# The pairings that matter. TL->TLV isolates the page image added on top of
+# parser text (the "the parser dropped it, the image kept it" number); T->TL is the
+# parser's own lift over the raw embedded text layer; T->TLV is the full lift.
+PAIRINGS: tuple[tuple[str, str], ...] = (("TL", "TLV"), ("T", "TL"), ("T", "TLV"))
 TRANSITIONS: tuple[tuple[str, bool, bool], ...] = (
     ("wrong→right (%)", False, True),
     ("right→wrong (%)", True, False),
