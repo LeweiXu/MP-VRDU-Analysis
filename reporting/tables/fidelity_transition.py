@@ -1,12 +1,20 @@
 """Paired within-question fidelity transitions: for questions answered at two rungs,
-how often adding a channel flips the verdict, split by the evidence source cited."""
+how often adding a channel flips the verdict, split by the evidence source cited or
+by the native doc_type."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
-from ._common import Table, group_by, restrict_to_primary_spec, rows_for_condition
+from ._common import (
+    Table,
+    doc_type_of,
+    group_by,
+    ordered_doc_types,
+    restrict_to_primary_spec,
+    rows_for_condition,
+)
 from ._load import column_n_footer
 
 # The pairings that matter. TL->TLV isolates the page image added on top of
@@ -20,6 +28,7 @@ TRANSITIONS: tuple[tuple[str, bool, bool], ...] = (
     ("wrong→wrong (%)", False, False),
 )
 ALL_SOURCES = "**All sources**"
+ALL_DOC_TYPES = "**All doc_types**"
 NO_SOURCE = "(none)"
 NOTE = (
     "Paired on question_id over the same oracle pages: a question counts only when "
@@ -32,6 +41,17 @@ NOTE = (
     "per-source rows overlap and CANNOT be summed. The bolded All sources row closing "
     "each block is therefore computed fresh over every paired question in that pairing, "
     "each counted once, with its own paired n; it is a pooled total, not a column sum."
+)
+DOCTYPE_NOTE = (
+    "Paired on question_id over the same oracle pages: a question counts only when "
+    "BOTH rungs produced a status==ok row, so the paired n is well below the pool and "
+    "is the discount signal. "
+    "The four transition columns are PERCENTAGES of that row's paired n and sum to 100 "
+    "per row; the figure in parentheses is the raw question count behind the "
+    "percentage. "
+    "Each question carries exactly one doc_type, so unlike the evidence-source table "
+    "the rows within a block are disjoint and the bolded All doc_types row closing it "
+    "is their sum."
 )
 
 
@@ -74,19 +94,26 @@ def _rate_row(label: list[str], pairs: Sequence[tuple[Any, Any]]) -> list[str]:
     return [*label, *cells, str(total)]
 
 
-def _blocks(rows: Sequence[Any]) -> list[tuple[str, list[tuple[Any, Any]], dict[str, list]]]:
-    """Per pairing: its label, all pairs, and the pairs fanned out by evidence source."""
+def _blocks(
+    rows: Sequence[Any], fanout: Callable[[Any], tuple[str, ...]]
+) -> list[tuple[str, list[tuple[Any, Any]], dict[str, list]]]:
+    """Per pairing: its label, all pairs, and the pairs fanned out by `fanout` keys
+    (evidence sources, or the single doc_type)."""
 
     index = _verdict_index(restrict_to_primary_spec(rows_for_condition(rows, "oracle")))
     out = []
     for from_rung, to_rung in PAIRINGS:
         pairs = _paired(index, from_rung, to_rung)
-        by_source: dict[str, list[tuple[Any, Any]]] = {}
+        by_key: dict[str, list[tuple[Any, Any]]] = {}
         for pair in pairs:
-            for source in _sources_of(pair[0]):
-                by_source.setdefault(source, []).append(pair)
-        out.append((f"{from_rung}->{to_rung}", pairs, by_source))
+            for key in fanout(pair[0]):
+                by_key.setdefault(key, []).append(pair)
+        out.append((f"{from_rung}->{to_rung}", pairs, by_key))
     return out
+
+
+def _doc_type_key(row: Any) -> tuple[str, ...]:
+    return (doc_type_of(row),)
 
 
 def build(rows: Sequence[Any]) -> Table:
@@ -96,7 +123,7 @@ def build(rows: Sequence[Any]) -> Table:
     table_rows: list[list[str]] = []
     totals: list[str] = []
 
-    for label, pairs, by_source in _blocks(rows):
+    for label, pairs, by_source in _blocks(rows, _sources_of):
         for source in sorted(by_source):
             table_rows.append(_rate_row([label, source], by_source[source]))
         # Closes the block. Computed over `pairs` (every paired question once), not by
@@ -116,4 +143,47 @@ def build(rows: Sequence[Any]) -> Table:
         rows=table_rows,
         note=NOTE,
         footer=footer,
+    )
+
+
+def build_by_doctype(rows: Sequence[Any]) -> Table:
+    """Verdict-transition rates per native doc_type, for the rung pairings."""
+
+    columns = ["pairing", "doc_type", *[name for name, _, _ in TRANSITIONS], "paired n"]
+    table_rows: list[list[str]] = []
+    totals: list[str] = []
+
+    for label, pairs, by_type in _blocks(rows, _doc_type_key):
+        for dt in ordered_doc_types([a for a, _ in pairs]):
+            table_rows.append(_rate_row([label, dt], by_type[dt]))
+        # Closes the block; doc_types are disjoint, so this one IS the column sum.
+        table_rows.append(_rate_row([label, ALL_DOC_TYPES], pairs))
+        totals.append(f"{label}: {len(pairs)}")
+
+    footer = column_n_footer(columns, {})
+    footer[0][1] = ", ".join(totals) or "-"
+
+    return Table(
+        key="fidelity_transition_doctype",
+        title="Fidelity: paired within-question verdict transitions by doc_type",
+        columns=columns,
+        rows=table_rows,
+        note=DOCTYPE_NOTE,
+        footer=footer,
+    )
+
+
+def doctype_summary(rows: Sequence[Any]) -> Table:
+    """Doc_type-collapsed view: one pooled transition-rate row per rung pairing."""
+
+    columns = ["pairing", *[name for name, _, _ in TRANSITIONS], "paired n"]
+    table_rows = [
+        _rate_row([label], pairs) for label, pairs, _ in _blocks(rows, _doc_type_key)
+    ]
+    return Table(
+        key="fidelity_transition_doctype_summary",
+        title="Fidelity (overall): paired verdict transitions per rung pairing",
+        columns=columns,
+        rows=table_rows,
+        footer=column_n_footer(columns, {}),
     )

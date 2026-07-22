@@ -87,6 +87,13 @@ PLAN: tuple[AnalysisTable, ...] = (
                                  "All sources row": "pooled over questions, each counted once; "
                                                     "not a column sum, has its own paired n"},
                   rq=RQ1),
+    AnalysisTable("fidelity_transition_doctype", "G1_oracle_ladder", (G1_BASE,),
+                  "rung transition (TL→TLV, T→TL, T→TLV) × doc_type", "fidelity_transition.build_by_doctype",
+                  sweeps_key="representation",
+                  caption_extra={"pairing": "within-question, both rungs status==ok",
+                                 "transition columns": "percentages summing to 100 per row "
+                                                       "(parenthesised figure is the raw count)"},
+                  summary="fidelity_transition.doctype_summary", rq=RQ1),
     AnalysisTable("composition", "G1_oracle_ladder", (G1_BASE,),
                   "evidence source × rung", "composition.build", sweeps_key="representation", rq=RQ1),
     AnalysisTable("source_stratification", "G1_oracle_ladder", (G1_BASE,),
