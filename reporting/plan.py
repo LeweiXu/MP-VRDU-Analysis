@@ -120,6 +120,13 @@ PLAN: tuple[AnalysisTable, ...] = (
                   caption_extra={"hop": "bucketed evidence-page count, zero-evidence questions dropped",
                                  "tail buckets": "4-5 and 6+ are small; included for trend, not precision"},
                   summary="hop_rung.summary", rq=RQ1),
+    AnalysisTable("hop_doctype", "G1_oracle_ladder", (G1_BASE,),
+                  "doc_type × rung × evidence-page bucket (1 / 2 / 3+)", "hop_doctype.build",
+                  sweeps_key="representation",
+                  caption_extra={"buckets": "gold evidence-page count from the corpus annotation, "
+                                            "zero-evidence questions dropped; 3+ merges the "
+                                            "detail table's 3 / 4-5 / 6+ tail"},
+                  rq=RQ1),
     AnalysisTable("hallucination", "G3_hallucination", (G3,),
                   "prompt_mode (none / generic / targeted)", "hallucination.build", sweeps_key="prompt_mode",
                   caption_extra={"page_selection note": G3_SELECTION_NOTE}, rq=RQ1),
