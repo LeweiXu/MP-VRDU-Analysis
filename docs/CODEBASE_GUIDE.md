@@ -647,7 +647,14 @@ page-level framing. `k ∈ {1,3,5,7,10}` for similarity/retrieved conditions
   fp16, **`max_seq_length` capped to 4096 tokens** and **encode batch = 1** to fit a
   16 GB V100 with no FlashAttention (`config.QWEN3_EMBEDDING_MAX_SEQ_LEN = 4096`,
   `QWEN3_EMBEDDING_ENCODE_BATCH = 1`, `config.py:141`). Only the rare very-long page is
-  truncated; truncation is recorded per page in the retrieval memo.
+  truncated; truncation is recorded per page in the retrieval memo (24/840 questions
+  had one page over the cap in the full run).
+  > Deviation to flag: queries are encoded **without the model's instruction prompt**
+  > (`retrievers/text.py:_encode` calls plain `encode()`, no `prompt_name="query"`),
+  > so the `Instruct: ... \nQuery: ...` prefix the model card recommends is omitted.
+  > The card estimates a 1–5% retrieval gain from the instruction; cite the arm as
+  > "no-instruction". Rankings were otherwise verified consistent end-to-end
+  > (memo ↔ scored rows byte-exact, no silent bm25 fallback in the full run).
 
 ### Vision rungs (ColPali-family late interaction) (`retrievers/vision.py:38`)
 - Multi-vector (ColBERT-style) late interaction over **rendered page images**;
