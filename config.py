@@ -4,6 +4,7 @@ visual-resolution presets, sampling defaults, and the scoring/evaluation constan
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -64,23 +65,61 @@ SMOKE_REASONER_SPEC = "qwen3vl-2b-local"
 DEFAULT_MAX_TOKENS = 256
 SMOKE_MAX_TOKENS = 64
 
-# Instruction preambles for the abstention/hallucination prompt sweep. The mode
-# rides on the cell's conditioner name (like the retrieval k does), so each mode
-# is its own cached cell, and the reasoner applies the matching instruction. The
-# targeted text is the one every answerable (G1/G2) cell uses.
+# Instruction preambles (the prompt modes). The mode rides on the cell's
+# conditioner name (like the retrieval k does), so each mode is its own cached
+# cell, and the reasoner applies the matching instruction. Every mode is a
+# preamble only: one instruction string, one generation per cell.
+#
+# The set is built by composition from named fragments so each mode's mechanism
+# is legible from its definition. `grounded` is the control for the three
+# mechanisms: none->grounded is grounding alone, grounded->abstain the abstention
+# escape, grounded->cot reasoning without extraction, grounded->extract_cot
+# extraction plus reasoning, abstain->abstain_balanced the repair arm for
+# whatever false abstention `abstain` costs.
+_GROUNDING = "Use only the provided document evidence."
+_CONCISE = "Keep the answer concise."
+
+_ABSTAIN = ("If the evidence does not contain the answer, answer exactly: "
+            "Not answerable.")
+_COMMIT = ("If the evidence does contain the answer, give it: do not decline "
+           "a question the evidence supports.")
+
+_EXTRACT = ("First copy out, verbatim, the passages from the document evidence "
+            "that bear on the question, each on its own line. Where the relevant "
+            "evidence is a chart, figure, table, or other visual element, describe "
+            "what it shows in enough detail to answer from your description alone.")
+
+_COT = "Think step by step before answering."
+_COT_AFTER = "Then reason step by step using only the evidence you set out above."
+_FINAL = "Then write your final answer on a new line beginning with 'Answer:'."
+
 PROMPT_MODES: dict[str, str] = {
+    # Baseline: no instruction at all.
     "none": "",
-    "generic": "Use only the provided document evidence and keep the answer concise.",
-    "targeted": (
-        "Use only the provided document evidence. If the evidence does not contain the answer, "
-        "answer exactly: Not answerable.\nKeep the answer concise."
-    ),
+    # Grounding only: restrict to the provided evidence, no escape and no
+    # reasoning scaffold. The control for every mode below.
+    "grounded": f"{_GROUNDING[:-1]} and keep the answer concise.",
+    # Grounding + an abstention escape.
+    "abstain": f"{_GROUNDING} {_ABSTAIN}\n{_CONCISE}",
+    # Grounding + abstention escape + an explicit instruction NOT to abstain when
+    # the evidence supports an answer.
+    "abstain_balanced": f"{_GROUNDING} {_ABSTAIN} {_COMMIT}\n{_CONCISE}",
+    # Grounding + step-by-step reasoning, no extraction.
+    "cot": f"{_GROUNDING} {_COT}\n{_FINAL} {_CONCISE}",
+    # Grounding + extraction, then reasoning constrained to what was extracted.
+    "extract_cot": f"{_GROUNDING}\n{_EXTRACT}\n{_COT_AFTER}\n{_FINAL} {_CONCISE}",
 }
+# Frozen legacy aliases. The existing cached cells were generated under these
+# condition suffixes; the strings are byte-identical to grounded/abstain, so the
+# aliases keep every old row interpretable and every default path stable.
+PROMPT_MODES["generic"] = PROMPT_MODES["grounded"]
+PROMPT_MODES["targeted"] = PROMPT_MODES["abstain"]
 DEFAULT_PROMPT_MODE = "targeted"
-# The conditions the hallucination task sweeps: no guidance, generic, and
-# abstention-targeted. The prompting comparison needs the unprompted (none) arm as
-# its baseline, so all three ride their own cache cells.
-G3_PROMPT_MODES: tuple[str, ...] = ("none", "generic", "targeted")
+# The modes the faithfulness sweeps (G3 unanswerable, G4 answerable) run: the
+# unprompted baseline plus the five composed mechanisms above.
+G3_PROMPT_MODES: tuple[str, ...] = (
+    "none", "grounded", "abstain", "abstain_balanced", "cot", "extract_cot"
+)
 
 # The single baseline configuration each run is measured against. The experiment
 # is one pipeline run at this baseline, and every sweep changes exactly one axis
@@ -126,6 +165,19 @@ BASELINE: dict[str, dict[str, str]] = {
         "representation": "TLV",
         "pool": "unanswerable",
         "page_selection": "similarity (bm25, k=3)",
+        "prompt_mode": "none",
+    },
+    "G4_faithfulness_answerable": {
+        "dataset": "mmlongbench",
+        "scan": "any",
+        "sampling": "full",
+        "parser": "paddleocrvl",
+        "reasoner_spec": "qwen3vl-8b-local",
+        "quantization": "bf16",
+        "visual_resolution": "med",
+        "representation": "T/TL/TLV/V",
+        "pool": "answerable",
+        "page_selection": "oracle",
         "prompt_mode": "none",
     },
 }
@@ -334,6 +386,17 @@ class ExperimentConfig:
     # `-4bit`/`-8bit` suffix so the quantized run gets its own cache rows.
     quantization: str | None = None
     max_tokens: int = DEFAULT_MAX_TOKENS
+    # Per-prompt-mode decode budget: {"default": N, "<mode>": M, ...}. A
+    # reasoning-bearing mode emits reasoning AND an answer, so a budget sized for
+    # a terse answer truncates the answer away; the orchestrator rebinds the
+    # reasoner's max_new_tokens per cell from this. None means every mode uses
+    # `max_tokens`. NOT part of the cell key: budgets are scoped by run_tag and
+    # never mixed within one tag (the driver's run-settings check enforces it).
+    decode_budget: Mapping[str, int] | None = None
+    # The marker the CoT modes instruct the model to put before its final answer,
+    # extracted (last occurrence) before the answer reaches the judge. None sends
+    # the whole generation to the judge. Scoped by run_tag like decode_budget.
+    final_answer_delimiter: str | None = None
 
     # The visual-resolution preset this run feeds a cell when it is not sweeping.
     visual_resolution: str = DEPLOYMENT_RESOLUTION
@@ -389,8 +452,33 @@ class ExperimentConfig:
                 f"visual_resolutions must each be one of {sorted(VISUAL_RESOLUTION_PRESETS)}, "
                 f"got {unknown_res}"
             )
+        if self.decode_budget is not None:
+            budget = {str(k): int(v) for k, v in dict(self.decode_budget).items()}
+            if "default" not in budget:
+                raise ValueError("decode_budget must contain a 'default' entry")
+            unknown_modes = [m for m in budget if m != "default" and m not in PROMPT_MODES]
+            if unknown_modes:
+                raise ValueError(f"decode_budget names unknown prompt modes: {unknown_modes}")
+            if any(v <= 0 for v in budget.values()):
+                raise ValueError(f"decode_budget values must be positive, got {budget}")
+            object.__setattr__(self, "decode_budget", budget)
         if self.run_tag is not None:
             tag = self.run_tag
             if not tag or not all(ch.isalnum() or ch in "-_" for ch in tag):
                 raise ValueError(f"run_tag must be non-empty alphanumeric/dash/underscore, got {tag!r}")
             object.__setattr__(self, "paths", replace(self.paths, cache_dir=self.paths.cache_dir / tag))
+
+
+def budget_for_mode(config: "ExperimentConfig", prompt_mode: str) -> int:
+    """The decode budget (max new tokens) for one cell's prompt mode.
+
+    Falls back to the run's `default` entry, then to `config.max_tokens` when no
+    decode_budget is set. Smoke runs stay capped: the smoke clamp on max_tokens
+    also bounds every per-mode budget.
+    """
+
+    budget = config.decode_budget or {}
+    value = int(budget.get(prompt_mode, budget.get("default", config.max_tokens)))
+    if config.smoke:
+        value = min(value, SMOKE_MAX_TOKENS)
+    return value

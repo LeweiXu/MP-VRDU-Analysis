@@ -21,8 +21,11 @@ def prompt_mode_of(row: Any) -> str:
     return mode or cond
 
 
-# Present the sweep cheapest-guidance first.
-_MODE_ORDER = {"none": 0, "generic": 1, "targeted": 2}
+# Present the sweep cheapest-guidance first. generic/grounded and
+# targeted/abstain are the same instruction under legacy/new names, so they
+# share a rank; unknown modes sort last alphabetically.
+_MODE_ORDER = {"none": 0, "generic": 1, "grounded": 1, "targeted": 2, "abstain": 2,
+               "abstain_balanced": 3, "cot": 4, "extract_cot": 5}
 
 
 def build(rows: Sequence[Any]) -> Table:

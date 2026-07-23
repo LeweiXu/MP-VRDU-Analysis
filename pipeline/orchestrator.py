@@ -9,7 +9,7 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
-from config import DEFAULT_PROMPT_MODE, PROMPT_MODES, ExperimentConfig
+from config import DEFAULT_PROMPT_MODE, PROMPT_MODES, ExperimentConfig, budget_for_mode
 from data.loader import resolve_pdf
 from data.render import pdf_page_count, render_pdf
 from experiments.engine.paths import prediction_key as make_prediction_key
@@ -21,6 +21,11 @@ from pipeline.representation import Representation, get_representation
 from schema import Page, PageSet, Prediction, PredictionRow, Question, ResultRow, tokens_dropped, truncation_occurred
 
 log = logging.getLogger("mpvrdu.orchestrator")
+
+# Backend Prediction.metadata keys copied onto the persisted row. A whitelist,
+# not a full merge: backend metadata also holds machine-local values (cache
+# paths, load flags) and rows must stay machine-independent.
+_ROW_METADATA_KEYS = ("max_new_tokens", "output_truncated", "prompt_template_version", "quantization")
 
 
 def current_machine() -> str:
@@ -211,6 +216,11 @@ class Orchestrator:
         if prompt_mode not in PROMPT_MODES:
             raise ValueError(f"unknown prompt_mode {prompt_mode!r}; expected one of {sorted(PROMPT_MODES)}")
         self.reasoner.prompt_instruction = PROMPT_MODES[prompt_mode]
+        # Per-mode decode budget: rebind on the loaded reasoner per cell, the same
+        # way the driver rebinds max_pixels per resolution. Not part of the cell
+        # key; budgets are run_tag-scoped (the driver's run-settings check).
+        if hasattr(self.reasoner, "max_new_tokens"):
+            self.reasoner.max_new_tokens = budget_for_mode(self.config, prompt_mode)
 
         page_set = conditioner.condition(question, self.page_count(question))
         prediction_key = self._prediction_key(
@@ -275,5 +285,12 @@ class Orchestrator:
             peak_vram_bytes=prediction.peak_vram_bytes,
             visual_resolution=self.visual_resolution,
             note=page_set.note,
-            metadata={"source_dataset": question.raw_fields.get("source_dataset", self.config.dataset)},
+            metadata={
+                "source_dataset": question.raw_fields.get("source_dataset", self.config.dataset),
+                # Whitelisted backend telemetry (not a full merge: backend metadata
+                # also carries machine-local values like cache paths, and rows must
+                # stay machine-independent). output_truncated is the output-side
+                # truncation canary the input-side fields cannot catch.
+                **{k: prediction.metadata[k] for k in _ROW_METADATA_KEYS if k in prediction.metadata},
+            },
         )

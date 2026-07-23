@@ -53,7 +53,8 @@ model_spec, page_indices, visual_resolution)` (`experiments/engine/paths.py:29`)
 | Reasoner size / family (2B/4B/8B/32B, InternVL3-8B) | ✅ spec | `reasoner_spec(s)`; specs already registered (Part B §1) |
 | Quantization bf16 / 8bit / 4bit | ✅ spec | rides as a `model_spec` suffix, own cache rows |
 | Visual resolution low / med / high | ✅ spec | `visual_resolution(s)`; part of the cell key |
-| Prompt mode none / generic / targeted | ✅ spec | `prompt_modes`; rides in `condition` suffix |
+| Prompt mode (none / grounded / abstain / abstain_balanced / cot / extract_cot; legacy aliases generic=grounded, targeted=abstain) | ✅ spec | `prompt_modes`; rides in `condition` suffix |
+| Per-mode decode budget / final-answer delimiter | ✅ spec | `decode_budget` / `final_answer_delimiter`; run_tag-scoped, never in the cell key (a `run_settings.json` sidecar refuses mixing within one tag) |
 | Retrieval depth k, representation rungs, parser, dataset, pool, scan filter, sampling | ✅ spec | all are config axes / cell-set options |
 | Which retriever feeds generation (text/vision/joint arm) | ✅ spec | `inference_text_retriever` / `inference_vision_retriever` / `inference_joint` |
 | A **new prompt string** (a 4th mode) | ❌ code | add to `config.PROMPT_MODES` (`config.py:61`) + `G3_PROMPT_MODES` |
@@ -404,23 +405,29 @@ non-empty; then a blank line, then the body.
 - There is **no input-token cap** — the entire text context is fed (`text_tokens_fed
   == total_text_tokens`, a zero-canary; `schema.py:40`).
 
-### The three prompt modes (instruction preambles) (`config.py:61`)
+### The prompt modes (instruction preambles) (`config.PROMPT_MODES`)
+
+The registry holds six composed modes (`none`, `grounded`, `abstain`,
+`abstain_balanced`, `cot`, `extract_cot`) plus two frozen legacy aliases:
+`generic` is byte-identical to `grounded`, `targeted` byte-identical to
+`abstain`. The strings the completed runs used:
 
 ```python
-PROMPT_MODES = {
-    "none":     "",
-    "generic":  "Use only the provided document evidence and keep the answer concise.",
-    "targeted": ("Use only the provided document evidence. If the evidence does not "
-                 "contain the answer, answer exactly: Not answerable.\n"
-                 "Keep the answer concise."),
-}
+"none":     ""
+"generic":  "Use only the provided document evidence and keep the answer concise."   # = grounded
+"targeted": ("Use only the provided document evidence. If the evidence does not "
+             "contain the answer, answer exactly: Not answerable.\n"
+             "Keep the answer concise.")                                             # = abstain
 ```
 
-**Which mode each task actually ran (from the run specs, not the defaults):**
+**Which mode each completed task actually ran (from the run specs, not the defaults):**
 - **G1 (oracle ladder), all sweeps** — `prompt_modes: [none]` → empty instruction, header only.
 - **G2 (retrieval)** — `prompt_modes: [none]`.
 - **G3 (hallucination / abstention)** — `prompt_modes: [none, generic, targeted]`, i.e. the
   three-way prompting comparison; `none` is the baseline arm.
+- The six-mode faithfulness sweeps (`g3-faithfulness-full`, `g4-faithfulness-full`
+  specs) are **planned, not yet run**; they add per-mode decode budgets
+  (cot/extract_cot at 1024) and judge-time `Answer:` extraction, both run_tag-scoped.
 
 > Caveat: `config.py:69` sets `DEFAULT_PROMPT_MODE = "targeted"` and a stale comment
 > claims "targeted is the one every answerable (G1/G2) cell uses". That default is only

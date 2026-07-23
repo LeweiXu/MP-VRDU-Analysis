@@ -34,6 +34,8 @@ ALLOWED_KEYS = {
     "visual_resolution",
     "reasoner_representations",
     "prompt_modes",
+    "decode_budget",
+    "final_answer_delimiter",
     "classifier",
 }
 
@@ -70,6 +72,8 @@ class Spec:
     visual_resolutions: tuple[str, ...] = ()
     reasoner_representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
     prompt_modes: tuple[str, ...] = ("none",)
+    decode_budget: Mapping[str, int] | None = None
+    final_answer_delimiter: str | None = None
     classifier: str | None = None
 
 
@@ -93,6 +97,37 @@ def _clean_none(value: Any) -> str | None:
 def _is_bf16(value: Any) -> bool:
     """A quantization value meaning the unquantized baseline (no suffix)."""
     return not value or (isinstance(value, str) and value.strip().lower() in ("bf16", "none", ""))
+
+
+def _parse_decode_budget(value: Any, *, run_tag: str) -> Mapping[str, int] | None:
+    """Validate a per-prompt-mode decode budget block.
+
+    Must be a mapping with a `default` entry; every other key must be a known
+    prompt mode; values positive ints. Budgets are run_tag-scoped (never part of
+    the cell key), so getting them right at parse time is the safety line.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise SpecError(f"{run_tag}: decode_budget must be a mapping, got {type(value).__name__}")
+    from config import PROMPT_MODES
+
+    budget: dict[str, int] = {}
+    for key, entry in value.items():
+        name = str(key)
+        if name != "default" and name not in PROMPT_MODES:
+            raise SpecError(f"{run_tag}: decode_budget names unknown prompt mode {name!r}")
+        try:
+            tokens = int(entry)
+        except (TypeError, ValueError):
+            raise SpecError(f"{run_tag}: decode_budget[{name!r}] must be an int, got {entry!r}") from None
+        if tokens <= 0:
+            raise SpecError(f"{run_tag}: decode_budget[{name!r}] must be positive, got {tokens}")
+        budget[name] = tokens
+    if "default" not in budget:
+        raise SpecError(f"{run_tag}: decode_budget must contain a 'default' entry")
+    return budget
 
 
 def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
@@ -148,6 +183,8 @@ def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
     corpus = dict(raw.get("corpus") or {"pool": "answerable", "sampling": "full"})
     parser_dpi = int(raw.get("parser_dpi", 200))
     prompt_modes = tuple(raw.get("prompt_modes") or ("none",))
+    decode_budget = _parse_decode_budget(raw.get("decode_budget"), run_tag=str(run_tag))
+    final_answer_delimiter = _clean_none(raw.get("final_answer_delimiter"))
     classifier = _clean_none(raw.get("classifier"))
 
     combos = [(ds, ps) for ds in datasets for ps in parsers]
@@ -178,6 +215,8 @@ def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
             visual_resolutions=visual_resolutions,
             reasoner_representations=reps,
             prompt_modes=prompt_modes,
+            decode_budget=decode_budget,
+            final_answer_delimiter=final_answer_delimiter,
             classifier=classifier,
         ))
     return specs
@@ -282,6 +321,8 @@ def config_from_spec(spec: Spec, *, smoke: bool = False):
         inference_joint=bool(spec.inference_joint),
         inference_representations=spec.reasoner_representations,
         prompt_modes=spec.prompt_modes,
+        decode_budget=spec.decode_budget,
+        final_answer_delimiter=spec.final_answer_delimiter,
         run_tag=spec.run_tag,
         parser_tool=spec.parser,
         dpi=spec.parser_dpi,

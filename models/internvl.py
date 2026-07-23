@@ -308,6 +308,10 @@ class InternVLBackend(Reasoner):
                 "model_id": self.model_id,
                 "prompt_template_version": PROMPT_TEMPLATE_VERSION,
                 "max_new_tokens": self.max_new_tokens,
+                # No output_truncated here: chat() returns text only, so
+                # output_tokens is a whitespace estimate and comparing it to the
+                # budget would misreport. Absent = unmeasured (like the prefill
+                # split), never false.
                 "max_pixels": self.max_pixels,
                 "max_tiles": max_tiles,
                 "tiles_per_image": tile_counts,

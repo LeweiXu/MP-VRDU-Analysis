@@ -8,6 +8,7 @@ strict superset of `predictions.jsonl`. Loads no reasoner; targets a run by `--s
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 from pathlib import Path
 
@@ -47,14 +48,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def judge_run(config, task_name: str, questions: dict, judge) -> int:
-    """Score one run's predictions.jsonl into results.jsonl; return rows written."""
+    """Score one run's predictions.jsonl into results.jsonl; return rows written.
 
+    When the run's spec sets a `final_answer_delimiter`, the text after its LAST
+    occurrence is what reaches the judge (and the abstention detector, which
+    reads the same prediction text), so the detection rule is identical across
+    pools and models. The raw answer on the row is never modified.
+    """
+
+    from experiments.engine.driver import check_run_settings
     from pipeline.orchestrator import PredictionCache, ResultCache
+    from scoring.abstention import extract_final_answer
 
     paths = experiment_paths(config, task_name)
     if not paths.predictions.exists():
         log.warning("judge %s: no predictions at %s (did generate run?)", task_name, paths.predictions)
         return 0
+    # The delimiter/budget the rows were generated under must match the spec this
+    # judge pass runs with; a mismatch means the wrong extraction regime.
+    check_run_settings(paths.predictions, config, readonly=True)
+    delimiter = getattr(config, "final_answer_delimiter", None)
     predictions = PredictionCache(paths.predictions)
     results = ResultCache(paths.results)
     written = 0
@@ -83,7 +96,12 @@ def judge_run(config, task_name: str, questions: dict, judge) -> int:
         if results.get(result_key) is not None:
             continue
         if record.status == "ok":
-            score = judge.score(question, record.as_prediction())
+            prediction = record.as_prediction()
+            if delimiter:
+                prediction = dataclasses.replace(
+                    prediction, text=extract_final_answer(prediction.text, delimiter)
+                )
+            score = judge.score(question, prediction)
         else:
             # A failed cell has nothing to score; carry it through with the judge
             # spec set so results.jsonl has one row per predictions.jsonl row.

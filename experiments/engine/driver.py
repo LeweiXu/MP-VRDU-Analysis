@@ -220,6 +220,46 @@ def _cell_identity(cell, spec, resolution) -> tuple:
     return (q.id, q.doc_id, cell.conditioner.name, _modality_of(cell), spec, resolution)
 
 
+def run_settings(config) -> dict:
+    """The answer-shaping settings a run's rows share, as a JSON-comparable dict.
+
+    decode_budget and final_answer_delimiter are NOT in the cell key: both change
+    what a cell's answer looks like, so they are scoped by run_tag instead and
+    must never mix within one tag. This dict is what the sidecar check compares.
+    """
+
+    budget = getattr(config, "decode_budget", None) or {"default": int(getattr(config, "max_tokens", 256))}
+    return {
+        "decode_budget": {str(k): int(v) for k, v in dict(budget).items()},
+        "final_answer_delimiter": getattr(config, "final_answer_delimiter", None),
+    }
+
+
+def check_run_settings(predictions_path, config, *, readonly: bool = False) -> None:
+    """Enforce one decode budget + delimiter per run tag via a sidecar file.
+
+    The sidecar `run_settings.json` lives next to `predictions.jsonl`. Absent:
+    written (unless readonly). Present and equal: proceed. Present and different:
+    raise, because mixing budgets/delimiters within one tag silently changes what
+    cached answers mean without changing their keys.
+    """
+
+    path = Path(predictions_path).parent / "run_settings.json"
+    current = run_settings(config)
+    if not path.exists():
+        if not readonly:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+        return
+    recorded = json.loads(path.read_text())
+    if recorded != current:
+        raise RuntimeError(
+            f"run settings mismatch for {path.parent.name}: recorded {recorded} vs "
+            f"current {current}. decode_budget/final_answer_delimiter are run_tag-"
+            f"scoped; use a new run_tag instead of mixing them within one."
+        )
+
+
 def _prepare_failed_only(predictions_path) -> set[tuple]:
     """Drop failed rows from a predictions file and return the cells to re-run.
 
@@ -300,6 +340,7 @@ def generate(config, task, questions, *, limit=None, machine=None, failed_only=F
 
     machine = machine or current_machine()
     paths = experiment_paths(config, task.name)
+    check_run_settings(paths.predictions, config)
     failed_ids: set[tuple] | None = None
     if failed_only:
         failed_ids = _prepare_failed_only(paths.predictions)

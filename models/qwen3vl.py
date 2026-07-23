@@ -407,6 +407,11 @@ class Qwen3VLBackend(Reasoner):
 
         output_ids = _slice_generated_ids(generated_ids, input_len)
         answer = processor.batch_decode(output_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
+        output_tokens = _generated_token_count(output_ids, answer)
+        # Output-side truncation canary: greedy decoding stops early only on EOS,
+        # so hitting the budget means the answer was cut, not finished. The
+        # input-side tokens_dropped/truncation_occurred fields cannot see this.
+        output_truncated = output_tokens >= self.max_new_tokens
 
         return Prediction(
             text=answer,
@@ -414,7 +419,7 @@ class Qwen3VLBackend(Reasoner):
             total_text_tokens=total_text_tokens,
             total_visual_tokens=total_visual_tokens,
             text_tokens_fed=total_text_tokens,  # no cap: everything is fed
-            output_tokens=_generated_token_count(output_ids, answer),
+            output_tokens=output_tokens,
             latency_s=latency_s,
             prefill_latency_s=prefill_latency_s,
             decode_latency_s=decode_latency_s,
@@ -424,6 +429,7 @@ class Qwen3VLBackend(Reasoner):
                 "model_id": self.model_id,
                 "prompt_template_version": PROMPT_TEMPLATE_VERSION,
                 "max_new_tokens": self.max_new_tokens,
+                "output_truncated": output_truncated,
                 "max_pixels": self.max_pixels,
                 "quantization": self.quantization,
                 "n_image_parts": len(rendered.image_parts),

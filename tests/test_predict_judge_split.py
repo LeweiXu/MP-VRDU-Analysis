@@ -79,6 +79,34 @@ def test_judge_run_scores_ok_and_carries_failures(tmp_path):
     assert bad.status == "error" and bad.score == 0.0 and bad.correct is False and bad.judge_spec == "stub"
 
 
+def test_judge_run_extracts_delimited_answer_but_keeps_raw_row(tmp_path):
+    # With final_answer_delimiter set, the judge scores the text after the LAST
+    # delimiter (StubJudge substring-matches gold), while the stored row keeps
+    # the raw verbose answer untouched.
+    from ops.judge import judge_run
+    from pipeline.judge import StubJudge
+    from pipeline.orchestrator import PredictionCache, ResultCache
+
+    config = SimpleNamespace(
+        smoke=False, run_tag="t", dataset="mmlongbench",
+        final_answer_delimiter="Answer:",
+        paths=SimpleNamespace(cache_dir=tmp_path / "cache", results_dir=tmp_path / "results"),
+    )
+    from experiments.engine.paths import experiment_paths
+    paths = experiment_paths(config, "G1_oracle_ladder")
+
+    raw = "step 1: consider 7. step 2: no. Answer: 42"
+    PredictionCache(paths.predictions).put(_prediction_row("pk-cot", "q1", answer=raw))
+    # gold "7" appears only in the reasoning, not after the delimiter: without
+    # extraction the substring judge would mark this correct.
+    written = judge_run(config, "G1_oracle_ladder", {"q1": _question("q1", gold="7")},
+                        StubJudge("stub"))
+    assert written == 1
+    (row,) = list(ResultCache(paths.results))
+    assert row.correct is False
+    assert row.answer == raw  # the raw answer survives on the row
+
+
 def test_run_cell_writes_unjudged_prediction(tmp_path):
     """Generate's run_cell returns a PredictionRow and caches it, with no judging."""
 

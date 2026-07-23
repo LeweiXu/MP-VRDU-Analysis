@@ -65,6 +65,11 @@ def test_shipped_specs_load() -> None:
     load_yaml_specs = require("experiments.corpus.yaml_spec", "load_yaml_specs")
     config_from_spec = require("experiments.corpus.yaml_spec", "config_from_spec")
     for path in sorted((ROOT / "ops" / "specs").glob("*.yaml")):
+        if path.name == "target_template.yaml":
+            # The TARGET vocabulary: its [NEW] keys (page_set, corpus.hop) are
+            # the subject of PIPELINE_EXTENSION_PLAN.md Phase B and do not load
+            # yet. Drop this exclusion when page_set parsing lands.
+            continue
         specs = load_yaml_specs(path)
         assert specs, f"{path.name} produced no runs"
         for spec in specs:

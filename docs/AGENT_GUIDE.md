@@ -165,6 +165,9 @@ repeat the generate flags.
   (`inference_text_retriever` / `inference_vision_retriever`) must be benchmarked
   methods (`SpecError`). `config_from_spec` maps a `Spec` to `ExperimentConfig`;
   `parser_dpi` is the render/parser DPI (keys the render cache, not the cell).
+  `decode_budget` (mapping with a required `default`, other keys prompt modes) and
+  `final_answer_delimiter` (`none` = whole answer to the judge) are validated at
+  parse time and scoped to the run_tag (see the prompt-modes bullet above).
 - **Shared side-artifact writers.** The retrieval and classifier side artifacts
   have one implementation in `experiments/engine/`; each caller passes the method
   sets it wants scored. The retrieval benchmark runs as **stage 1 before** the
@@ -227,10 +230,20 @@ The frozen contracts are above; this is the "how each layer behaves" reference.
   InternVL `f4-internvl3-v1`). `ModelInput.to_local_prompt()` supplies `{context}`
   and each `<image>` placeholder becomes an image block in page order. Decoding is
   greedy (`do_sample=False`, capped `max_new_tokens`).
-- **Prompt modes.** The instruction preamble is swappable (`config.PROMPT_MODES`):
-  `none` / `generic` / `targeted`. Answerable runs set `prompt_modes: [none]`; the
-  hallucination run sweeps all three. The mode rides the conditioner name (the
-  prediction key has no prompt field), so each mode is its own cell.
+- **Prompt modes.** The instruction preamble is swappable (`config.PROMPT_MODES`),
+  built by composition from named fragments: `none` / `grounded` / `abstain` /
+  `abstain_balanced` / `cot` / `extract_cot`, plus the frozen legacy aliases
+  `generic` (= `grounded`) and `targeted` (= `abstain`) that keep old cached cells
+  interpretable. The mode rides the conditioner name (the prediction key has no
+  prompt field), so each mode is its own cell. Two run_tag-scoped companions,
+  never in the cell key: `decode_budget` (per-mode max_new_tokens, rebound on the
+  reasoner per cell by the orchestrator) and `final_answer_delimiter` (judge-time
+  extraction of the text after the LAST occurrence; the raw answer stays on the
+  row). A `run_settings.json` sidecar next to `predictions.jsonl` refuses a
+  generate/judge pass whose budget/delimiter differ from the tag's recorded ones.
+  Backends record `output_truncated` (hit the decode budget with no EOS) in row
+  `metadata` — the output-side canary the input-side truncation fields cannot see
+  (InternVL omits it: `chat()` exposes no token count).
 - **Accounting** per `Prediction`: `input_text_tokens` (image placeholders
   stripped), `input_visual_tokens` (vision-token estimate), `output_tokens`, the
   `prefill` / `decode` latency split and end-to-end `latency_s` (batch=1), peak

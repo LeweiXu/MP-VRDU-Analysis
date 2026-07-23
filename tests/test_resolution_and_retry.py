@@ -63,8 +63,9 @@ def test_merge_failed_only_upgrades_in_place():
     assert [m["status"] for m in merged] == ["ok", "ok"]
 
 
-def test_g3_prompt_modes_sweep_all_three():
-    # The prompting comparison (pivot 7) needs the unprompted 'none' baseline
-    # alongside the generic and abstention-targeted arms.
+def test_g3_prompt_modes_sweep_all_six():
+    # The faithfulness sweeps need the unprompted 'none' baseline alongside the
+    # five composed mechanisms (grounding, abstention escape, balanced escape,
+    # CoT, extraction+CoT).
     modes = require("config", "G3_PROMPT_MODES")
-    assert tuple(modes) == ("none", "generic", "targeted")
+    assert tuple(modes) == ("none", "grounded", "abstain", "abstain_balanced", "cot", "extract_cot")
