@@ -1,13 +1,14 @@
 # H100 runbook
 
-Build the envs, download models and data, run the four generation specs, check
+Build the envs, download models and data, run the five generation specs, check
 they came out clean, hand back `results/`. No judging or table-building here.
 
 ## What you need first
 
 - **conda** on PATH. Repo checked out; run everything **from the repo root**.
 - One **H100** (80 GB). Several? Pick with `CUDA_VISIBLE_DEVICES=0`.
-- **Disk**: ~25 GB under `.cache/`, plus room under `results/`.
+- **Disk**: ~95 GB under `.cache/` (the 32B is ~67 GB of it), plus room under
+  `results/`.
 - **HF token**: `HF_TOKEN=hf_...` in a repo-root `.env` or exported.
 
 ## Step 1: build the environments
@@ -52,9 +53,11 @@ python -m ops.generate --spec ops/specs/g2_sufficiency.yaml
 python -m ops.generate --spec ops/specs/g2_robustness.yaml
 python -m ops.generate --spec ops/specs/g5_faithfulness.yaml
 python -m ops.generate --spec ops/specs/g0_interleaved.yaml
+python -m ops.generate --spec ops/specs/g0_reasoner.yaml
 ```
 
-Everything is cached and resumable: rerunning the same command continues where
+g0_reasoner is the 32B matched-memory pair (bf16 + 4-bit under one tag; the
+driver loops the two variants). Everything is cached and resumable: rerunning the same command continues where
 it left off. Run under `tmux`/`screen`. If the node has no internet, `export
 HF_HUB_OFFLINE=1` first.
 
@@ -65,6 +68,7 @@ python -m ops.scripts.check_run --spec ops/specs/g2_sufficiency.yaml
 python -m ops.scripts.check_run --spec ops/specs/g2_robustness.yaml
 python -m ops.scripts.check_run --spec ops/specs/g5_faithfulness.yaml
 python -m ops.scripts.check_run --spec ops/specs/g0_interleaved.yaml
+python -m ops.scripts.check_run --spec ops/specs/g0_reasoner.yaml
 ```
 
 Healthy = every task `OK`, no oom/err, no missing. You should not see `oom` on
@@ -101,11 +105,13 @@ The four specs, in priority order (each independently resumable):
 | 2 | `ops/specs/g2_robustness.yaml` | all gold + k ranked distractors, blocked by gold count (3 runs) | 12,256 |
 | 3 | `ops/specs/g5_faithfulness.yaml` | six prompt modes on both pools (2 runs) | 26,184 |
 | 4 | `ops/specs/g0_interleaved.yaml` | TLV vs TLVi ordering comparison (1 run) | 1,694 |
-|   | **total** | | **51,590** |
+| 5 | `ops/specs/g0_reasoner.yaml` | 32B matched-memory pair, bf16 + 4-bit (1 run, 2 specs) | 6,776 |
+|   | **total** | | **58,366** |
 
 Cell counts are exact (enumerated against the corpus): the robustness blocks
 hold 480 / 246 / 40 questions (exactly 1, 2, 3 gold pages), the sufficiency
-runs the 358-question hop:multi pool.
+runs the 358-question hop:multi pool, and the 32B pair is 847 questions x 4
+rungs x 2 variants.
 
 ## How long it takes (single H100)
 
@@ -119,6 +125,12 @@ in g5_faithfulness (budget 2048; most stop earlier on EOS).
 | g2_robustness | 12,256 | 0 | ~24-34 h |
 | g5_faithfulness | 17,456 | 8,728 | ~48-65 h |
 | g0_interleaved | 1,694 | 0 | ~4-6 h |
+| g0_reasoner (32B pair) | 6,776 | 0 | ~45-70 h |
+
+The 32B row is slower per cell than the 8B rate above: ~4x the weights makes
+bf16 decode roughly 3x slower (~20-30 s/cell), and bitsandbytes 4-bit is no
+faster than bf16 (NF4 dequant overhead, ~25-45 s/cell) even though it fits in
+a quarter of the memory.
 
 One-time overheads on a fresh box: downloads (~25 GB), the parser warming its
 markdown cache (a few hours, cached after), ColQwen3 ranking every document

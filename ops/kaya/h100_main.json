@@ -1,5 +1,5 @@
 {
-  "_comment": "Prestage config for the H100 box: exactly what the four planned specs need (g2_sufficiency, g2_robustness, g5_faithfulness, g0_interleaved). One reasoner (Qwen3-VL-8B), one vision ranker (ColQwen3; bm25 needs no weights), one parser (PaddleOCR-VL, the TL/TLV text channel), MMLongBench. Pass to prestage with --config; add --local when running directly on the box.",
+  "_comment": "Prestage config for the H100 box: exactly what the five planned specs need (g2_sufficiency, g2_robustness, g5_faithfulness, g0_interleaved, g0_reasoner's 32B run). Two reasoners (Qwen3-VL-8B, Qwen3-VL-32B; the 4-bit variant loads the same 32B checkpoint via bitsandbytes), one vision ranker (ColQwen3; bm25 needs no weights), one parser (PaddleOCR-VL, the TL/TLV text channel), MMLongBench. Pass to prestage with --config; add --local when running directly on the box.",
   "remote_root": "/group/ems036/lxu/mpvrdu",
   "paths": {
     "cache": ".cache",
@@ -12,7 +12,8 @@
     "max_workers": 8
   },
   "models": [
-    "Qwen/Qwen3-VL-8B-Instruct"
+    "Qwen/Qwen3-VL-8B-Instruct",
+    "Qwen/Qwen3-VL-32B-Instruct"
   ],
   "retrieval_models": {
     "text": [],
