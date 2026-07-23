@@ -189,10 +189,11 @@ def _parse_page_set(value: Any, *, run_tag: str, corpus: Mapping[str, Any]) -> M
                 )
     except ValueError as exc:
         raise SpecError(f"{run_tag}: invalid page_set: {exc}") from None
-    if gold_mode != "all" and str(corpus.get("hop", "any")) != "multi":
+    hop = str(corpus.get("hop", "any"))
+    if gold_mode != "all" and hop != "multi" and not (hop.isdigit() and int(hop) >= 2):
         raise SpecError(
             f"{run_tag}: page_set gold mode {gold_mode!r} requires corpus.hop: multi "
-            f"(at one gold page, top and bottom coincide)"
+            f"(or an exact count >= 2); at one gold page, top and bottom coincide"
         )
     return normalized
 

@@ -36,19 +36,27 @@ def filter_by_pool(corpus: Sequence[Any], pool: str) -> list[Any]:
 
 
 def filter_by_hop(corpus: Sequence[Any], hop: str) -> list[Any]:
-    """Keep questions by gold-evidence-page count: `single`, `multi`, or `any`.
+    """Keep questions by gold-evidence-page count: `single`, `multi`, `any`, or
+    an exact count (`1`, `2`, `3`, ...).
 
-    `hop == "none"` questions (no gold pages) are excluded by both `single` and
-    `multi`: gold-removal page rules are undefined without a gold set. Required
-    by page_set rules that remove or isolate a gold page, where a one-gold
-    question makes top and bottom coincide.
+    `hop == "none"` questions (no gold pages) are excluded by every non-`any`
+    value: gold page rules are undefined without a gold set. `single`/`multi`
+    serve the gold-removal rules (where a one-gold question makes top and
+    bottom coincide); an exact count is the blocking factor for the +k
+    distractor design (all gold + k distractors, conditioned on gold count).
     """
 
     if hop in ("any", None, ""):
         return list(corpus)
-    if hop not in ("single", "multi"):
-        raise ValueError(f"hop must be 'any', 'single', or 'multi', got {hop!r}")
-    return [q for q in corpus if q.hop == hop]
+    if hop == "single":
+        return [q for q in corpus if q.hop == "single"]
+    if hop == "multi":
+        return [q for q in corpus if q.hop == "multi"]
+    text = str(hop)
+    if text.isdigit() and int(text) >= 1:
+        count = int(text)
+        return [q for q in corpus if len(q.evidence_pages) == count]
+    raise ValueError(f"hop must be 'any', 'single', 'multi', or an exact count >= 1, got {hop!r}")
 
 
 def auto_scan_labels(doc_ids, data_dir, csv_path) -> dict[str, str]:

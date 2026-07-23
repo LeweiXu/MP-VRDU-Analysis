@@ -335,9 +335,10 @@ class ExperimentConfig:
     # The question pool this run draws from (spec `corpus.pool`): "answerable",
     # "unanswerable", or "all" (both).
     pool: str = "answerable"
-    # Gold-evidence-page-count filter (spec `corpus.hop`): "any", "single", or
-    # "multi". Applied after the pool; "multi" is required by page_set gold
-    # rules that remove or isolate a gold page.
+    # Gold-evidence-page-count filter (spec `corpus.hop`): "any", "single",
+    # "multi", or an exact count ("1", "2", ...). Applied after the pool;
+    # gold-removal page_set rules need "multi" (or an exact count >= 2), and an
+    # exact count is the blocking factor for the +k distractor design.
     hop_filter: str = "any"
     # Declarative page-set construction (spec `page_set`): a validated mapping
     # with ranking_source (str or list), gold {mode, count}, distractor {count:

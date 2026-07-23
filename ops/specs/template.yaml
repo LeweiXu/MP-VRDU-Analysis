@@ -1,7 +1,9 @@
-# TARGET spec format. Superset of the current template.yaml: every variable and
-# value that exists today is still here and still means the same thing. New
-# variables and new values are marked [NEW] and are the subject of
-# PIPELINE_EXTENSION_PLAN.md — they do NOT work yet.
+# Reference spec menu: every variable with its allowed values, plus one worked
+# block per task shape. Values once marked [NEW] (page_set, corpus.hop,
+# decode_budget, final_answer_delimiter, the six prompt modes, the new
+# reasoners) are all implemented; the markers are kept only as a reading aid
+# for what the extension added. The real run specs live beside this file as
+# g<E>_<name>.yaml (E1-E5 failure modes; g0 = interventions).
 #
 # ONE document-understanding pipeline
 #   page-selection (retrieval)  ->  representation  ->  reasoner  ->  judge
@@ -36,10 +38,12 @@ runs:
       scan: any                               # any | digital | scanned  (PyMuPDF auto-detect -> annotations/auto_scan.csv; applied before pool + sampling)
       pool: answerable                        # answerable | unanswerable | all (both)
       sampling: {per_doc_type: 50, seed: 0}   # {per_doc_type: N,seed} | {per_bin: N,seed} | full | {limit: N} | {ids: [...]}
-      hop: any                                # [NEW] any | single | multi  — filter by gold-evidence-page count.
-                                              #   `multi` is required by page_set gold rules that remove or isolate a
-                                              #   gold page: at one gold page, top and bottom coincide and the four
-                                              #   sufficiency conditions collapse into each other.
+      hop: any                                # [NEW] any | single | multi | <exact count, e.g. 2> — filter by
+                                              #   gold-evidence-page count. `multi` (or an exact count >= 2) is
+                                              #   required by page_set gold rules that remove or isolate a gold page:
+                                              #   at one gold page, top and bottom coincide and the four sufficiency
+                                              #   conditions collapse. An exact count is the +k design's blocking
+                                              #   factor (all gold + k distractors, conditioned on gold count).
     parser_dpi: 200                           # render DPI the parser / page rasterizer uses
     parser: [paddleocrvl, mineru, unlimited]
     # retrieval: how pages are selected for the reasoner. retrieval_representation is
@@ -318,22 +322,23 @@ runs:
     classifier: none
 
   # ======================================================================== #
-  # [NEW] G5b - robustness (distractor). Hold the gold set fixed and add k
-  # non-gold pages. Gold count is a BLOCKING factor; distractor count is the
-  # manipulated variable. Read DOWN a gold block for the dilution slope at
-  # constant evidence; k=0 is that block's clean baseline.
+  # [NEW] G5b - robustness (distractor, +k design). Questions BLOCKED by their
+  # exact gold count (`corpus.hop: <N>`), fed ALL their gold pages plus k
+  # top-ranked non-gold distractors. Gold count is the blocking factor (one run
+  # per count); distractor count is the manipulated cell axis. Read DOWN a gold
+  # block for the dilution slope at constant evidence.
+  #
+  # d=0 is never run: all gold + no distractors IS the oracle condition, so the
+  # clean baseline per block already exists in the G1 representation cache.
   #
   # Total pages rise with k, so comparisons are valid WITHIN a gold count and
-  # not across them, where evidence and length both differ.
-  #
-  # gold.count is not a cross-product axis with distractor.count here (the gold
-  # blocks are separate runs), so this is three runs: keep_top 1, 2, and 3.
-  # One is written out; the others differ only in `page_set.gold.count`.
+  # not across them, where evidence and length both differ. Three runs: hop
+  # 1, 2, and 3; one is written out, the others differ only in `corpus.hop`.
   # ======================================================================== #
   - task_name: G5b_robustness
     run_tag: g5b-gold1
     dataset: [mmlongbench]
-    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    corpus: {scan: any, pool: answerable, sampling: full, hop: 1}
     parser_dpi: 200
     parser: [paddleocrvl]
     retrieval_representation: [T, V]          # rankers need both reps to score non-gold pages
@@ -347,8 +352,8 @@ runs:
     inference_joint: false
     page_set:
       ranking_source: [colqwen3, bm25]
-      gold: {mode: keep_top, count: 1}
-      distractor: {count: [0, 1, 2, 3]}
+      gold: {mode: all}
+      distractor: {count: [1, 2]}
       on_insufficient_gold: exclude
       on_insufficient_distractors: pad_available
       on_no_gold: exclude

@@ -1,6 +1,6 @@
-"""Selection: sufficiency (gold withheld by rank) and robustness (ranked
-distractors added) from the page_set runs, read against the all-gold oracle
-accuracy on the same pool."""
+"""Selection: sufficiency (gold withheld by rank) and robustness (all gold plus
+ranked distractors, blocked by the question's gold count) from the page_set
+runs, read against the same questions' oracle rows."""
 
 from __future__ import annotations
 
@@ -18,31 +18,25 @@ from ._common import (
     rows_for_condition,
 )
 from ._load import column_n_footer, load_ok
+from .hop_rung import _evidence_page_counts
 
 G1_RUN_TAG = "g1-representation-full"
 G1_TASK = "G1_oracle_ladder"
-PIVOT = "**all gold (G1 oracle, hop=multi)**"
 NOTE = (
-    "Rows group purely on the pageset condition grammar (ranking source, gold "
-    "mode/count, distractor count); nothing is re-derived from page_indices. "
-    "Sufficiency rows withhold or isolate ONE gold page by the named ranker's "
-    "ordering; robustness rows hold the kept gold fixed and add ranked "
-    "distractors, so read down a gold block for the dilution slope (valid "
-    "within a gold count, not across: evidence and length both differ). The "
-    "bolded pivot row is the same reasoner's plain oracle accuracy on the same "
-    "answerable hop=multi pool, loaded from the G1 cache: every sufficiency "
-    "condition reads against it. Per-cell n is load-bearing: OOM attrition is "
-    "rung-dependent and the pool is hop=multi only."
+    "Rows group on the pageset condition grammar (ranking source, gold rule, "
+    "distractor count); the robustness gold-count BLOCKS come from the corpus "
+    "gold-page annotation (the +k design filters questions by exact gold count "
+    "and feeds ALL their gold pages, so the block is a property of the "
+    "question, not the rule). Each block's d=0 baseline is the bolded oracle "
+    "row above it: all gold + no distractors IS the oracle condition, loaded "
+    "from the G1 cache over the same questions, so the baseline is exact and "
+    "was never re-generated. Read DOWN a block for the dilution slope at "
+    "constant evidence; blocks are not comparable to each other (evidence and "
+    "length both differ). Sufficiency rows withhold or isolate ONE gold page "
+    "by the named ranker's ordering, on the hop=multi pool, and read against "
+    "the bolded multi-pool oracle row. Per-cell n is load-bearing: OOM "
+    "attrition is rung-dependent."
 )
-
-
-def _sort_key(rule) -> tuple:
-    return (rule.gold_mode, rule.gold_count, rule.distractor_count, rule.ranking_source)
-
-
-def _condition_label(rule) -> str:
-    gold = "all gold" if rule.gold_mode == "all" else f"{rule.gold_mode.replace('_', ' ')} {rule.gold_count}"
-    return f"{gold} + {rule.distractor_count} distractors" if rule.distractor_count else gold
 
 
 def _acc_cells(rows: Sequence[Any], rungs: Sequence[str]) -> list[str]:
@@ -50,14 +44,23 @@ def _acc_cells(rows: Sequence[Any], rungs: Sequence[str]) -> list[str]:
     return [f"{acc_cell(by_rung.get(rung, []))} (n={len(by_rung.get(rung, []))})" for rung in rungs]
 
 
-def _oracle_pivot(rungs: Sequence[str]) -> list[str] | None:
-    """The all-gold oracle row on the same pool, loaded from the G1 cache."""
+def _gold_count_of(row: Any) -> int:
+    """The question's gold-page count, from the corpus annotation."""
 
-    g1 = restrict_to_primary_spec(rows_for_condition(load_ok((G1_RUN_TAG,), G1_TASK), "oracle"))
-    multi = [r for r in g1 if getattr(r, "hop", "") == "multi"]
-    if not multi:
+    return _evidence_page_counts().get(getattr(row, "question_id", ""), 0)
+
+
+def _g1_oracle_rows() -> list[Any]:
+    return restrict_to_primary_spec(rows_for_condition(load_ok((G1_RUN_TAG,), G1_TASK), "oracle"))
+
+
+def _oracle_row(label: str, oracle: Sequence[Any], keep, rungs: Sequence[str]) -> list[str] | None:
+    """One bolded oracle baseline row over the questions `keep` selects."""
+
+    rows = [r for r in oracle if keep(r)]
+    if not rows:
         return None
-    return [PIVOT, "-", *_acc_cells(multi, rungs), str(len(multi))]
+    return [f"**{label}**", "-", *_acc_cells(rows, rungs), str(len(rows))]
 
 
 def build(rows: Sequence[Any]) -> Table:
@@ -69,24 +72,39 @@ def build(rows: Sequence[Any]) -> Table:
 
     rungs = [r for r in RUNG_ORDER if any(getattr(row, "representation", "") == r for _, row in ruled)]
     columns = ["condition", "ranker", *rungs, "n"]
-
-    sufficiency = [(rule, row) for rule, row in ruled if rule.distractor_count == 0 and rule.gold_mode != "all"]
-    robustness = [(rule, row) for rule, row in ruled if rule.gold_mode == "all" or rule.distractor_count > 0
-                  or (rule.gold_mode.startswith("keep_") and rule.distractor_count == 0
-                      and any(other.distractor_count > 0 and other.gold_mode == rule.gold_mode
-                              and other.gold_count == rule.gold_count for other, _ in ruled))]
-
+    oracle = _g1_oracle_rows()
     table_rows: list[list[str]] = []
-    pivot = _oracle_pivot(rungs)
-    if pivot is not None:
-        table_rows.append(pivot)
-    for block in (sufficiency, robustness):
-        for (rule_key, ranker), pairs in sorted(
-                group_by(block, lambda p: (_sort_key(p[0])[:3], p[0].ranking_source)).items()):
-            block_rows = [row for _, row in pairs]
-            rule = pairs[0][0]
-            table_rows.append([_condition_label(rule), ranker, *_acc_cells(block_rows, rungs),
-                               str(len(block_rows))])
+
+    # -- sufficiency: gold withheld/isolated by rank, hop=multi pool ----------
+    sufficiency = [(rule, row) for rule, row in ruled if rule.gold_mode != "all"]
+    if sufficiency:
+        pivot = _oracle_row("oracle (all gold, hop=multi)", oracle,
+                            lambda r: getattr(r, "hop", "") == "multi", rungs)
+        if pivot is not None:
+            table_rows.append(pivot)
+        for (mode, count, d, ranker), pairs in sorted(group_by(
+                sufficiency,
+                lambda p: (p[0].gold_mode, p[0].gold_count, p[0].distractor_count,
+                           p[0].ranking_source)).items()):
+            label = f"{mode.replace('_', ' ')} {count}"
+            if d:
+                label += f" + {d} distractors"
+            table_rows.append([label, ranker,
+                               *_acc_cells([row for _, row in pairs], rungs), str(len(pairs))])
+
+    # -- robustness: all gold + k distractors, blocked by corpus gold count ---
+    robustness = [(rule, row) for rule, row in ruled if rule.gold_mode == "all"]
+    gold_counts = sorted({_gold_count_of(row) for _, row in robustness if _gold_count_of(row)})
+    for n in gold_counts:
+        baseline = _oracle_row(f"oracle (gold {n}, d=0)", oracle,
+                               lambda r, n=n: _gold_count_of(r) == n, rungs)
+        if baseline is not None:
+            table_rows.append(baseline)
+        block = [(rule, row) for rule, row in robustness if _gold_count_of(row) == n]
+        for (d, ranker), pairs in sorted(group_by(
+                block, lambda p: (p[0].distractor_count, p[0].ranking_source)).items()):
+            table_rows.append([f"gold {n} + {d} distractors", ranker,
+                               *_acc_cells([row for _, row in pairs], rungs), str(len(pairs))])
 
     n_by_col = {rung: sum(1 for _, row in ruled if getattr(row, "representation", "") == rung)
                 for rung in rungs}

@@ -11,14 +11,14 @@ resumable, so a partial pass is never wasted):
 | # | spec | what it is | cells |
 |---|------|-----------|-------|
 | 1 | `ops/specs/g2_sufficiency.yaml` | LOPO: withhold/isolate one gold page by rank (4 runs) | 11,456 |
-| 2 | `ops/specs/g2_robustness.yaml` | ranked distractors on top of kept gold (3 runs) | 13,248 |
+| 2 | `ops/specs/g2_robustness.yaml` | all gold + k ranked distractors, blocked by gold count (3 runs) | 12,256 |
 | 3 | `ops/specs/g5_faithfulness.yaml` | six prompt modes on both pools (2 runs) | 26,184 |
 | 4 | `ops/specs/g0_interleaved.yaml` | TLV vs TLVi ordering comparison (1 run) | 1,694 |
-|   | **total** | | **52,582** |
+|   | **total** | | **51,590** |
 
-Cell counts are exact (enumerated against the corpus, after the degenerate-case
-exclusions; e.g. the robustness gold-3 block keeps only the 112 questions with
-three or more gold pages).
+Cell counts are exact (enumerated against the corpus): the robustness blocks
+hold 480 / 246 / 40 questions (exactly 1, 2, 3 gold pages), the sufficiency
+runs the 358-question hop:multi pool.
 
 ## How long it takes (single H100)
 
@@ -32,10 +32,10 @@ pessimistic).
 | spec | standard cells | CoT cells | estimate |
 |------|---------------|-----------|----------|
 | g2_sufficiency | 11,456 | 0 | ~22-32 h |
-| g2_robustness | 13,248 | 0 | ~26-37 h |
+| g2_robustness | 12,256 | 0 | ~24-34 h |
 | g5_faithfulness | 17,456 | 8,728 | ~70-120 h |
 | g0_interleaved | 1,694 | 0 | ~4-6 h |
-| **total** | | | **~5.5-8.5 days** |
+| **total** | | | **~5-8.5 days** |
 
 One-time overheads on a fresh box, before the steady-state rate: model + data
 downloads (~25 GB), the PaddleOCR-VL parser warming its markdown cache over the
@@ -135,9 +135,9 @@ Two things specific to these specs:
   predictions (the decode budgets + the `Answer:` delimiter). Don't edit the
   spec's budgets between a partial run and its resume; the sidecar will refuse
   the mismatch by design.
-- The page_set runs log a line like `page_set: excluded {...}` at start; that is
-  the documented degenerate-case exclusion (e.g. gold-3 rules on two-gold
-  questions), not an error.
+- If a page_set run logs a `page_set: excluded {...}` line at start, that is
+  the documented degenerate-case exclusion policy, not an error (these four
+  specs pre-filter by hop, so the counts above already reflect it).
 
 It finds the weights you prestaged automatically (it points Hugging Face at
 `.cache/`). If the node has **no internet**, add `export HF_HUB_OFFLINE=1` first

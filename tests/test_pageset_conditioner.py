@@ -119,12 +119,19 @@ def test_two_rules_same_pages_are_distinct_cells():
 def test_hop_filter():
     from experiments.corpus.resolve import filter_by_hop
 
-    qs = [_question([1], "single"), _question([1, 2], "multi"), _question([], "none")]
-    assert [q.id for q in filter_by_hop(qs, "any")] == ["single", "multi", "none"]
+    qs = [_question([1], "single"), _question([1, 2], "two"),
+          _question([1, 2, 5], "three"), _question([], "none")]
+    assert [q.id for q in filter_by_hop(qs, "any")] == ["single", "two", "three", "none"]
     assert [q.id for q in filter_by_hop(qs, "single")] == ["single"]
-    assert [q.id for q in filter_by_hop(qs, "multi")] == ["multi"]
+    assert [q.id for q in filter_by_hop(qs, "multi")] == ["two", "three"]
+    # Exact counts: the +k design's blocking factor. yaml ints arrive as str.
+    assert [q.id for q in filter_by_hop(qs, "1")] == ["single"]
+    assert [q.id for q in filter_by_hop(qs, "2")] == ["two"]
+    assert [q.id for q in filter_by_hop(qs, "3")] == ["three"]
     with pytest.raises(ValueError):
         filter_by_hop(qs, "both")
+    with pytest.raises(ValueError):
+        filter_by_hop(qs, "0")
 
 
 def test_spec_page_set_validation():
