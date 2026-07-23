@@ -235,6 +235,18 @@ so one bad table never sinks the run (`reporting/build.py:_safe`).
 | retrieval_dpi | page P/R/F1 × render dpi × retriever × k | g2-retrieval-full | side:retrieval.jsonl | – |
 | hallucination | abstention rate × prompt mode | g3-hallucination-full | results | – |
 | abstention_by_doctype | abstention rate × prompt mode × doc_type | g3-hallucination-full | results | – |
+| selection | page_set condition × ranking source × rung | the seven g5 tags (**pending runs**) | results | – |
+| faithfulness_pools | prompt mode × rung × pool (A/U) | g4-faithfulness-full + g3-faithfulness-full (**pending runs**) | results | – |
+| reasoner_unified | reasoner blocks (precision/scale/matched/family/M−S) × rung | G1 tags + new-reasoner tags | results | – |
+| levers | one row per inference-time lever (per-lever sources) | multi-source, loaded per lever | results | – |
+
+**Reconciliation (build-time).** `reporting/reconcile.py` declares anchor checks
+run by `ops.build` after assembly: the headline ladder and cross-builder cells
+must reproduce trusted numbers (with provenance comments on the anchors). A
+failing check withholds its gated table, prints a loud report, stamps
+`all_tables.md`, and exits 1; a check whose source data is absent SKIPs
+non-fatally. `_safe` still covers builder crashes; reconciliation gates builder
+*outputs*.
 
 **Cross-run merges.** `reporting/tables/_load.py` concatenates rows across a plan
 entry's `run_tags` — that is how the digital+scanned halves merge (`load_ok` over

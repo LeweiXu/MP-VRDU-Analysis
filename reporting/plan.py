@@ -23,6 +23,13 @@ G1_QUANT = ("g1-quantization-full", "g1-quantization-scanned")
 G1_ALL = (G1_BASE, *G1_SIZE, *G1_RES, *G1_QUANT)
 G2 = "g2-retrieval-full"
 G3 = "g3-hallucination-full"
+# The extension runs (specs shipped, generation pending): six-mode faithfulness
+# on both pools, the page_set selection runs, and the new reasoner rows.
+G3F = "g3-faithfulness-full"
+G4 = "g4-faithfulness-full"
+G5 = ("g5a-drop-best", "g5a-drop-worst", "g5a-keep-best", "g5a-keep-worst",
+      "g5b-gold1", "g5b-gold2", "g5b-gold3")
+G1_NEW_REASONERS = ("g1-reasoner-thinking", "g1-reasoner-llama", "g1-reasoner-32b-matched")
 
 # The report groups tables by the research question they answer. A table that maps
 # to no RQ is retained under the appendix rather than dropped, which is why that is
@@ -127,6 +134,19 @@ PLAN: tuple[AnalysisTable, ...] = (
                                             "zero-evidence questions dropped; 3+ merges the "
                                             "detail table's 3 / 4-5 / 6+ tail"},
                   rq=RQ1),
+    AnalysisTable("selection", "G5_selection", G5,
+                  "page_set condition (sufficiency / robustness) × ranking source × rung",
+                  "selection.build",
+                  caption_extra={"pivot": "all-gold row loaded from g1-representation-full "
+                                          "(oracle, hop=multi) by the builder",
+                                 "status": "empty until the G5 runs are generated + judged"},
+                  rq=RQ1),
+    AnalysisTable("faithfulness_pools", "G4_faithfulness_answerable", (G4,),
+                  "prompt_mode × rung × pool (answerable / unanswerable)",
+                  "faithfulness_pools.build", sweeps_key="prompt_mode",
+                  caption_extra={"unanswerable panel": f"{G3F} rows, loaded by the builder",
+                                 "status": "empty until the G4/G3 re-runs are generated + judged"},
+                  rq=RQ1),
     AnalysisTable("hallucination", "G3_hallucination", (G3,),
                   "prompt_mode (none / generic / targeted; legacy names of the six-mode set)",
                   "hallucination.build", sweeps_key="prompt_mode",
@@ -136,6 +156,13 @@ PLAN: tuple[AnalysisTable, ...] = (
                   caption_extra={"page_selection note": G3_SELECTION_NOTE}, rq=RQ1),
 
     # -- RQ2: which representations can actually be run -----------------------
+    AnalysisTable("reasoner_unified", "G1_oracle_ladder", (G1_BASE, *G1_SIZE, *G1_QUANT, *G1_NEW_REASONERS),
+                  "reasoner block (precision / scale / matched budget / family / reasoning variant)",
+                  "reasoner_unified.build", sweeps_key="reasoner_spec",
+                  caption_extra={"scan": "mixed pools by run; compare within a block",
+                                 "memory": "weight footprint, not peak VRAM",
+                                 "note": "thinking/llama/32B rows appear when their runs land"},
+                  rq=RQ2),
     AnalysisTable("scale", "G1_oracle_ladder", (G1_BASE, *G1_SIZE),
                   "reasoner_spec (size + family)", "scale.build", sweeps_key="reasoner_spec",
                   caption_extra={"scan": "any (digital+scanned)", "note": "8b bf16 baseline from the representation run"},
@@ -170,6 +197,12 @@ PLAN: tuple[AnalysisTable, ...] = (
     AnalysisTable("routing", "G1_oracle_ladder", (G1_BASE,),
                   "routing policy", "routing.build",
                   caption_extra={"note": "assembled from G1 ladder rows + G3 classifier price"}, rq=RQ3),
+    AnalysisTable("levers", "G1_oracle_ladder", (G1_BASE,),
+                  "inference-time lever × effect", "levers.build",
+                  caption_extra={"sources": "each lever row loads its own run_tag(s) in the "
+                                            "builder; blank rows await their runs",
+                                 "retrieval depth": "PROVISIONAL (partial G2 pool)"},
+                  rq=RQ3),
 
     # -- Appendix: retained, not mapped to an RQ ------------------------------
     AnalysisTable("retrieval_accuracy", "G2_retrieval", (G2,),

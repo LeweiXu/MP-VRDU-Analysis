@@ -16,7 +16,7 @@ import ast
 import re
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 DOC = REPO / "docs" / "REPO_STRUCTURE.md"
 MARKER = "## Per-file module docstrings (auto-generated)"
 

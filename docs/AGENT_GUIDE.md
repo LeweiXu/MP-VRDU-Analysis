@@ -191,7 +191,10 @@ repeat the generate flags.
   scan: a digital run_tag + its scanned half). The mined telemetry tables (prefill
   cost, VRAM headroom, OOM frontier, quant sensitivity, scan-vs-digital) are folded
   into this build. G3 hallucination keeps its own classification shape (abstention by
-  prompt mode over the unanswerable pool).
+  prompt mode over the unanswerable pool). After assembly, `reporting/reconcile.py`
+  runs anchor checks (trusted numbers with provenance comments); a failing check
+  withholds its gated table and fails the build, while absent-data checks skip
+  non-fatally. `_safe` covers builder crashes; reconciliation gates outputs.
 - **Why roles split across machines.** The reasoner / retrievers / classifier need
   a GPU; the judge needs the internet — on Kaya those never coexist. Generation
   runs on the cluster (GPU, offline); `ops.judge` and `ops.build` run locally after
