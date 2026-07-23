@@ -35,7 +35,7 @@ runs:
     prompt_modes: [none, grounded, abstain, abstain_balanced, cot, extract_cot]
     # The reasoning-bearing modes emit reasoning AND an answer; a 256 budget
     # would truncate the answer away and read as "CoT hurts accuracy".
-    decode_budget: {default: 256, cot: 1024, extract_cot: 1024}
+    decode_budget: {default: 256, cot: 2048, extract_cot: 2048}
     final_answer_delimiter: "Answer:"
     classifier: none
 
@@ -59,6 +59,6 @@ runs:
     visual_resolution: [med]
     reasoner_representations: [T, TL, TLV, V]
     prompt_modes: [none, grounded, abstain, abstain_balanced, cot, extract_cot]
-    decode_budget: {default: 256, cot: 1024, extract_cot: 1024}
+    decode_budget: {default: 256, cot: 2048, extract_cot: 2048}
     final_answer_delimiter: "Answer:"
     classifier: none

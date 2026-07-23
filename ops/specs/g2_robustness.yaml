@@ -5,8 +5,15 @@
 # block's clean baseline. Total pages rise with k, so comparisons are valid
 # WITHIN a gold block, not across blocks (evidence and length both differ).
 #
-# The k=0 rows are the Stage-8 within-table anchors: each must reproduce its
-# gold block's clean counterpart (same rule minus distractors).
+# d=0 is deliberately not run here. The gold-1 block's clean baseline already
+# exists as g2_sufficiency's keep-best run (identical rule, identical condition
+# base pageset:r=<ranker>:g=keep_top-1:d=0, so re-running it would duplicate
+# those cells under a second tag). The all-gold baseline is the G1 oracle
+# ladder on the same hop:multi pool (all gold + no distractors IS oracle),
+# which the selection table loads as its pivot row. The gold-2 and gold-3
+# blocks therefore have NO same-evidence clean baseline: read their dilution
+# slope from d=1 -> d=2 only, and never against the all-gold pivot (evidence
+# count differs).
 runs:
   - task_name: G5_selection
     run_tag: g5b-gold1
@@ -26,7 +33,7 @@ runs:
     page_set:
       ranking_source: [colqwen3, bm25]
       gold: {mode: keep_top, count: 1}
-      distractor: {count: [0, 1, 2, 3]}
+      distractor: {count: [1, 2]}
       on_insufficient_gold: exclude
       on_insufficient_distractors: pad_available
       on_no_gold: exclude
@@ -55,7 +62,7 @@ runs:
     page_set:
       ranking_source: [colqwen3, bm25]
       gold: {mode: keep_top, count: 2}
-      distractor: {count: [0, 1, 2, 3]}
+      distractor: {count: [1, 2]}
       on_insufficient_gold: exclude
       on_insufficient_distractors: pad_available
       on_no_gold: exclude
@@ -84,7 +91,7 @@ runs:
     page_set:
       ranking_source: [colqwen3, bm25]
       gold: {mode: keep_top, count: 3}
-      distractor: {count: [0, 1, 2, 3]}
+      distractor: {count: [1, 2]}
       on_insufficient_gold: exclude
       on_insufficient_distractors: pad_available
       on_no_gold: exclude

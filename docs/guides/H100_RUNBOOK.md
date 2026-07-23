@@ -1,12 +1,48 @@
-# H100 runbook: setup, prestage, and run the H100 generation
+# H100 runbook: setup, prestage, and run the four planned generations
 
 This is the whole job for the H100 box: build the envs, download the models and
-data, run the generation, and check it came out clean. You do **not** judge or
-build tables here. When generate is done and the check is green, hand the
-`results/` folder back and you're finished.
+data, run the four generation specs, and check they came out clean. You do
+**not** judge or build tables here. When generate is done and the checks are
+green, hand the `results/` folder back and you're finished.
 
-This is the `h100_main.yaml` run: Qwen3-VL-8B over the full four-rung ladder
-(T/TL/TLV/V) on oracle pages, for the whole answerable question set.
+The four specs, in priority order (run them in this order; each is independently
+resumable, so a partial pass is never wasted):
+
+| # | spec | what it is | cells |
+|---|------|-----------|-------|
+| 1 | `ops/specs/g2_sufficiency.yaml` | LOPO: withhold/isolate one gold page by rank (4 runs) | 11,456 |
+| 2 | `ops/specs/g2_robustness.yaml` | ranked distractors on top of kept gold (3 runs) | 13,248 |
+| 3 | `ops/specs/g5_faithfulness.yaml` | six prompt modes on both pools (2 runs) | 26,184 |
+| 4 | `ops/specs/g0_interleaved.yaml` | TLV vs TLVi ordering comparison (1 run) | 1,694 |
+|   | **total** | | **52,582** |
+
+Cell counts are exact (enumerated against the corpus, after the degenerate-case
+exclusions; e.g. the robustness gold-3 block keeps only the 112 questions with
+three or more gold pages).
+
+## How long it takes (single H100)
+
+Basis: the V100 runs measured ~33 s/cell wall for the 8B (memory-efficient SDPA,
+no flash attention, 16 GB). The H100 has flash-attn 2, Hopper tensor cores, and
+~3.7x the memory bandwidth, so budget **~7-10 s/cell** for a standard 256-token
+cell, and **~15-30 s/cell** for the two CoT modes in g5_faithfulness (decode
+budget 2048; most generations stop earlier on EOS, so the top of that range is
+pessimistic).
+
+| spec | standard cells | CoT cells | estimate |
+|------|---------------|-----------|----------|
+| g2_sufficiency | 11,456 | 0 | ~22-32 h |
+| g2_robustness | 13,248 | 0 | ~26-37 h |
+| g5_faithfulness | 17,456 | 8,728 | ~70-120 h |
+| g0_interleaved | 1,694 | 0 | ~4-6 h |
+| **total** | | | **~5.5-8.5 days** |
+
+One-time overheads on a fresh box, before the steady-state rate: model + data
+downloads (~25 GB), the PaddleOCR-VL parser warming its markdown cache over the
+fed pages (a few hours, cached after the first pass), and ColQwen3 ranking every
+document once for the page_set rules (an hour or two, persisted to the retrieval
+memo). Run everything under `tmux`/`screen` so a dropped SSH session doesn't
+kill it; a killed run resumes from its cache.
 
 ## What you need first
 
@@ -15,16 +51,16 @@ This is the `h100_main.yaml` run: Qwen3-VL-8B over the full four-rung ladder
 - One **H100** (80 GB) is plenty; the 8B fits with lots of room. If you have
   several and want to pick which, set `CUDA_VISIBLE_DEVICES=0` (or a comma list)
   before the generate step.
-- **Disk**: budget ~40 GB under `.cache/` for the 8B reasoner, the retrievers, and
-  the parser (see the trimmed prestage below), plus room under `results/`.
-- A **Hugging Face token** so downloads don't get rate-limited. Put it in a `.env`
-  file at the repo root as `HF_TOKEN=hf_...`, or just `export HF_TOKEN=hf_...`
+- **Disk**: budget ~25 GB under `.cache/` (8B reasoner, ColQwen3, the parser)
+  plus room under `results/`.
+- A **Hugging Face token** so downloads don't get rate-limited. Put it in a
+  `.env` file at the repo root as `HF_TOKEN=hf_...`, or `export HF_TOKEN=hf_...`
   before step 2.
 
 ## Step 1: build the environments
 
-Run this with your **base** conda active (it creates the project envs for you). It
-builds a core reasoning env plus one isolated env per PDF parser, all inside the
+Run this with your **base** conda active (it creates the project envs for you).
+It builds the core reasoning env plus the isolated parser envs, all inside the
 checkout at `envs/`, which is where the code looks for them.
 
 ```bash
@@ -33,105 +69,115 @@ python -m ops.scripts.setup_env --machine H100 --env all --local
 
 Notes:
 - `--local` is what makes it build into this checkout instead of a cluster path.
-- It ends each env with `pip check`. If flash-attn can't build it prints a warning
-  and keeps going (the reasoner falls back to a memory-efficient kernel), so that
-  is not a failure.
-- The TL/TLV rungs need the `parse-paddleocrvl` env, so leave `--env all`.
+- It ends each env with `pip check`. If flash-attn can't build it prints a
+  warning and keeps going (the reasoner falls back to a memory-efficient
+  kernel); on an H100 you want flash-attn, so if it warns, retry that env once.
+- The TL/TLV rungs need the `parse-paddleocrvl` env. Strictly only `core` and
+  `parse-paddleocrvl` are needed for these four specs, but `--env all` is
+  harmless.
 
 ## Step 2: download models and data
 
-Activate the core env, then prestage with the trimmed config for this run. It lists
-only what `h100_main.yaml` needs: the 8B reasoner, the paddleocrvl parser, and the
-MMLongBench dataset (G1 uses oracle pages, so no retrievers, and no other model
-sizes).
+Activate the core env, then prestage with the trimmed config for these runs. It
+lists exactly what the four specs need: the 8B reasoner, ColQwen3 (the page_set
+ranker; bm25 needs no weights), the paddleocrvl parser, and MMLongBench.
 
 ```bash
 conda activate "$PWD/envs/core"
 python -m ops.scripts.prestage --local --config ops/kaya/h100_main.json
 ```
 
-It's idempotent, so if it dies partway just run it again and it picks up where it
-left off. It prints `HF_TOKEN=set` or `missing` at the top; if it says missing and a
-download stalls, set the token and rerun.
+It's idempotent, so if it dies partway just run it again and it picks up where
+it left off. It prints `HF_TOKEN=set` or `missing` at the top; if it says
+missing and a download stalls, set the token and rerun.
 
 ## Step 3: smoke test the pipeline first
 
-Before the long run, do a quick end-to-end pass on 5 questions. It's the same
-shape as the main run (8B, the full T/TL/TLV/V ladder at med) but capped, so it
-exercises every path, including the GPU paddleocr-vl parser on the TL/TLV rungs,
-in a few minutes instead of hours. Still in the core env, from the repo root:
+Before the long runs, do a quick end-to-end pass on a handful of questions. It's
+the same cells as the real runs but capped, so it exercises every path
+(the ColQwen3 ranking, the page_set rules, the GPU parser on TL/TLV, the six
+prompt modes and their decode budgets) in minutes instead of days. Because the
+capped cells are the same cells the full run needs, nothing is wasted: the full
+run resumes over them as cache hits.
 
 ```bash
-python -m ops.generate --spec ops/specs/h100_smoke.yaml
-python -m ops.scripts.check_run --spec ops/specs/h100_smoke.yaml
+python -m ops.generate --spec ops/specs/g2_sufficiency.yaml --limit 4
+python -m ops.generate --spec ops/specs/g5_faithfulness.yaml --limit 4
+python -m ops.scripts.check_run --spec ops/specs/g2_sufficiency.yaml --no-expected
+python -m ops.scripts.check_run --spec ops/specs/g5_faithfulness.yaml --no-expected
 ```
 
-If `check_run` prints `RESULT: OK` you know the envs, the weights, and the parser
-are all wired up, so the main run below won't fall over hours in. If it's not
-green, see "If the check finds errors" at the bottom, fix it, and rerun this
-smoke before moving on. The test writes to its own `g1-8b-test` run_tag, so it
-doesn't touch the main run's cells.
+If both checks report no err cells, the envs, the weights, the ranker, and the
+parser are all wired up, so the main runs below won't fall over hours in.
+(`--no-expected` because a capped run is deliberately incomplete.) If not, see
+"If the check finds errors" at the bottom, fix it, and rerun this smoke before
+moving on.
 
-## Step 4: run the generation
+## Step 4: run the generations, in priority order
 
 Still in the core env, from the repo root:
 
 ```bash
-python -m ops.generate --spec ops/specs/h100_main.yaml
+python -m ops.generate --spec ops/specs/g2_sufficiency.yaml
+python -m ops.generate --spec ops/specs/g2_robustness.yaml
+python -m ops.generate --spec ops/specs/g5_faithfulness.yaml
+python -m ops.generate --spec ops/specs/g0_interleaved.yaml
 ```
 
-What it does: it works through the run(s) in the spec, each written to its own
-`run_tag` under `results/cache/`. The parser warms once per run before the reasoner
-loads, so the parser and reasoner never share the GPU. Every cell writes exactly one
-row whether it succeeds or fails, so a crash mid-run doesn't lose the cells that
-already ran.
+What it does: each spec works through its run(s), each written to its own
+`run_tag` under `results/cache/`. The ranking and parser warm once per run
+before the reasoner loads, so they never share the GPU with it. Every cell
+writes exactly one row whether it succeeds or fails, so a crash mid-run doesn't
+lose the cells that already ran; rerunning the same command resumes.
+
+Two things specific to these specs:
+- `g5_faithfulness` writes a `run_settings.json` sidecar next to each run's
+  predictions (the decode budgets + the `Answer:` delimiter). Don't edit the
+  spec's budgets between a partial run and its resume; the sidecar will refuse
+  the mismatch by design.
+- The page_set runs log a line like `page_set: excluded {...}` at start; that is
+  the documented degenerate-case exclusion (e.g. gold-3 rules on two-gold
+  questions), not an error.
 
 It finds the weights you prestaged automatically (it points Hugging Face at
-`.cache/`). If your H100 node has **no internet**, add `export HF_HUB_OFFLINE=1`
-first so it never tries to reach out.
+`.cache/`). If the node has **no internet**, add `export HF_HUB_OFFLINE=1` first
+so it never tries to reach out.
 
-This run is long. Launching it under `tmux`/`screen` (or `nohup ... &`) so it
-survives a dropped SSH session is a good idea.
+## Step 5: check each run came out clean
 
-## Step 5: check it ran clean
-
-This is the "did it work" gate. It reads the status row every cell wrote and
-reports, per run, how many cells are ok vs oom vs error, and how many are missing
-versus expected. It exits nonzero if anything looks broken.
+The "did it work" gate, per spec. It reads the status row every cell wrote and
+reports ok / oom / error / missing per run, and exits nonzero if anything looks
+broken.
 
 ```bash
-python -m ops.scripts.check_run --spec ops/specs/h100_main.yaml
+python -m ops.scripts.check_run --spec ops/specs/g2_sufficiency.yaml
+python -m ops.scripts.check_run --spec ops/specs/g2_robustness.yaml
+python -m ops.scripts.check_run --spec ops/specs/g5_faithfulness.yaml
+python -m ops.scripts.check_run --spec ops/specs/g0_interleaved.yaml
 ```
 
-A healthy run looks like this (every task `OK`, no oom/err, no missing):
-
-```
-verdict run_tag              task                       ok  oom  err  miss  note
-OK      g1-8b                G1_oracle_ladder         ...    0    0     0  ... cells ok
-[check] RESULT: OK - no broken tasks
-```
-
-If a task is `FAIL` or `WARN`, the script prints the top failure reasons right under
-it. The usual culprit is `ParserCacheMiss` on the TL/TLV cells, which means the
-`parse-paddleocrvl` env didn't build or run. On an H100 you should not see `oom`.
+A healthy run shows every task `OK` with no oom/err and no missing. On an H100
+you should not see `oom`.
 
 ## If the check finds errors
 
-1. Read the reason it printed. `ParserCacheMiss` -> the parser env is the problem;
-   rebuild it with `python -m ops.scripts.setup_env --machine H100 --env parse-paddleocrvl --local` and confirm it `pip check`s clean.
+1. Read the reason it printed. `ParserCacheMiss` on TL/TLV cells means the
+   `parse-paddleocrvl` env is the problem; rebuild it with
+   `python -m ops.scripts.setup_env --machine H100 --env parse-paddleocrvl --local`
+   and confirm it `pip check`s clean. `RetrievalMemoMiss` on page_set cells
+   means the ColQwen3 ranking pass didn't complete; rerun the spec without
+   `--skip-retrieval` and it re-ranks.
 2. Fix the cause, then retry just the failed cells:
 
    ```bash
-   python -m ops.generate --spec ops/specs/h100_main.yaml --failed-only
+   python -m ops.generate --spec ops/specs/<the-spec>.yaml --failed-only
    ```
 
-   `--failed-only` reads what each run already wrote, re-runs only the cells whose
-   status wasn't `ok`, and upgrades them in place. The cells that already
-   succeeded are left untouched, so this is quick. Then rerun `check_run`; repeat
-   until it's green.
+   `--failed-only` re-runs only the cells whose status wasn't `ok`, upgrading
+   them in place. Then rerun `check_run`; repeat until green.
 
 ## When you're done
 
-Once `check_run` says `RESULT: OK`, hand back the whole `results/` folder (the
-`results/cache/` tree is what matters, the jsonl rows). That's everything the judging
-and table-building steps need; those run elsewhere.
+Once every `check_run` says OK, hand back the whole `results/` folder (the
+`results/cache/` tree is what matters, the jsonl rows). That's everything the
+judging and table-building steps need; those run elsewhere.
