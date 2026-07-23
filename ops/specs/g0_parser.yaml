@@ -1,0 +1,51 @@
+# g0 (intervention): the parser sweep. Mode-wise this is E1-adjacent (how
+# faithfully content is acquired), but Boundary A places the parser choice in
+# deployment, so it lives with the interventions. PaddleOCR-VL is the baseline
+# parser and rides inside g3_representation; these two runs are the mineru and
+# unlimited comparisons on TL/TLV, each under its own existing run_tag
+# (the cache dirs g1-parser-full-mineru / g1-parser-full-unlimited; both DONE
+# and judged).
+runs:
+  - task_name: G1_oracle_ladder
+    run_tag: g1-parser-full-mineru
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [mineru]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [TL, TLV]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G1_oracle_ladder
+    run_tag: g1-parser-full-unlimited
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [unlimited]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [TL, TLV]
+    prompt_modes: [none]
+    classifier: none

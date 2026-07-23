@@ -130,8 +130,9 @@ def test_new_spec_files_parse():
     from experiments.corpus.yaml_spec import config_from_spec, load_yaml_specs
 
     root = Path(__file__).resolve().parents[1]
-    for name in ("g3_faithfulness.yaml", "g4_faithfulness.yaml"):
-        (spec,) = load_yaml_specs(root / "ops" / "specs" / name)
+    specs = load_yaml_specs(root / "ops" / "specs" / "g5_faithfulness.yaml")
+    assert [s.run_tag for s in specs] == ["g3-faithfulness-full", "g4-faithfulness-full"]
+    for spec in specs:
         assert spec.decode_budget and spec.decode_budget["cot"] == 1024
         assert spec.final_answer_delimiter == "Answer:"
         assert tuple(spec.prompt_modes) == (

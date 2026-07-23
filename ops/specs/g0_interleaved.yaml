@@ -1,3 +1,5 @@
+# g0 (intervention): interleaved TLVi vs TLV, the ordering lever on the E4
+# integration loss. PENDING (1x V100 or better).
 # Unblocks: the RQ1 fidelity question of whether the loss at TLV is partly an ORDERING
 # problem rather than a content problem. TLV sends one merged text block then every
 # page image, so on a multi-page cell nothing tells the model which text belongs to

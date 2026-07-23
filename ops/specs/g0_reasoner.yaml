@@ -1,0 +1,122 @@
+# g0 (intervention): the reasoner axis. Five runs:
+#   g1-reasoner-full / -scanned  DONE, judged: size (2B/4B) + family (InternVL3)
+#     on the digital pool and its scanned half (disjoint scans, merged at build);
+#     the 8B bf16 anchor rides in g3_representation.
+#   g1-reasoner-thinking / -llama / -32b-matched  PENDING (H100/A100): the
+#     Thinking variant (hop-split M-S is the point; unconditional reasoning, so
+#     a large default budget + judge-time Answer: extraction), the
+#     cross-attention Llama-3.2-11B-Vision family contrast (gated repo, needs
+#     HF_TOKEN), and the matched-memory 32B pair (4-bit ~17 GB vs 8B bf16).
+#     Characterise OOM on a {limit: N} slice before any full run.
+runs:
+  - task_name: G1_oracle_ladder
+    run_tag: g1-reasoner-full
+    dataset: [mmlongbench]
+    corpus: {scan: digital, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, internvl3-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G1_oracle_ladder
+    run_tag: g1-reasoner-scanned
+    dataset: [mmlongbench]
+    corpus: {scan: scanned, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, internvl3-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G1_oracle_ladder
+    run_tag: g1-reasoner-thinking
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-thinking-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    decode_budget: {default: 2048}
+    final_answer_delimiter: "Answer:"
+    classifier: none
+
+  - task_name: G1_oracle_ladder
+    run_tag: g1-reasoner-llama
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [llama3.2-11b-vision-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G1_oracle_ladder
+    run_tag: g1-reasoner-32b-matched
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-32b-local]
+    quantization: [bf16, 4bit]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none

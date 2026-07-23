@@ -37,6 +37,8 @@ def _ints(value: str) -> tuple[int, ...]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--spec", required=True, help="the run's spec (gives config + question pool + run_tag)")
+    parser.add_argument("--run-tag", default=None,
+                        help="select this run from a multi-run spec file (default: the first run)")
     parser.add_argument("--text-methods", default="", help="comma list, e.g. qwen3-embedding")
     parser.add_argument("--vision-methods", default="", help="comma list, e.g. colqwen3")
     parser.add_argument("--joints", choices=("none", "matched"), default="none",
@@ -73,7 +75,15 @@ def main(argv: list[str] | None = None) -> int:
     if not text_methods and not vision_methods:
         raise SystemExit("give --text-methods and/or --vision-methods")
 
-    spec = load_yaml_specs(args.spec)[0]
+    specs = load_yaml_specs(args.spec)
+    if args.run_tag:
+        matches = [s for s in specs if s.run_tag == args.run_tag]
+        if not matches:
+            raise SystemExit(f"no run with run_tag {args.run_tag!r} in {args.spec} "
+                             f"(have: {[s.run_tag for s in specs]})")
+        spec = matches[0]
+    else:
+        spec = specs[0]
     config = config_from_spec(spec)
     if args.parser_dpi is not None:
         from dataclasses import replace

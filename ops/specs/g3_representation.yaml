@@ -1,3 +1,9 @@
+# g3 (E3 fidelity): the representation ladder T/TL/TLV/V on oracle pages, the
+# headline run and the substrate for the fidelity transitions. DONE and judged
+# (run_tag g1-representation-full, scan:any). Its scanned half also feeds the
+# E1 scanned-vs-digital analysis, and its hop covariate the E4 integration
+# tables; the 8B bf16 med/paddle baseline every g0 intervention compares
+# against lives here.
 task_name: G1_oracle_ladder
 run_tag: g1-representation-full
 dataset: [mmlongbench]

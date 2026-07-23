@@ -1,0 +1,49 @@
+# g0 (intervention): quantization 8bit/4bit against the bf16 baseline (which
+# rides in g3_representation). Two runs: the digital pool and its scanned half;
+# scan:digital and scan:scanned are disjoint, so the two caches merge to
+# scan:any at build time. Both DONE and judged (run_tags g1-quantization-full /
+# g1-quantization-scanned).
+runs:
+  - task_name: G1_oracle_ladder
+    run_tag: g1-quantization-full
+    dataset: [mmlongbench]
+    corpus: {scan: digital, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [8bit, 4bit]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G1_oracle_ladder
+    run_tag: g1-quantization-scanned
+    dataset: [mmlongbench]
+    corpus: {scan: scanned, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [8bit, 4bit]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none

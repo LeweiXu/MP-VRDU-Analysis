@@ -1,0 +1,87 @@
+# g2 (E2 selection): real-retriever page selection. Three runs:
+#   g2-retrieval-full  the run of record: ~36% of inference cells pulled before
+#     the cluster migration (PARTIAL; the retrieval P/R/F1 side-artifact is
+#     complete). Kept so ops.judge can still target its cache.
+#   g2-retrieval-full-rerun  PENDING (A100/H100): the same grid, finished. One
+#     clean run replaces the partial pool and de-provisionalises `attribution`,
+#     `matched_cross`, and `kdepth`. On a 16 GB V100 the TLV rung at high k is
+#     what OOMed in the first place.
+#   g2-dpi  retrieval-only DPI sweep (no reasoner, no judge; RUNNABLE LOCALLY):
+#     re-embed and re-rank pages at several render DPIs and compare page P/R/F1.
+#     Only vision retrieval depends on DPI. Each DPI keys its own memo, so runs
+#     never collide. One pass per DPI via the completion script, selecting this
+#     run by tag:
+#       for d in 72 110 150; do
+#         python -m ops.scripts.complete_retrieval --spec ops/specs/g2_retrieval.yaml \
+#           --run-tag g2-dpi --vision-methods colqwen2.5,colqwen3 \
+#           --parser-dpi $d --filename retrieval_dpi$d.jsonl
+#       done
+runs:
+  - task_name: G2_retrieval
+    run_tag: g2-retrieval-full
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25, bge-m3, qwen3-embedding]
+    vision_retrievers: [colmodernvbert, colqwen2.5, colqwen3]
+    joints: matched
+    k_values: [1, 3, 5]
+    joint_k_values: [1, 3]
+    inference_text_retriever: bge-m3
+    inference_vision_retriever: colqwen2.5
+    inference_joint: true
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G2_retrieval
+    run_tag: g2-retrieval-full-rerun
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25, bge-m3, qwen3-embedding]
+    vision_retrievers: [colmodernvbert, colqwen2.5, colqwen3]
+    joints: matched
+    k_values: [1, 3, 5]
+    joint_k_values: [1, 3]
+    inference_text_retriever: bge-m3
+    inference_vision_retriever: colqwen2.5
+    inference_joint: true
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G2_retrieval
+    run_tag: g2-dpi
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [V]
+    # Method lists stay empty: complete_retrieval selects the vision methods
+    # from --vision-methods on the CLI (empty lists also skip the benchmark-arm
+    # spec check, which does not apply to a retrieval-only sweep).
+    text_retrievers: []
+    vision_retrievers: []
+    joints: none
+    k_values: [1, 3, 5]
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [V]
+    prompt_modes: [none]
+    classifier: none

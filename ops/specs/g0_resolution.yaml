@@ -1,0 +1,49 @@
+# g0 (intervention): visual resolution low/med/high on the image-bearing rungs
+# (TLV, V). Attribution-wise this doubles as E3 fidelity data; it lives here
+# because the sweep is a deployment lever (RQ5). Two runs: digital pool + its
+# scanned half, merged to scan:any at build. Both DONE and judged (run_tags
+# g1-resolution-full / g1-resolution-scanned).
+runs:
+  - task_name: G1_oracle_ladder
+    run_tag: g1-resolution-full
+    dataset: [mmlongbench]
+    corpus: {scan: digital, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [low, med, high]
+    reasoner_representations: [TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G1_oracle_ladder
+    run_tag: g1-resolution-scanned
+    dataset: [mmlongbench]
+    corpus: {scan: scanned, pool: answerable, sampling: full}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [low, med, high]
+    reasoner_representations: [TLV, V]
+    prompt_modes: [none]
+    classifier: none

@@ -1,3 +1,8 @@
+# g5 (E5 faithfulness): the original three-mode abstention run on the
+# UNANSWERABLE pool (bm25 similarity k=3, four rungs). DONE and judged
+# (run_tag g3-hallucination-full); kept as the run of record and the source of
+# the Stage-8 abstention anchors (pooled none 16.9 / generic 10.7 /
+# targeted 80.7). The six-mode replacement is g5_faithfulness.yaml.
 task_name: G3_hallucination
 run_tag: g3-hallucination-full
 dataset: [mmlongbench]

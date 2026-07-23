@@ -1,4 +1,9 @@
-# Reference menu for the spec format. ONE document-understanding pipeline
+# TARGET spec format. Superset of the current template.yaml: every variable and
+# value that exists today is still here and still means the same thing. New
+# variables and new values are marked [NEW] and are the subject of
+# PIPELINE_EXTENSION_PLAN.md — they do NOT work yet.
+#
+# ONE document-understanding pipeline
 #   page-selection (retrieval)  ->  representation  ->  reasoner  ->  judge
 # and every generation task is that same pipeline with different VALUES on a fixed
 # set of variables. `task_name` is only a label: the logical grouping + the parallel
@@ -11,12 +16,18 @@
 # cross-product (the cell / pass grid); length-1 lists pin an axis to one value.
 #
 # Variable order (pipeline order): corpus -> parser -> retrieval -> reasoner -> judge.
+#
+# The one structural addition is `page_set` [NEW], which sits in the retrieval block
+# and generalises page selection: today a task either takes gold pages (oracle) or
+# top-k retrieved pages. `page_set` lets a spec declare a page set as a RULE over the
+# question's gold and non-gold pages. `page_set: none` reproduces today's behaviour
+# exactly, so existing specs are unaffected.
 
 runs:
 
   # ======================================================================== #
   # The full menu: every variable with its allowed values written inline.
-  # (Reference only; the three real tasks below are what actually run.)
+  # (Reference only; the real tasks below are what actually run.)
   # ======================================================================== #
   - task_name: template
     run_tag: template
@@ -25,6 +36,10 @@ runs:
       scan: any                               # any | digital | scanned  (PyMuPDF auto-detect -> annotations/auto_scan.csv; applied before pool + sampling)
       pool: answerable                        # answerable | unanswerable | all (both)
       sampling: {per_doc_type: 50, seed: 0}   # {per_doc_type: N,seed} | {per_bin: N,seed} | full | {limit: N} | {ids: [...]}
+      hop: any                                # [NEW] any | single | multi  — filter by gold-evidence-page count.
+                                              #   `multi` is required by page_set gold rules that remove or isolate a
+                                              #   gold page: at one gold page, top and bottom coincide and the four
+                                              #   sufficiency conditions collapse into each other.
     parser_dpi: 200                           # render DPI the parser / page rasterizer uses
     parser: [paddleocrvl, mineru, unlimited]
     # retrieval: how pages are selected for the reasoner. retrieval_representation is
@@ -39,7 +54,41 @@ runs:
     inference_text_retriever: bge-m3          # the text arm fed to the reasoner (in text_retrievers) | none
     inference_vision_retriever: colqwen2.5    # the vision arm fed to the reasoner | none
     inference_joint: true
-    reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, qwen3vl-8b-local, qwen3vl-32b-local, internvl3-8b-local]
+
+    # ---------------------------------------------------------------- [NEW] --
+    # page_set: declare the reasoner's page set as a RULE over this question's
+    # gold and non-gold pages, instead of taking gold wholesale (oracle) or the
+    # retriever's top-k. Two independent knobs — which gold pages to feed, and
+    # how many non-gold pages to add — resolved against a named ranking source.
+    #
+    #   page_set: none   -> today's behaviour (oracle, or top-k retrieved).
+    #                       Existing specs need no change.
+    #
+    # Pages are ALWAYS emitted in document order regardless of the rank used to
+    # select them, so page ordering never confounds a selection manipulation.
+    #
+    # The same rule under two ranking sources is a different experimental
+    # condition. Whether it is a different CELL depends on whether the two
+    # rankers actually choose different pages for that question — see the
+    # cache-key note at the foot of this file.
+    # -------------------------------------------------------------------------
+    page_set:
+      ranking_source: [colqwen3, bm25]        # [NEW] list = axis. Any text_retriever or vision_retriever.
+                                              #   Ranks gold pages for `gold`, and non-gold pages for `distractor`.
+      gold:                                   # [NEW] which of the question's gold pages to feed
+        mode: all                             # all | keep_top | keep_bottom | drop_top | drop_bottom
+        count: 1                              # how many to keep/drop; ignored when mode is `all`
+      distractor:                             # [NEW] how many non-gold pages to add
+        count: [0, 1, 2, 3]                   # list = axis. 0 = clean baseline (no distractors).
+      on_insufficient_gold: exclude           # [NEW] exclude | keep_all  — e.g. drop_top on a 1-gold question
+      on_insufficient_distractors: pad_available  # [NEW] pad_available | exclude  — non-gold pool smaller than count
+      on_no_gold: exclude                     # [NEW] exclude | distractors_only
+                                              #   `distractors_only` feeds a gold-free page set: the
+                                              #   fabrication probe (does the reasoner abstain when
+                                              #   selection has failed completely?).
+
+    reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, qwen3vl-8b-local, qwen3vl-32b-local, internvl3-8b-local, qwen3vl-8b-thinking-local, llama3.2-11b-vision-local]
+                                              # [NEW] qwen3vl-8b-thinking-local, llama3.2-11b-vision-local
     quantization: [bf16, 8bit, 4bit]
     visual_resolution: [low, med, high]
     # T = PyMuPDF embedded text. TL = parser markdown text (replaces T's text).
@@ -50,7 +99,35 @@ runs:
     # unrecoverable on a multi-page cell. V = page images only.
     # TLVi is opt-in: valid anywhere a rung is, but not a default, so list it to get it.
     reasoner_representations: [T, TL, TLV, TLVi, V]
-    prompt_modes: [none, generic, targeted]
+    prompt_modes: [none, grounded, abstain, abstain_balanced, cot, extract_cot]   # [NEW] six-mode set
+
+    # ---------------------------------------------------------------- [NEW] --
+    # decode_budget: max new tokens, per prompt mode. Today this is a single
+    # fixed 256. The reasoning-bearing modes emit reasoning AND an answer, so a
+    # budget sized for a terse answer truncates the answer away and scores the
+    # cell wrong — which reads as "CoT hurts accuracy" when it is an artifact.
+    # The existing truncation canaries are INPUT-side and will not catch this.
+    # Output-side truncation must be recorded per row so a bad budget is
+    # detectable after the fact rather than inferred from an accuracy drop.
+    # -------------------------------------------------------------------------
+    decode_budget:
+      default: 256
+      cot: 1024
+      extract_cot: 1024
+
+    # ---------------------------------------------------------------- [NEW] --
+    # final_answer_delimiter: the marker the CoT modes instruct the model to put
+    # before its final answer, extracted before the answer reaches the judge.
+    # `none` sends the whole generation to the judge (today's behaviour).
+    #
+    # NOTE: PROMPT_BODY already ends with a literal "Answer:" as the generation
+    # cue, so this string appears twice in the assembled prompt. Extraction must
+    # take the LAST occurrence. Verify on a smoke run before committing at
+    # scale; if it proves flaky, use "Final answer:" instead, at the cost of
+    # diverging from the body template.
+    # -------------------------------------------------------------------------
+    final_answer_delimiter: "Answer:"         # [NEW] none | <string>
+
     classifier: qwen3vl-2b-local              # none | <classifier reasoner spec>
 
   # ======================================================================== #
@@ -61,7 +138,7 @@ runs:
   - task_name: G1_oracle_ladder
     run_tag: g1
     dataset: [mmlongbench]
-    corpus: {scan: any, pool: answerable, sampling: {per_doc_type: 50, seed: 0}}
+    corpus: {scan: any, pool: answerable, sampling: {per_doc_type: 50, seed: 0}, hop: any}
     parser_dpi: 200
     parser: [paddleocrvl, mineru, unlimited]
     retrieval_representation: [oracle]
@@ -73,11 +150,14 @@ runs:
     inference_text_retriever: none
     inference_vision_retriever: none
     inference_joint: false
-    reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, qwen3vl-8b-local, qwen3vl-32b-local, internvl3-8b-local]
+    page_set: none                            # [NEW] oracle = all gold, no distractors
+    reasoner_spec: [qwen3vl-2b-local, qwen3vl-4b-local, qwen3vl-8b-local, qwen3vl-32b-local, internvl3-8b-local, qwen3vl-8b-thinking-local, llama3.2-11b-vision-local]
     quantization: [bf16, 8bit, 4bit]
     visual_resolution: [low, med, high]
     reasoner_representations: [T, TL, TLV, V]
     prompt_modes: [none]
+    decode_budget: {default: 256}
+    final_answer_delimiter: none
     classifier: none
 
   # ======================================================================== #
@@ -88,7 +168,7 @@ runs:
   - task_name: G2_retrieval
     run_tag: g2
     dataset: [mmlongbench]
-    corpus: {scan: any, pool: answerable, sampling: {per_doc_type: 50, seed: 0}}
+    corpus: {scan: any, pool: answerable, sampling: {per_doc_type: 50, seed: 0}, hop: any}
     parser_dpi: 200
     parser: [paddleocrvl]
     retrieval_representation: [T, V]          # text arm over PyMuPDF T, vision arm over V
@@ -100,22 +180,31 @@ runs:
     inference_text_retriever: bge-m3
     inference_vision_retriever: colqwen2.5
     inference_joint: true
+    page_set: none
     reasoner_spec: [qwen3vl-8b-local]
     quantization: [bf16]
     visual_resolution: [med]
     reasoner_representations: [TLV, V]
     prompt_modes: [none]
+    decode_budget: {default: 256}
+    final_answer_delimiter: none
     classifier: none
 
   # ======================================================================== #
   # G3 - hallucination / prompting: unanswerable questions over a small
   # similarity-retrieved page set (no oracle arm at zero gold pages), sweeping
   # the prompt condition. The doc-domain classifier rides along here.
+  #
+  # [NEW] extended to all four rungs and the six-mode set. Runs under a NEW
+  # run_tag (decode_budget/final_answer_delimiter are run_tag-scoped, and the
+  # old g3-hallucination-full rows carry no-delimiter semantics). The old tag's
+  # TLV x {none,generic,targeted} cells stay as the reconciliation anchors:
+  # grounded/abstain are byte-identical instructions to generic/targeted.
   # ======================================================================== #
   - task_name: G3_hallucination
     run_tag: g3
     dataset: [mmlongbench]
-    corpus: {scan: any, pool: unanswerable, sampling: full}
+    corpus: {scan: any, pool: unanswerable, sampling: full, hop: any}
     parser_dpi: 200
     parser: [paddleocrvl]
     retrieval_representation: [T]             # lexical similarity over PyMuPDF text
@@ -127,9 +216,189 @@ runs:
     inference_text_retriever: bm25            # locked lexical similarity arm
     inference_vision_retriever: none
     inference_joint: false
+    page_set: none
     reasoner_spec: [qwen3vl-8b-local]
     quantization: [bf16]
     visual_resolution: [med]
-    reasoner_representations: [TLV]
-    prompt_modes: [none, generic, targeted]
+    reasoner_representations: [T, TL, TLV, V]                    # [NEW] was [TLV]
+    prompt_modes: [none, grounded, abstain, abstain_balanced, cot, extract_cot]   # [NEW] six-mode set
+    decode_budget: {default: 256, cot: 1024, extract_cot: 1024}
+    final_answer_delimiter: "Answer:"
     classifier: qwen3vl-2b-local
+
+  # ======================================================================== #
+  # [NEW] G4 - faithfulness on the ANSWERABLE pool: the false-abstention cost.
+  # The mirror of G3. Abstaining here is an ERROR, so this is the missing half
+  # of the abstention trade-off: an instruction that raises abstention where
+  # evidence is absent is only useful if it does not also raise it where the
+  # evidence is present.
+  #
+  # DECIDE BEFORE RUNNING — page selection:
+  #   oracle (below): the prompt_modes `none` cells ARE the existing G1 headline
+  #     ladder, so that row is free and the run is 4 modes, not 5.
+  #   bm25 k=3: matches G3 exactly, so the two pools are directly comparable,
+  #     but nothing is reused and every cell is new.
+  # Oracle is set here because it isolates the prompt from retrieval noise, and
+  # the paper's claim is about the instruction, not the retriever. Flip this
+  # deliberately, not by default.
+  # ======================================================================== #
+  - task_name: G4_faithfulness_answerable
+    run_tag: g4
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: any}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set: none
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none, grounded, abstain, abstain_balanced, cot, extract_cot]
+    decode_budget: {default: 256, cot: 1024, extract_cot: 1024}
+    final_answer_delimiter: "Answer:"
+    classifier: none
+
+  # ======================================================================== #
+  # [NEW] G5a - sufficiency (LOPO). Withhold or isolate gold pages and measure
+  # how far accuracy depends on the FULL gold set rather than one page. A steep
+  # fall means the answer genuinely required combining the withheld pages,
+  # which is the direct rebuttal to "multi-hop questions are just harder".
+  #
+  # Four conditions, a 2x2 over {drop one, keep one} x {best, worst}:
+  #   drop best        gold: {mode: drop_top,    count: 1}
+  #   drop worst       gold: {mode: drop_bottom, count: 1}
+  #   keep best only   gold: {mode: keep_top,    count: 1}
+  #   keep worst only  gold: {mode: keep_bottom, count: 1}
+  # The 2x2 is not a single cross-product axis, so it is four runs (or one run
+  # per mode/count pair). One is written out here; the rest differ only in
+  # `page_set.gold`.
+  #
+  # hop: multi is REQUIRED — at one gold page, best and worst are the same page.
+  # Both ranking sources run: the blocks also test whether a visual and a
+  # lexical ranker even agree on which gold page carries the answer.
+  # ======================================================================== #
+  - task_name: G5a_sufficiency
+    run_tag: g5a-drop-best
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: drop_top, count: 1}
+      distractor: {count: 0}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    decode_budget: {default: 256}
+    final_answer_delimiter: none
+    classifier: none
+
+  # ======================================================================== #
+  # [NEW] G5b - robustness (distractor). Hold the gold set fixed and add k
+  # non-gold pages. Gold count is a BLOCKING factor; distractor count is the
+  # manipulated variable. Read DOWN a gold block for the dilution slope at
+  # constant evidence; k=0 is that block's clean baseline.
+  #
+  # Total pages rise with k, so comparisons are valid WITHIN a gold count and
+  # not across them, where evidence and length both differ.
+  #
+  # gold.count is not a cross-product axis with distractor.count here (the gold
+  # blocks are separate runs), so this is three runs: keep_top 1, 2, and 3.
+  # One is written out; the others differ only in `page_set.gold.count`.
+  # ======================================================================== #
+  - task_name: G5b_robustness
+    run_tag: g5b-gold1
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]          # rankers need both reps to score non-gold pages
+    text_retrievers: [bm25]
+    vision_retrievers: [colqwen3]
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none            # page_set supersedes the top-k arms
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: keep_top, count: 1}
+      distractor: {count: [0, 1, 2, 3]}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    decode_budget: {default: 256}
+    final_answer_delimiter: none
+    classifier: none
+
+# ========================================================================== #
+# CACHE-KEY NOTE
+#
+# The key is:
+#   sha256(question_id, doc_id, condition, representation, model_spec,
+#          page_indices, visual_resolution)
+#
+# `page_indices` already distinguishes page sets, so two rules that select the
+# SAME pages for a question genuinely are the same cell and should share a
+# cached result. That is correct and desirable: it is why running both ranking
+# sources costs less than double.
+#
+# Confirm this before running at scale. A redundant key component silently
+# invalidates every existing cell; a missing one silently merges conditions
+# that should be distinct. The case to check is whether any two page_set rules
+# with different experimental INTENT can produce identical page_indices — if so,
+# `condition` must carry the difference.
+#
+# `decode_budget` and `final_answer_delimiter` are NOT in the key. Both change
+# what a cell's answer looks like, so re-running a cell under a different budget
+# must not silently reuse the cached generation. Either fold them into
+# `condition`, or scope them by run_tag and never mix budgets within one tag.
+# ========================================================================== #
+
+# ========================================================================== #
+# RECONCILIATION
+#
+# Every run using page_set or a new prompt mode must include at least one
+# condition that reproduces an already-trusted number, and the build should
+# FAIL rather than emit a table when it does not match:
+#
+#   - G5b `distractor.count: 0` at `gold.mode: all` must reproduce G1 oracle
+#     accuracy on the same pool and hop filter.
+#   - G4 `prompt_modes: none` must reproduce the G1 headline ladder
+#     (31.9 / 39.4 / 56.8 / 45.9), IF AND ONLY IF it runs on oracle pages.
+#   - G3's TLV x {none, generic, targeted} cells must reproduce the existing
+#     abstention rates (16.9 / 10.7 / 80.7) — if the extension to four rungs
+#     changed them, something in the assembly drifted.
+#
+# A silent mismatch is worse than a missing table: it reaches the paper.
+# ========================================================================== #

@@ -21,12 +21,12 @@ contracts is `docs/AGENT_GUIDE.md`. Cluster operations are in
 envs/mpvrdu/bin/python -m pytest -q
 
 # generate (GPU, spec-driven) -> judge (needs a Gemini/OpenAI key in .env) -> build
-envs/mpvrdu/bin/python -m ops.generate --spec ops/specs/kaya.yaml
-envs/mpvrdu/bin/python -m ops.judge    --spec ops/specs/kaya.yaml --judge-spec gemini-flash
-envs/mpvrdu/bin/python -m ops.build    --task all
+envs/mpvrdu/bin/python -m ops.generate --spec ops/specs/g3_representation.yaml
+envs/mpvrdu/bin/python -m ops.judge    --spec ops/specs/g3_representation.yaml --judge-spec gemini-flash
+envs/mpvrdu/bin/python -m ops.build
 
-# tiny smoke: one question per doc_type, 2B model, one task (spec-driven)
-envs/mpvrdu/bin/python -m ops.generate --spec ops/specs/kaya_smoke_g1.yaml
+# specs are named g<E-number>_<name>.yaml after the E1-E5 failure modes;
+# g0_*.yaml are the interventions (parser, quantization, reasoner, resolution, ...)
 ```
 
 The three phases split on purpose: **generate** is GPU-only and offline (runs on

@@ -451,7 +451,7 @@ The registry holds six composed modes (`none`, `grounded`, `abstain`,
 > Caveat: `config.py:69` sets `DEFAULT_PROMPT_MODE = "targeted"` and a stale comment
 > claims "targeted is the one every answerable (G1/G2) cell uses". That default is only
 > the library fallback when a caller passes `instruction=None`; the **run specs pin
-> `none` for G1/G2** (`ops/specs/kaya_g1_*_full.yaml`, `kaya_g2_full.yaml`) and
+> `none` for G1/G2** (`ops/specs/g3_representation.yaml`, `g2_retrieval.yaml`) and
 > `config.BASELINE` records `prompt_mode: none` for G1/G2. So the answerable runs used
 > the empty prompt, matching your recollection.
 
@@ -636,7 +636,7 @@ tokenizing:
   table except the scientific resolution sweep. Note in code: this is still flagged a
   **PLACEHOLDER** pending the operational resolution-probe job `1017226`, whose verdict
   never landed before Kaya went down (`config.py:192`, `docs/DECISIONS.md:667`). In
-  practice all runs used `med`; the resolution sweep (`kaya_g1_resolution_full.yaml`)
+  practice all runs used `med`; the resolution sweep (`g0_resolution.yaml`)
   runs `[low, med, high]` on the TLV and V rungs.
 - These caps bound the VLM's *view* of the page. They are independent of the render
   DPI (200, see §9); a page is rasterized at 200 DPI, then the VLM downsamples to the
@@ -697,7 +697,7 @@ page-level framing. `k ∈ {1,3,5,7,10}` for similarity/retrieved conditions
   (bm25|colmodernvbert, bge-m3|colqwen2.5, qwen3-embedding|colqwen3), scored at `k ∈ {1,3}`.
 
 ### Retrieval used for generation (G2 inference stage)
-Per the run spec (`ops/specs/kaya_g2_full.yaml`), the single arms feeding the reasoner
+Per the run spec (`ops/specs/g2_retrieval.yaml`, run g2-retrieval-full), the single arms feeding the reasoner
 were: **text = `bge-m3`, vision = `colqwen2.5`, plus the joint union**, over the
 **TLV and V** rungs.
 > Discrepancy to flag: `config.BASELINE["G2_retrieval"]` captions this as

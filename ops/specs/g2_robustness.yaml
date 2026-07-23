@@ -1,4 +1,4 @@
-# G5b - robustness (distractor, +k design): hold the kept gold fixed and add k
+# g2 (E2 selection) - robustness (distractor, +k design): hold the kept gold fixed and add k
 # top-ranked non-gold pages on top. Gold count is a BLOCKING factor (one run
 # per kept-gold count); distractor count is the manipulated cell axis. Read
 # DOWN a gold block for the dilution slope at constant evidence; k=0 is that

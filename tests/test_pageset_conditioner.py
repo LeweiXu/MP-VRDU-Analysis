@@ -167,7 +167,7 @@ def test_g5_specs_parse_and_enumerate():
     from experiments.tasks.task import Task
 
     root = Path(__file__).resolve().parents[1]
-    specs = load_yaml_specs(root / "ops" / "specs" / "g5a_sufficiency.yaml")
+    specs = load_yaml_specs(root / "ops" / "specs" / "g2_sufficiency.yaml")
     assert [s.run_tag for s in specs] == ["g5a-drop-best", "g5a-drop-worst",
                                          "g5a-keep-best", "g5a-keep-worst"]
     config = config_from_spec(specs[0])
@@ -182,7 +182,7 @@ def test_g5_specs_parse_and_enumerate():
     assert all(c.conditioner.name.startswith("pageset:") for c in cells)
     assert {c.conditioner.rule.ranking_source for c in cells} == {"colqwen3", "bm25"}
 
-    robustness = load_yaml_specs(root / "ops" / "specs" / "g5b_robustness.yaml")
+    robustness = load_yaml_specs(root / "ops" / "specs" / "g2_robustness.yaml")
     assert [s.run_tag for s in robustness] == ["g5b-gold1", "g5b-gold2", "g5b-gold3"]
     config_b = config_from_spec(robustness[0])
     cells_b = Task("G5_selection").generation_cells(config_b, [questions[0]], retrievers=retrievers)

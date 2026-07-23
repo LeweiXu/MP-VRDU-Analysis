@@ -148,10 +148,13 @@ repeat the generate flags.
   suffix, `visual_resolution`) sweep under ONE run_tag as a driver-looped list; axes
   not in the key (`parser`, `dataset`) get one run_tag per value. The flat spec files
   are the per-sweep expansion of this design (one file = one sweep).
-- **Specs.** `ops/specs/template.yaml` is the reference menu plus the three worked
-  tasks; `kaya.yaml` / `h100_main.yaml` are the real runs and
-  `kaya_smoke_g{1,2,3}.yaml` the per-task smokes. Cache dirs are
-  `results/cache/<run-tag>/<smoke|full>/<task>/`.
+- **Specs.** `ops/specs/template.yaml` is the reference menu; the run specs are
+  named `g<E-number>_<name>.yaml` after the E1-E5 failure-mode taxonomy, with
+  `g0_*.yaml` holding the interventions (parser, quantization, reasoner,
+  resolution, interleaved). One file groups every run of its experiment
+  (completed runs of record and pending ones side by side); run_tags inside are
+  the stable cache identifiers and never change with a file rename. Cache dirs
+  are `results/cache/<run-tag>/<smoke|full>/<task>/`.
 - **Bridge.** `experiments/corpus/yaml_spec.py` loads YAML into flat `Spec`s and
   `experiments/engine/` owns the generate loop, reasoner / retriever construction,
   the parse pre-pass, and cache writes.
