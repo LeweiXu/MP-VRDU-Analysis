@@ -140,9 +140,31 @@ def build_retrievers(config, *, reuse_only: bool = False):
             return StubRetriever()
         return get_vision_retriever(config.inference_vision_retriever, allow_text_fallback=False, **kwargs)
 
+    def _ranker(name: str):
+        # A page_set ranking source: any registered text or vision method, with
+        # no silent fallback (a rule's ranking must be the named method's).
+        from retrievers.text import TEXT_RETRIEVERS
+        from retrievers.vision import VISION_RETRIEVERS
+
+        if name in TEXT_RETRIEVERS:
+            ranker_kwargs = dict(kwargs)
+            if name != "bm25":
+                ranker_kwargs["allow_bm25_fallback"] = False
+            return get_text_retriever(name, **ranker_kwargs)
+        if name in VISION_RETRIEVERS:
+            return get_vision_retriever(name, allow_text_fallback=False, **kwargs)
+        raise KeyError(f"unknown page_set ranking_source {name!r}; "
+                       f"use one of {tuple(TEXT_RETRIEVERS) + tuple(VISION_RETRIEVERS)}")
+
+    page_set = getattr(config, "page_set", None) or {}
+    rankers = {
+        name: MemoizedRetriever(_ranker(name), persist_dir=persist_dir, reuse_only=reuse_only)
+        for name in page_set.get("ranking_source", ())
+    }
     return Retrievers(
         text=MemoizedRetriever(_text_arm(), persist_dir=persist_dir, reuse_only=reuse_only),
         vision=MemoizedRetriever(_vision_arm(), persist_dir=persist_dir, reuse_only=reuse_only),
+        rankers=rankers,
     )
 
 
@@ -179,6 +201,8 @@ def _warm_parser_after_retrieval(config, pages, retrievers, free_gpu) -> None:
 
     retrievers.text.unload()
     retrievers.vision.unload()
+    for ranker in getattr(retrievers, "rankers", {}).values():
+        ranker.unload()
     free_gpu()
     _warm_parser_cache(config, pages)
     free_gpu()

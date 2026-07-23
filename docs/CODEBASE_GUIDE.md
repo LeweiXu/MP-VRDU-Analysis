@@ -59,7 +59,8 @@ model_spec, page_indices, visual_resolution)` (`experiments/engine/paths.py:29`)
 | Which retriever feeds generation (text/vision/joint arm) | ✅ spec | `inference_text_retriever` / `inference_vision_retriever` / `inference_joint` |
 | A **new prompt string** (a 4th mode) | ❌ code | add to `config.PROMPT_MODES` (`config.py:61`) + `G3_PROMPT_MODES` |
 | A **new reasoner / retriever / parser model** | ❌ code | add to the backend registry (`models/qwen3vl.py:24`, `models/internvl.py:15`, `retrievers/*.py`, `tools/parser.py:23`) |
-| A **new page-selection policy** (beyond oracle / retrieved / joint / similarity / full) | ❌ code | new `InputConditioner` (`pipeline/conditioner.py`) |
+| A **page_set rule** (keep/drop gold by rank, add ranked distractors, per ranking source) | ✅ spec | `page_set:` block + `corpus.hop`; rule rides in the condition base under the `pageset:` grammar (`pipeline/page_rules.py`) |
+| A **new page-selection policy** (beyond oracle / retrieved / joint / similarity / full / page_set) | ❌ code | new `InputConditioner` (`pipeline/conditioner.py`) |
 | A **new covariate** to group by (not already on the row, §A3) | ❌ code | add to `Question`/`ResultRow` + backfill |
 | A **new cross-tab** no current builder emits | ❌ code | new builder + plan entry (§A4) — the intended path, not a standalone script |
 
@@ -145,9 +146,13 @@ with `_common.split_condition`. Bases:
 | `retrieved_vision_k<k>` | top-k from the vision arm | `retrieved_vision_k5__none` |
 | `retrieved_joint_k<k>` | dedup union of text+vision top-k | `retrieved_joint_k3__none` |
 
+A constructed page set encodes its whole rule as the base:
+`pageset:r=<ranker>:g=<gold-mode>-<count>:d=<distractors>[:p=<policies>]` (parse
+it with `_common.pageset_rule`, never re-derive the rule from `page_indices`).
+
 So **k is inside the base**, **prompt-mode is the suffix**, retriever arm is in the
-base. `provenance` (`oracle`/`retrieved`/`similarity`/`full`) is the coarser
-selector class. G3's "similarity (bm25, k=3)" runs as `retrieved_text_k3__<mode>`
+base. `provenance` (`oracle`/`retrieved`/`similarity`/`full`/`constructed`) is the
+coarser selector class. G3's "similarity (bm25, k=3)" runs as `retrieved_text_k3__<mode>`
 with `provenance=retrieved` (the `similarity` label in Part B §8 / `config.BASELINE`
 is descriptive; the emitted base is `retrieved_text_k3`) — flag when citing.
 

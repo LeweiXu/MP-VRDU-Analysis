@@ -35,6 +35,22 @@ def filter_by_pool(corpus: Sequence[Any], pool: str) -> list[Any]:
     raise ValueError(f"pool must be 'all', 'answerable', or 'unanswerable', got {pool!r}")
 
 
+def filter_by_hop(corpus: Sequence[Any], hop: str) -> list[Any]:
+    """Keep questions by gold-evidence-page count: `single`, `multi`, or `any`.
+
+    `hop == "none"` questions (no gold pages) are excluded by both `single` and
+    `multi`: gold-removal page rules are undefined without a gold set. Required
+    by page_set rules that remove or isolate a gold page, where a one-gold
+    question makes top and bottom coincide.
+    """
+
+    if hop in ("any", None, ""):
+        return list(corpus)
+    if hop not in ("single", "multi"):
+        raise ValueError(f"hop must be 'any', 'single', or 'multi', got {hop!r}")
+    return [q for q in corpus if q.hop == hop]
+
+
 def auto_scan_labels(doc_ids, data_dir, csv_path) -> dict[str, str]:
     """Map each doc_id to a PyMuPDF-detected `digital`/`scanned` label, cached to CSV.
 

@@ -7,11 +7,13 @@ The retrieval benchmark and classifier are optional side artifacts.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 
 from config import DEFAULT_PROMPT_MODE, ExperimentConfig
 from experiments.corpus.resolve import (
+    filter_by_hop,
     filter_by_pool,
     filter_by_scan,
     resolve_corpus,
@@ -23,8 +25,10 @@ from experiments.engine.side_artifacts import (
     write_retrieval_eval,
 )
 from experiments.tasks.base import Cell, GenerationTask, Retrievers
-from pipeline.conditioner import JointTopK, OracleConditioner, RetrievedTopK
+from pipeline.conditioner import JointTopK, OracleConditioner, PageSetConditioner, RetrievedTopK
 from schema import Question
+
+log = logging.getLogger("mpvrdu.experiments")
 
 
 def _cond_name(base: str, prompt_mode: str) -> str:
@@ -55,13 +59,19 @@ class Task(GenerationTask):
             qs = filter_by_scan(qs, config.scan_filter, data_dir=config.paths.data_dir,
                                 annotations_dir=config.paths.root / "annotations")
         pool = filter_by_pool(qs, config.pool)
+        # Hop filter (single/multi gold-evidence pages) after the pool, so a
+        # page_set run's gold rules always see the gold count they need.
+        pool = filter_by_hop(pool, getattr(config, "hop_filter", "any"))
         # Sampling (full / per_doc_type / per_bin / limit / ids) runs last, over the
-        # scan- and pool-filtered subset.
+        # scan-, pool-, and hop-filtered subset.
         return resolve_corpus({"sampling": config.sampling}, pool)
 
     def generation_cells(self, config, questions, *, retrievers: Retrievers) -> list[Cell]:
         reps = tuple(config.representations)
         prompts = tuple(config.prompt_modes) or (DEFAULT_PROMPT_MODE,)
+
+        if getattr(config, "page_set", None):
+            return self._page_set_cells(config, questions, retrievers, reps, prompts)
 
         if tuple(config.retrieval_representation) == ("oracle",):
             return [
@@ -87,6 +97,52 @@ class Task(GenerationTask):
                             cells.append(Cell(q, JointTopK(
                                 retrievers.text, retrievers.vision, k,
                                 name=_cond_name(f"retrieved_joint_k{k}", pm)), rep, prompt_mode=pm))
+        return cells
+
+    def _page_set_cells(self, config, questions, retrievers: Retrievers, reps, prompts) -> list[Cell]:
+        """Cells for a declared page_set: rules = ranking_sources x distractor counts.
+
+        Count-decidable degenerate (rule, question) pairs are excluded here by
+        documented policy and logged; ranking-dependent problems surface at
+        condition time as error status rows (`PageSetRuleError`).
+        """
+
+        from collections import Counter
+
+        from pipeline.page_rules import PageSetRule, encode_base, enumeration_skip_reason
+
+        block = config.page_set
+        rules = [
+            PageSetRule(
+                ranking_source=str(ranker),
+                gold_mode=str(block["gold"]["mode"]),
+                gold_count=int(block["gold"]["count"]),
+                distractor_count=int(d),
+                on_insufficient_gold=str(block["on_insufficient_gold"]),
+                on_insufficient_distractors=str(block["on_insufficient_distractors"]),
+                on_no_gold=str(block["on_no_gold"]),
+            )
+            for ranker in block["ranking_source"]
+            for d in block["distractor"]["count"]
+        ]
+        skipped: Counter[str] = Counter()
+        cells: list[Cell] = []
+        for q in questions:
+            for rule in rules:
+                reason = enumeration_skip_reason(rule, q)
+                if reason:
+                    skipped[reason] += 1
+                    continue
+                ranker = retrievers.rankers[rule.ranking_source]
+                base = encode_base(rule)
+                for rep in reps:
+                    for pm in prompts:
+                        cells.append(Cell(
+                            q, PageSetConditioner(ranker, rule, name=_cond_name(base, pm)),
+                            rep, prompt_mode=pm,
+                        ))
+        if skipped:
+            log.info("page_set %s: excluded by policy: %s", self.name, dict(skipped))
         return cells
 
     def run_retrieval_benchmark(self, config, questions, side_dir: Path, *, limit: int | None = None) -> None:

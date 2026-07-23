@@ -29,6 +29,7 @@ ALLOWED_KEYS = {
     "inference_text_retriever",
     "inference_vision_retriever",
     "inference_joint",
+    "page_set",
     "reasoner_spec",
     "quantization",
     "visual_resolution",
@@ -68,6 +69,7 @@ class Spec:
     inference_text_retriever: str | None = None
     inference_vision_retriever: str | None = None
     inference_joint: bool = False
+    page_set: Mapping[str, Any] | None = None
     reasoner_specs: tuple[str, ...] = ()
     visual_resolutions: tuple[str, ...] = ()
     reasoner_representations: tuple[str, ...] = ("T", "TL", "TLV", "V")
@@ -130,6 +132,71 @@ def _parse_decode_budget(value: Any, *, run_tag: str) -> Mapping[str, int] | Non
     return budget
 
 
+_CORPUS_KEYS = {"scan", "pool", "sampling", "hop"}
+_PAGE_SET_KEYS = {"ranking_source", "gold", "distractor", "on_insufficient_gold",
+                  "on_insufficient_distractors", "on_no_gold"}
+
+
+def _parse_page_set(value: Any, *, run_tag: str, corpus: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Validate a `page_set` block into its normalized mapping (or None).
+
+    Every (ranking_source, distractor count) combination is materialised as a
+    `PageSetRule` here so its vocabulary/consistency checks run at parse time,
+    not at cell time. Gold rules that remove or isolate a page require
+    `corpus.hop: multi` (at one gold page, top and bottom coincide).
+    """
+
+    if value is None or (isinstance(value, str) and value.strip().lower() in ("", "none")):
+        return None
+    if not isinstance(value, Mapping):
+        raise SpecError(f"{run_tag}: page_set must be a mapping or 'none', got {type(value).__name__}")
+    unknown = set(value) - _PAGE_SET_KEYS
+    if unknown:
+        raise SpecError(f"{run_tag}: unknown page_set keys: {sorted(unknown)}")
+
+    from pipeline.page_rules import PageSetRule
+
+    rankers = [str(r) for r in _as_list(value.get("ranking_source"))]
+    if not rankers:
+        raise SpecError(f"{run_tag}: page_set must name at least one ranking_source")
+    gold = value.get("gold") or {"mode": "all"}
+    if not isinstance(gold, Mapping) or set(gold) - {"mode", "count"}:
+        raise SpecError(f"{run_tag}: page_set.gold must be a mapping with mode/count, got {gold!r}")
+    gold_mode = str(gold.get("mode", "all"))
+    gold_count = int(gold.get("count", 0)) if gold_mode != "all" else 0
+    distractor = value.get("distractor") or {"count": 0}
+    if not isinstance(distractor, Mapping) or set(distractor) - {"count"}:
+        raise SpecError(f"{run_tag}: page_set.distractor must be a mapping with count, got {distractor!r}")
+    d_counts = [int(d) for d in _as_list(distractor.get("count"))] or [0]
+
+    normalized = {
+        "ranking_source": tuple(rankers),
+        "gold": {"mode": gold_mode, "count": gold_count},
+        "distractor": {"count": tuple(d_counts)},
+        "on_insufficient_gold": str(value.get("on_insufficient_gold", "exclude")),
+        "on_insufficient_distractors": str(value.get("on_insufficient_distractors", "pad_available")),
+        "on_no_gold": str(value.get("on_no_gold", "exclude")),
+    }
+    try:
+        for ranker in rankers:
+            for d in d_counts:
+                PageSetRule(
+                    ranking_source=ranker, gold_mode=gold_mode, gold_count=gold_count,
+                    distractor_count=d,
+                    on_insufficient_gold=normalized["on_insufficient_gold"],
+                    on_insufficient_distractors=normalized["on_insufficient_distractors"],
+                    on_no_gold=normalized["on_no_gold"],
+                )
+    except ValueError as exc:
+        raise SpecError(f"{run_tag}: invalid page_set: {exc}") from None
+    if gold_mode != "all" and str(corpus.get("hop", "any")) != "multi":
+        raise SpecError(
+            f"{run_tag}: page_set gold mode {gold_mode!r} requires corpus.hop: multi "
+            f"(at one gold page, top and bottom coincide)"
+        )
+    return normalized
+
+
 def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
     """Expand one flat run mapping into its Spec(s) (dataset x parser cross-product)."""
 
@@ -167,10 +234,12 @@ def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
     inf_text = _clean_none(raw.get("inference_text_retriever"))
     inf_vision = _clean_none(raw.get("inference_vision_retriever"))
 
-    # Enforcement: a run with a retrieval-accuracy benchmark (non-empty method
-    # lists) must include the fixed inference arms so their rankings are the ones
-    # the reasoner reuses, and any inference pick must be a benchmarked method.
-    if text_retrievers or vision_retrievers:
+    # Enforcement: a run whose retrieval benchmark also FEEDS the reasoner
+    # (inference arms set) must include the fixed inference arms so their
+    # rankings are the ones the reasoner reuses, and any inference pick must be
+    # a benchmarked method. A benchmark that only supplies page_set rankings
+    # (inference arms none) may list any methods.
+    if (text_retrievers or vision_retrievers) and (inf_text or inf_vision):
         if "bge-m3" not in text_retrievers:
             raise SpecError(f"{run_tag}: a retrieval benchmark must list bge-m3 in text_retrievers")
         if "colqwen2.5" not in vision_retrievers:
@@ -181,6 +250,10 @@ def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
             raise SpecError(f"{run_tag}: inference vision_retriever {inf_vision!r} not in {vision_retrievers}")
 
     corpus = dict(raw.get("corpus") or {"pool": "answerable", "sampling": "full"})
+    unknown_corpus = set(corpus) - _CORPUS_KEYS
+    if unknown_corpus:
+        raise SpecError(f"{run_tag}: unknown corpus keys: {sorted(unknown_corpus)}")
+    page_set = _parse_page_set(raw.get("page_set"), run_tag=str(run_tag), corpus=corpus)
     parser_dpi = int(raw.get("parser_dpi", 200))
     prompt_modes = tuple(raw.get("prompt_modes") or ("none",))
     decode_budget = _parse_decode_budget(raw.get("decode_budget"), run_tag=str(run_tag))
@@ -211,6 +284,7 @@ def _expand_run(raw: Mapping[str, Any]) -> list[Spec]:
             inference_text_retriever=inf_text,
             inference_vision_retriever=inf_vision,
             inference_joint=bool(raw.get("inference_joint", False)),
+            page_set=page_set,
             reasoner_specs=reasoner_specs,
             visual_resolutions=visual_resolutions,
             reasoner_representations=reps,
@@ -304,6 +378,8 @@ def config_from_spec(spec: Spec, *, smoke: bool = False):
         smoke=smoke,
         pool=str(spec.corpus.get("pool", "answerable")),
         scan_filter=str(spec.corpus.get("scan", "any")),
+        hop_filter=str(spec.corpus.get("hop", "any")),
+        page_set=spec.page_set,
         sampling=spec.corpus.get("sampling", "full"),
         reasoner_spec=reasoner_spec,
         reasoner_specs=spec.reasoner_specs,

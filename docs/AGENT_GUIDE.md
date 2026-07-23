@@ -43,7 +43,8 @@ agent-facing view: which file owns which paper-facing responsibility.
 | `models/{qwen3vl,internvl}.py` | Reasoner backends behind one ABC. |
 | `models/classifier.py` | First-pages modality-bin classifier (routing side tool). |
 | `models/payload.py` | Backend-neutral `ModelInput` + chat / local adapters. |
-| `pipeline/conditioner.py` | Stage A: page selection — `oracle` / `retrieved-topk` / `similarity` / `full`. |
+| `pipeline/conditioner.py` | Stage A: page selection — `oracle` / `retrieved-topk` / `similarity` / `full` / `page_set` rule. |
+| `pipeline/page_rules.py` | The page_set condition grammar: `PageSetRule`, its codec, and the enumeration-time exclusion policy. |
 | `pipeline/representation.py` | Stage B: the `T`/`TL`/`TLV`/`V` composer; the modality boundary (only `TLV`/`V` attach images). |
 | `pipeline/reasoner.py` | Stage C: `Reasoner` ABC (the swap point) + per-cell prompt instruction. |
 | `pipeline/judge.py` | Stage D: `StubJudge`, `GeminiJudge`, `GPT4oMiniJudge`. |
@@ -109,7 +110,12 @@ InternVL / GPT / Gemini backend is a new registry entry, no pipeline change.
 Rules that make the two-machine model and the sweeps work:
 
 - **`k` and the prompt mode are encoded in the conditioner name**
-  (`retrieved_text_k3__none`, `oracle__none`), not separate key fields.
+  (`retrieved_text_k3__none`, `oracle__none`), not separate key fields. A
+  declared page_set rule rides the same way under the `pageset:` grammar
+  (`pageset:r=<ranker>:g=<mode>-<count>:d=<count>[:p=<policies>]__<mode>`,
+  `pipeline/page_rules.py`): the rule IS the condition, so the same pages under
+  two rankers are deliberately two cells (a shared row would be attributable to
+  neither ranker).
 - **`model_spec` and `visual_resolution` are in both keys**, so scaling / family /
   quantization / resolution sweeps produce distinct, mergeable rows in a single run.
 - **`dpi` is *not* in the cell key** — it keys the render / parser disk caches

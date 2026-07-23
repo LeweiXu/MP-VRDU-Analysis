@@ -1,9 +1,11 @@
-"""Selects the pages fed to a cell: oracle, retrieved, or similarity."""
+"""Selects the pages fed to a cell: oracle, retrieved, similarity, or a
+declared page_set rule over gold and non-gold pages."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from pipeline.page_rules import PageSetRule, PageSetRuleError
 from retrievers import Retriever
 from schema import PageSet, Question
 
@@ -96,3 +98,80 @@ class FullDoc(InputConditioner):
 
     def condition(self, question: Question, page_count: int) -> PageSet:
         return PageSet.full(page_count)
+
+
+class PageSetConditioner(InputConditioner):
+    """Build the page set from a declared rule over gold and non-gold pages.
+
+    The ranker's full k-independent ranking orders both pools; the rule keeps or
+    drops gold pages by rank and adds top-ranked non-gold distractors. Pages are
+    emitted in document order regardless of rank (PageSet sorts), so ordering
+    never confounds a selection manipulation. Count-decidable degenerate cases
+    are excluded at cell enumeration (`page_rules.enumeration_skip_reason`);
+    anything only visible here (short non-gold pool under an exclude policy, an
+    empty final set) raises `PageSetRuleError` so the cell records an error
+    status row rather than a silently wrong page set.
+    """
+
+    def __init__(self, ranker: Retriever, rule: PageSetRule, name: str) -> None:
+        self.ranker = ranker
+        self.rule = rule
+        self.name = name
+
+    def condition(self, question: Question, page_count: int) -> PageSet:
+        rule = self.rule
+        ranking = list(self.ranker.rank(question, page_count))
+        gold_set = {p for p in question.evidence_pages if 0 <= p < page_count}
+        ranked_gold = [p for p in ranking if p in gold_set]
+        ranked_nongold = [p for p in ranking if p not in gold_set]
+
+        note_bits = [f"rank={rule.ranking_source}"]
+        if not gold_set:
+            if rule.on_no_gold != "distractors_only":
+                raise PageSetRuleError(f"{self.name}: no gold pages and on_no_gold={rule.on_no_gold}")
+            selected_gold: list[int] = []
+            note_bits.append("gold=none (distractors_only)")
+        else:
+            selected_gold, gold_note = self._select_gold(ranked_gold)
+            note_bits.append(gold_note)
+
+        distractors = ranked_nongold[: rule.distractor_count]
+        if len(distractors) < rule.distractor_count:
+            if rule.on_insufficient_distractors == "exclude":
+                raise PageSetRuleError(
+                    f"{self.name}: non-gold pool {len(ranked_nongold)} < distractor count {rule.distractor_count}"
+                )
+            note_bits.append(f"d={rule.distractor_count} d_actual={len(distractors)} (padded)")
+        else:
+            note_bits.append(f"d={rule.distractor_count}")
+
+        pages = tuple(selected_gold + distractors)
+        if not pages:
+            raise PageSetRuleError(f"{self.name}: rule produced an empty page set")
+        return PageSet(pages, "constructed", note=" ".join(note_bits))
+
+    def _select_gold(self, ranked_gold: list[int]) -> tuple[list[int], str]:
+        """Apply the gold mode/count to the rank-ordered gold pages."""
+
+        rule = self.rule
+        mode, count = rule.gold_mode, rule.gold_count
+        if mode == "all":
+            return list(ranked_gold), f"gold=all({len(ranked_gold)})"
+        satisfiable = len(ranked_gold) >= count if mode.startswith("keep_") else len(ranked_gold) > count
+        if not satisfiable:
+            # Enumeration excludes these under the default policy; reaching here
+            # means keep_all (feed everything, noted) or a ranking/corpus drift.
+            if rule.on_insufficient_gold == "keep_all":
+                return list(ranked_gold), f"gold={mode}-{count} unsatisfiable, kept all {len(ranked_gold)}"
+            raise PageSetRuleError(
+                f"{self.name}: gold pool {len(ranked_gold)} cannot satisfy {mode}-{count}"
+            )
+        if mode == "keep_top":
+            kept = ranked_gold[:count]
+        elif mode == "keep_bottom":
+            kept = ranked_gold[-count:]
+        elif mode == "drop_top":
+            kept = ranked_gold[count:]
+        else:  # drop_bottom
+            kept = ranked_gold[:-count]
+        return list(kept), f"gold={mode}-{count} fed={len(kept)}/{len(ranked_gold)}"

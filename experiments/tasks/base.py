@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from config import DEFAULT_PROMPT_MODE, ExperimentConfig
@@ -30,14 +30,17 @@ class Cell:
 
 @dataclass(frozen=True)
 class Retrievers:
-    """The two retrievers a generation pass may need (built lazily by the driver).
+    """The retrievers a generation pass may need (built lazily by the driver).
 
     The generate phase passes real retrievers; the judge phase passes guards that
     raise if called (every retrieved cell must be a prediction-cache hit).
+    `rankers` holds the page_set ranking sources by name (empty when the run
+    declares no page_set).
     """
 
     text: Retriever
     vision: Retriever
+    rankers: Mapping[str, Retriever] = field(default_factory=dict)
 
 
 class GenerationTask(ABC):

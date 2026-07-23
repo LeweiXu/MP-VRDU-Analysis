@@ -50,6 +50,19 @@ def split_condition(cond: str) -> tuple[str, str]:
     return (base, mode) if sep else (base, "")
 
 
+def pageset_rule(cond: str):
+    """The `PageSetRule` a condition encodes, or None for a non-pageset condition.
+
+    The selection tables group purely on the rule's recorded fields
+    (ranking_source, gold mode/count, distractor count), never re-deriving the
+    condition from `page_indices`.
+    """
+
+    from pipeline.page_rules import parse_base
+
+    return parse_base(split_condition(cond)[0])
+
+
 def base_condition(cond: str) -> str:
     """The base of a condition, dropping the `__<prompt_mode>` suffix."""
 

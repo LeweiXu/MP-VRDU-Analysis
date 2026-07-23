@@ -1,0 +1,131 @@
+# G5a - sufficiency (LOPO): withhold or isolate gold pages and measure how far
+# accuracy depends on the FULL gold set rather than one page. A steep fall means
+# the answer genuinely required combining the withheld pages: the direct
+# rebuttal to "multi-hop questions are just harder".
+#
+# Four conditions, a 2x2 over {drop one, keep one} x {best, worst}, one run
+# each. hop: multi is REQUIRED (at one gold page, best and worst are the same
+# page; the spec loader enforces it). Both ranking sources run per cell axis,
+# testing whether a visual and a lexical ranker even agree on which gold page
+# carries the answer. All four runs share task_name G5_selection: task_name is
+# a label, and one shared name lets one selection table load every tag.
+#
+# The distractor.count 0 rows double as Stage-8 anchors: at gold mode `all`
+# they would reproduce oracle; here each gold-removal condition's baseline is
+# the paired oracle accuracy on the same hop:multi pool.
+runs:
+  - task_name: G5_selection
+    run_tag: g5a-drop-best
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25]
+    vision_retrievers: [colqwen3]
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: drop_top, count: 1}
+      distractor: {count: 0}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G5_selection
+    run_tag: g5a-drop-worst
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25]
+    vision_retrievers: [colqwen3]
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: drop_bottom, count: 1}
+      distractor: {count: 0}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G5_selection
+    run_tag: g5a-keep-best
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25]
+    vision_retrievers: [colqwen3]
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: keep_top, count: 1}
+      distractor: {count: 0}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G5_selection
+    run_tag: g5a-keep-worst
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25]
+    vision_retrievers: [colqwen3]
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: keep_bottom, count: 1}
+      distractor: {count: 0}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none

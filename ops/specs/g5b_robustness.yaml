@@ -1,0 +1,96 @@
+# G5b - robustness (distractor, +k design): hold the kept gold fixed and add k
+# top-ranked non-gold pages on top. Gold count is a BLOCKING factor (one run
+# per kept-gold count); distractor count is the manipulated cell axis. Read
+# DOWN a gold block for the dilution slope at constant evidence; k=0 is that
+# block's clean baseline. Total pages rise with k, so comparisons are valid
+# WITHIN a gold block, not across blocks (evidence and length both differ).
+#
+# The k=0 rows are the Stage-8 within-table anchors: each must reproduce its
+# gold block's clean counterpart (same rule minus distractors).
+runs:
+  - task_name: G5_selection
+    run_tag: g5b-gold1
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25]
+    vision_retrievers: [colqwen3]
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: keep_top, count: 1}
+      distractor: {count: [0, 1, 2, 3]}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G5_selection
+    run_tag: g5b-gold2
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25]
+    vision_retrievers: [colqwen3]
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: keep_top, count: 2}
+      distractor: {count: [0, 1, 2, 3]}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G5_selection
+    run_tag: g5b-gold3
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: full, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: [bm25]
+    vision_retrievers: [colqwen3]
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: keep_top, count: 3}
+      distractor: {count: [0, 1, 2, 3]}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TL, TLV, V]
+    prompt_modes: [none]
+    classifier: none

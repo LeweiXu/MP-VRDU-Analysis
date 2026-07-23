@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 
 def project_root(start: Path | None = None) -> Path:
@@ -180,6 +181,19 @@ BASELINE: dict[str, dict[str, str]] = {
         "page_selection": "oracle",
         "prompt_mode": "none",
     },
+    "G5_selection": {
+        "dataset": "mmlongbench",
+        "scan": "any",
+        "sampling": "full (hop: multi)",
+        "parser": "paddleocrvl",
+        "reasoner_spec": "qwen3vl-8b-local",
+        "quantization": "bf16",
+        "visual_resolution": "med",
+        "representation": "T/TL/TLV/V",
+        "pool": "answerable",
+        "page_selection": "page_set rule (colqwen3 / bm25 ranking)",
+        "prompt_mode": "none",
+    },
 }
 
 
@@ -321,6 +335,15 @@ class ExperimentConfig:
     # The question pool this run draws from (spec `corpus.pool`): "answerable",
     # "unanswerable", or "all" (both).
     pool: str = "answerable"
+    # Gold-evidence-page-count filter (spec `corpus.hop`): "any", "single", or
+    # "multi". Applied after the pool; "multi" is required by page_set gold
+    # rules that remove or isolate a gold page.
+    hop_filter: str = "any"
+    # Declarative page-set construction (spec `page_set`): a validated mapping
+    # with ranking_source (str or list), gold {mode, count}, distractor {count:
+    # int or list}, and the three degenerate-case policies. None = the classic
+    # oracle / retrieved-topk selection. See pipeline/page_rules.py.
+    page_set: Mapping[str, Any] | None = None
     # The corpus `sampling` block (spec `corpus.sampling`), applied after scan + pool:
     # "full", {per_doc_type: N, seed}, {per_bin: N, seed}, {limit: N}, or {ids: [...]}.
     sampling: object = "full"

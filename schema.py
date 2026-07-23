@@ -12,7 +12,9 @@ from typing import Any, Literal, Mapping, Union
 
 
 Hop = Literal["none", "single", "multi"]
-PageSetProvenance = Literal["oracle", "retrieved", "full", "similarity"]
+# "constructed" = a declarative page_set rule over gold/non-gold pages (the rule
+# itself rides in the condition base under the pageset: grammar).
+PageSetProvenance = Literal["oracle", "retrieved", "full", "similarity", "constructed"]
 Modality = str
 
 # The three outcomes a cell can record. Every cell writes exactly one row with
