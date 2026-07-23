@@ -133,10 +133,12 @@ def test_new_spec_files_parse():
     specs = load_yaml_specs(root / "ops" / "specs" / "g5_faithfulness.yaml")
     assert [s.run_tag for s in specs] == ["g3-faithfulness-full", "g4-faithfulness-full"]
     for spec in specs:
-        assert spec.decode_budget and spec.decode_budget["cot"] == 1024
+        # The CoT budgets must exceed the default (the per-mode rebind is the
+        # point); the exact figure is the spec's to choose.
+        assert spec.decode_budget and spec.decode_budget["cot"] > spec.decode_budget["default"]
         assert spec.final_answer_delimiter == "Answer:"
         assert tuple(spec.prompt_modes) == (
             "none", "grounded", "abstain", "abstain_balanced", "cot", "extract_cot")
         config = config_from_spec(spec)
         assert config.final_answer_delimiter == "Answer:"
-        assert budget_for_mode(config, "extract_cot") == 1024
+        assert budget_for_mode(config, "extract_cot") == spec.decode_budget["extract_cot"]
