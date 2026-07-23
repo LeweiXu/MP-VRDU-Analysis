@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from config import ROOT  # noqa: E402
 from models.internvl import MODEL_IDS as INTERNVL_IDS  # noqa: E402
+from models.llama_vision import MODEL_IDS as LLAMA_IDS  # noqa: E402
 from models.qwen3vl import MODEL_IDS as QWEN_IDS  # noqa: E402
 
 OUT = ROOT / "annotations" / "model_weights.csv"
@@ -80,7 +81,7 @@ def _sizes(repo_id: str) -> tuple[int, int, int, int]:
 
 
 def main() -> int:
-    specs = {**QWEN_IDS, **INTERNVL_IDS}
+    specs = {**QWEN_IDS, **INTERNVL_IDS, **LLAMA_IDS}
     rows: list[dict[str, object]] = []
     for spec, repo_id in sorted(specs.items()):
         try:

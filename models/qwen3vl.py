@@ -26,6 +26,7 @@ MODEL_IDS: dict[str, str] = {
     "qwen3vl-4b-local": "Qwen/Qwen3-VL-4B-Instruct",
     "qwen3vl-8b-local": "Qwen/Qwen3-VL-8B-Instruct",
     "qwen3vl-32b-local": "Qwen/Qwen3-VL-32B-Instruct",
+    "qwen3vl-8b-thinking-local": "Qwen/Qwen3-VL-8B-Thinking",
 }
 
 QUANT_SUFFIXES = ("-4bit", "-8bit")
@@ -228,6 +229,10 @@ class _FirstTokenTimer:
 class Qwen3VLBackend(Reasoner):
     """Qwen3-VL local backend using Hugging Face `transformers` generation."""
 
+    #: Recorded per cell; a subclass with its own prompt assembly overrides both
+    #: `render` and this id so its cells are distinguishable in metadata.
+    prompt_template_version: str = PROMPT_TEMPLATE_VERSION
+
     def __init__(
         self,
         spec: str,
@@ -365,9 +370,14 @@ class Qwen3VLBackend(Reasoner):
             return nullcontext()
         return sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION, SDPBackend.FLASH_ATTENTION, SDPBackend.MATH])
 
+    def render(self, question: Question, model_input: ModelInput) -> RenderedPrompt:
+        """Assemble this backend's prompt; the per-model override point."""
+
+        return render_prompt(question, model_input, self.prompt_instruction)
+
     def answer(self, question: Question, model_input: ModelInput) -> Prediction:
         processor, model = self._load_components()
-        rendered = render_prompt(question, model_input, self.prompt_instruction)
+        rendered = self.render(question, model_input)
         messages = messages_from_rendered_prompt(rendered, self.max_pixels)
 
         chat_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -427,7 +437,7 @@ class Qwen3VLBackend(Reasoner):
             metadata={
                 "backend": "hf-transformers",
                 "model_id": self.model_id,
-                "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+                "prompt_template_version": self.prompt_template_version,
                 "max_new_tokens": self.max_new_tokens,
                 "output_truncated": output_truncated,
                 "max_pixels": self.max_pixels,

@@ -195,6 +195,10 @@ def _image_tensors(
 class InternVLBackend(Reasoner):
     """InternVL local backend using the model's `chat()` helper."""
 
+    #: Recorded per cell; a subclass with its own prompt assembly overrides both
+    #: `render` and this id so its cells are distinguishable in metadata.
+    prompt_template_version: str = PROMPT_TEMPLATE_VERSION
+
     def __init__(
         self,
         spec: str,
@@ -253,9 +257,14 @@ class InternVLBackend(Reasoner):
         self._model = None
         self._tokenizer = None
 
+    def render(self, question: Question, model_input: ModelInput):
+        """Assemble this backend's prompt; the per-model override point."""
+
+        return render_prompt(question, model_input, self.prompt_instruction)
+
     def answer(self, question: Question, model_input: ModelInput) -> Prediction:
         tokenizer, model = self._load_components()
-        prompt, images = render_prompt(question, model_input, self.prompt_instruction)
+        prompt, images = self.render(question, model_input)
         device = getattr(model, "device", None)
         max_tiles = tiles_for_budget(self.max_pixels, image_size=self.image_size)
         pixel_values, tile_counts = _image_tensors(
@@ -306,7 +315,7 @@ class InternVLBackend(Reasoner):
             metadata={
                 "backend": "hf-transformers-internvl-chat",
                 "model_id": self.model_id,
-                "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+                "prompt_template_version": self.prompt_template_version,
                 "max_new_tokens": self.max_new_tokens,
                 # No output_truncated here: chat() returns text only, so
                 # output_tokens is a whitespace estimate and comparing it to the

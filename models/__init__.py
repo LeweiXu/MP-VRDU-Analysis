@@ -88,6 +88,17 @@ def get_reasoner(
         if parsed.quantization is not None:
             kwargs["quantization"] = parsed.quantization
         return Qwen3VLBackend(parsed.name, **kwargs)
+    if parsed.family == "qwen3vl" and parsed.size == "8b-thinking" and parsed.backend == "local":
+        from models.qwen3vl_thinking import Qwen3VLThinkingBackend
+
+        kwargs = {}
+        if max_new_tokens is not None:
+            kwargs["max_new_tokens"] = max_new_tokens
+        if max_pixels is not None:
+            kwargs["max_pixels"] = max_pixels
+        if parsed.quantization is not None:
+            kwargs["quantization"] = parsed.quantization
+        return Qwen3VLThinkingBackend(parsed.name, **kwargs)
     if parsed.family == "internvl3" and parsed.size == "8b" and parsed.backend == "local":
         from models.internvl import InternVLBackend
 
@@ -97,6 +108,15 @@ def get_reasoner(
         if max_pixels is not None:
             kwargs["max_pixels"] = max_pixels
         return InternVLBackend(parsed.name, **kwargs)
-    from pipeline.reasoner import StubReasoner
+    if parsed.family == "llama3.2" and parsed.size == "11b-vision" and parsed.backend == "local":
+        from models.llama_vision import LlamaVisionBackend
 
-    return StubReasoner(spec=parsed.name)
+        kwargs = {}
+        if max_new_tokens is not None:
+            kwargs["max_new_tokens"] = max_new_tokens
+        if max_pixels is not None:
+            kwargs["max_pixels"] = max_pixels
+        return LlamaVisionBackend(parsed.name, **kwargs)
+    # No silent StubReasoner fall-through: a typo'd spec used to produce stub
+    # answers at scale. Only the explicit "stub" spec builds a stub.
+    raise ValueError(f"no reasoner registered for spec {spec!r}; use 'stub' for the stub backend")

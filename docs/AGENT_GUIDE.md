@@ -40,7 +40,7 @@ agent-facing view: which file owns which paper-facing responsibility.
 | `tools/visual.py` | Page-image parts + vision-token estimation from the resolution preset. |
 | `retrievers/{__init__,text,vision,joint}.py` | `Retriever` ABC + ranking/memoization; the text and vision cost rungs; the free joint union. |
 | `models/__init__.py` | `ModelSpec` parse + `get_reasoner(spec)` registry (the model-family swap point). |
-| `models/{qwen3vl,internvl}.py` | Reasoner backends behind one ABC. |
+| `models/{qwen3vl,qwen3vl_thinking,internvl,llama_vision}.py` | Reasoner backends behind one ABC (Qwen in-sequence, Thinking final-line variant, InternVL tiling, Mllama cross-attention). |
 | `models/classifier.py` | First-pages modality-bin classifier (routing side tool). |
 | `models/payload.py` | Backend-neutral `ModelInput` + chat / local adapters. |
 | `pipeline/conditioner.py` | Stage A: page selection — `oracle` / `retrieved-topk` / `similarity` / `full` / `page_set` rule. |
@@ -229,9 +229,16 @@ The frozen contracts are above; this is the "how each layer behaves" reference.
 ## Models (reasoner backends + prompt)
 
 - **Registry.** `qwen3vl-{2b,4b,8b,32b}-local` → the shared Qwen3-VL HF backend
-  (`Qwen/Qwen3-VL-*-Instruct`); `internvl3-8b-local` → the InternVL backend
-  (`OpenGVLab/InternVL3-8B`, same `Reasoner.answer` contract). A trailing
-  `-4bit`/`-8bit` selects a bitsandbytes-quantized load. Other families stay stubbed.
+  (`Qwen/Qwen3-VL-*-Instruct`); `qwen3vl-8b-thinking-local` → the Thinking
+  subclass (`models/qwen3vl_thinking.py`, same backend plus a final-line output
+  contract appended under every prompt mode); `internvl3-8b-local` → the InternVL
+  backend (`OpenGVLab/InternVL3-8B`); `llama3.2-11b-vision-local` → the
+  cross-attention Mllama backend (`models/llama_vision.py`, gated repo). All share
+  the `Reasoner.answer` contract. A trailing `-4bit`/`-8bit` selects a
+  bitsandbytes-quantized load. **An unregistered spec raises** (no silent stub
+  fall-through); only the literal `stub` spec builds a stub. Prompt assembly is
+  per-backend via the `render` instance hook (defaults to the module
+  `render_prompt`), with `prompt_template_version` recorded per cell.
 - **Frozen prompt.** One fixed template across the four rungs (Qwen `m3-qwen3vl-v1`;
   InternVL `f4-internvl3-v1`). `ModelInput.to_local_prompt()` supplies `{context}`
   and each `<image>` placeholder becomes an image block in page order. Decoding is

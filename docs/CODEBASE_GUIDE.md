@@ -329,6 +329,8 @@ of ~June–July 2026".
 | `qwen3vl-8b-local` | `Qwen/Qwen3-VL-8B-Instruct` | `0c351dd01ed87e9c1b53cbc748cba10e6187ff3b` |
 | `qwen3vl-32b-local` | `Qwen/Qwen3-VL-32B-Instruct` | (Kaya, default `main`) |
 | `internvl3-8b-local` | `OpenGVLab/InternVL3-8B` | (Kaya, default `main`) |
+| `qwen3vl-8b-thinking-local` | `Qwen/Qwen3-VL-8B-Thinking` | registered, **not yet run** (final-line contract + judge-time extraction) |
+| `llama3.2-11b-vision-local` | `meta-llama/Llama-3.2-11B-Vision-Instruct` | registered, **not yet run** (cross-attention family; gated repo) |
 
 - **Baseline reasoner = `Qwen/Qwen3-VL-8B-Instruct`** (the `-Instruct` variant, not
   `-Thinking`), loaded via `Qwen3VLForConditionalGeneration` in bf16 (`torch_dtype="auto"`).
