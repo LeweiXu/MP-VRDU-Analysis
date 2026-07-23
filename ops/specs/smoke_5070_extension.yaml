@@ -1,0 +1,121 @@
+# Local 5070 smoke for the pipeline-extension additions (Phases A-D), 2B bf16.
+# Isolated smoke-* run tags (never the real full tags); rungs T and V only so no
+# parser env is needed; low resolution; tiny question limits. Judge with the
+# stub judge (offline). What each run exercises:
+#   smoke-g4-ext: six prompt modes, per-mode decode budget rebinding, the
+#     run_settings sidecar, output_truncated metadata, judge-time delimiter
+#     extraction on the answerable pool.
+#   smoke-g5-ext + smoke-g5-drop: page_set rules end to end (bm25 ranking memo,
+#     keep_top/drop_top, distractors, document order, condition grammar in the
+#     cache key, enumeration exclusions, hop filter).
+#   smoke-g3-ext: the retrieved path + abstention detection + delimiter on the
+#     unanswerable pool.
+runs:
+  - task_name: G4_faithfulness_answerable
+    run_tag: smoke-g4-ext
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: {limit: 4}}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-2b-local]
+    quantization: [bf16]
+    visual_resolution: [low]
+    reasoner_representations: [T, V]
+    prompt_modes: [none, grounded, abstain, abstain_balanced, cot, extract_cot]
+    # Small but differentiated: the cot modes get 3x the default, so the
+    # per-cell rebind is observable in row metadata; the tight default should
+    # also produce some output_truncated=true rows.
+    decode_budget: {default: 64, cot: 192, extract_cot: 192}
+    final_answer_delimiter: "Answer:"
+    classifier: none
+
+  - task_name: G5_selection
+    run_tag: smoke-g5-ext
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: {limit: 4}, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [bm25]
+      gold: {mode: keep_top, count: 1}
+      distractor: {count: [0, 2]}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-2b-local]
+    quantization: [bf16]
+    visual_resolution: [low]
+    reasoner_representations: [T, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G5_selection
+    run_tag: smoke-g5-drop
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: {limit: 4}, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [bm25]
+      gold: {mode: drop_top, count: 1}
+      distractor: {count: 0}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-2b-local]
+    quantization: [bf16]
+    visual_resolution: [low]
+    reasoner_representations: [T, V]
+    prompt_modes: [none]
+    classifier: none
+
+  - task_name: G3_hallucination
+    run_tag: smoke-g3-ext
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: unanswerable, sampling: {limit: 4}}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: [3]
+    joint_k_values: []
+    inference_text_retriever: bm25
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-2b-local]
+    quantization: [bf16]
+    visual_resolution: [low]
+    reasoner_representations: [T, V]
+    prompt_modes: [none, abstain]
+    decode_budget: {default: 64}
+    final_answer_delimiter: "Answer:"
+    classifier: none
