@@ -186,5 +186,9 @@ def test_g5_specs_parse_and_enumerate():
     assert [s.run_tag for s in robustness] == ["g5b-gold1", "g5b-gold2", "g5b-gold3"]
     config_b = config_from_spec(robustness[0])
     cells_b = Task("G5_selection").generation_cells(config_b, [questions[0]], retrievers=retrievers)
-    # 2 rankers x 4 distractor counts x 4 rungs = 32 cells for one question.
-    assert len(cells_b) == 32
+    # rankers x distractor counts x rungs for one multi-gold question, derived
+    # from the spec so a scope change there does not break this test.
+    expected = (len(config_b.page_set["ranking_source"])
+                * len(config_b.page_set["distractor"]["count"])
+                * len(config_b.representations))
+    assert len(cells_b) == expected
