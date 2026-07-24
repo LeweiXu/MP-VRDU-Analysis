@@ -1,0 +1,172 @@
+# H100 pre-flight smoke. One tiny run per mechanism the five planned specs use,
+# on 2 questions each (1 for the 32B), isolated smoke-* run_tags so it never
+# touches a real cache. It is the same code paths as the full runs, just capped,
+# so if every check_run is clean the multi-day runs won't fall over hours in.
+#
+# Coverage: parser warming (TL/TLV), page_set gold-removal + all-gold+distractor
+# grammar, both rankers (ColQwen3 vision + bm25 text), hop:multi and exact-count
+# filters, the six prompt modes with per-mode decode budgets + the run_settings
+# sidecar + the Answer: delimiter, both pools (answerable oracle + unanswerable
+# retrieved), the TLVi interleaved rung, and the 32B load under bitsandbytes
+# bf16 + 4-bit. Uses only the prestaged models (8B, 32B); no classifier, no
+# retrieval benchmark stage (text_retrievers empty, so page_set rankers still
+# build from ranking_source but stage 1 is skipped).
+runs:
+  # -- page_set sufficiency: gold-removal grammar, both rankers, hop:multi ------
+  - task_name: G5_selection
+    run_tag: smoke-selection
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: {limit: 2}, hop: multi}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [colqwen3, bm25]
+      gold: {mode: drop_top, count: 1}
+      distractor: {count: 0}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [T, TLV, V]
+    prompt_modes: [none]
+    classifier: none
+
+  # -- page_set robustness: all-gold + distractor, exact-count hop -------------
+  - task_name: G5_selection
+    run_tag: smoke-robustness
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: {limit: 2}, hop: 2}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T, V]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    page_set:
+      ranking_source: [bm25]
+      gold: {mode: all}
+      distractor: {count: [1]}
+      on_insufficient_gold: exclude
+      on_insufficient_distractors: pad_available
+      on_no_gold: exclude
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [TLV]
+    prompt_modes: [none]
+    classifier: none
+
+  # -- faithfulness, answerable pool: six modes, budgets, sidecar, delimiter ----
+  - task_name: G4_faithfulness_answerable
+    run_tag: smoke-faithfulness-answerable
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: {limit: 2}}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [V]
+    prompt_modes: [none, grounded, abstain, abstain_balanced, cot, extract_cot]
+    # Tiny budgets: the smoke only checks the per-mode rebind + the sidecar, not
+    # answer quality. Different from the real 256/2048 but a distinct run_tag, so
+    # no sidecar conflict.
+    decode_budget: {default: 32, cot: 96, extract_cot: 96}
+    final_answer_delimiter: "Answer:"
+    classifier: none
+
+  # -- faithfulness, unanswerable pool: retrieved-topk path + abstention -------
+  - task_name: G3_hallucination
+    run_tag: smoke-faithfulness-unanswerable
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: unanswerable, sampling: {limit: 2}}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [T]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: [3]
+    joint_k_values: []
+    inference_text_retriever: bm25
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [TLV]
+    prompt_modes: [none, abstain]
+    decode_budget: {default: 32}
+    final_answer_delimiter: "Answer:"
+    classifier: none
+
+  # -- interleaved: the TLVi composition path -----------------------------------
+  - task_name: G1_oracle_ladder
+    run_tag: smoke-interleaved
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: {limit: 2}}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-8b-local]
+    quantization: [bf16]
+    visual_resolution: [med]
+    reasoner_representations: [TLV, TLVi]
+    prompt_modes: [none]
+    classifier: none
+
+  # -- 32B load under bitsandbytes bf16 + 4-bit (the slow tail; de-risks run 5) -
+  - task_name: G1_oracle_ladder
+    run_tag: smoke-32b
+    dataset: [mmlongbench]
+    corpus: {scan: any, pool: answerable, sampling: {limit: 1}}
+    parser_dpi: 200
+    parser: [paddleocrvl]
+    retrieval_representation: [oracle]
+    text_retrievers: []
+    vision_retrievers: []
+    joints: []
+    k_values: []
+    joint_k_values: []
+    inference_text_retriever: none
+    inference_vision_retriever: none
+    inference_joint: false
+    reasoner_spec: [qwen3vl-32b-local]
+    quantization: [bf16, 4bit]
+    visual_resolution: [med]
+    reasoner_representations: [V]
+    prompt_modes: [none]
+    classifier: none

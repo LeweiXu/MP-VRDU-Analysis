@@ -34,17 +34,18 @@ the top.
 
 ## Step 3: smoke test
 
-A capped pass that exercises every path in minutes; the full run later reuses
-these cells as cache hits.
+`h100_smoke.yaml` runs one tiny capped case per mechanism the five specs use
+(parser, page_set rules, both rankers, the six prompt modes, both pools, TLVi,
+and the 32B under bf16 + 4-bit) on its own `smoke-*` run_tags, so it touches no
+real cache. ~35 cells; a few minutes plus the two 32B loads at the end.
 
 ```bash
-python -m ops.generate --spec ops/specs/g2_sufficiency.yaml --limit 4
-python -m ops.generate --spec ops/specs/g5_faithfulness.yaml --limit 4
-python -m ops.scripts.check_run --spec ops/specs/g2_sufficiency.yaml --no-expected
-python -m ops.scripts.check_run --spec ops/specs/g5_faithfulness.yaml --no-expected
+python -m ops.generate --spec ops/specs/h100_smoke.yaml
+python -m ops.scripts.check_run --spec ops/specs/h100_smoke.yaml
 ```
 
-No err cells in either check = good to go. Otherwise see "Debugging" below.
+Every task `OK` with no err = the envs, weights, parser, rankers, and the 4-bit
+path are all wired up. Otherwise see "Debugging" below.
 
 ## Step 4: run the generations, in priority order
 
@@ -55,6 +56,8 @@ python -m ops.generate --spec ops/specs/g5_faithfulness.yaml
 python -m ops.generate --spec ops/specs/g0_interleaved.yaml
 python -m ops.generate --spec ops/specs/g0_reasoner.yaml
 ```
+
+If multiple GPUs are available, the above generation tasks can be run in parallel (submit each job to a different GPU).
 
 g0_reasoner is the 32B matched-memory pair (bf16 + 4-bit under one tag; the
 driver loops the two variants). Everything is cached and resumable: rerunning the same command continues where
