@@ -34,15 +34,18 @@ def load_corpus(dataset: str, data_dir, *, require_complete: bool, cache: dict) 
 
 
 def ensure_cache_env(config: ExperimentConfig) -> None:
-    """Point HF and the parser subprocesses at the in-project cache if unset.
+    """Point HF and the parser subprocesses at the in-project cache.
 
-    Lets a direct run (e.g. on the H100 supervisor after prestage --local) find
-    the staged weights with no manual exports. Uses setdefault so a Kaya job's own
-    exports, or anything the operator set, always win.
+    Lets a direct run (e.g. on a supervisor box after prestage --local) find the
+    staged weights with no manual exports. Forces the values (like prestage does)
+    so a stray HF_HOME/HF_HUB_CACHE already exported in the operator's shell can't
+    redirect the run to an empty cache and send it to the network. The forced path
+    is the same in-project .cache a Kaya job exports, so this is a no-op there.
     """
 
-    for name, value in hf_cache_environ(config.paths.hf_home).items():
-        os.environ.setdefault(name, value)
+    os.environ.update(hf_cache_environ(config.paths.hf_home))
+    # deprecated but still honoured by transformers; drop it so it can't override
+    os.environ.pop("TRANSFORMERS_CACHE", None)
 
 
 def build_parser() -> argparse.ArgumentParser:

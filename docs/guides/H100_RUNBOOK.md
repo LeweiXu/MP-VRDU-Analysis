@@ -9,7 +9,15 @@ they came out clean, hand back `results/`. No judging or table-building here.
 - One **H100** (80 GB). Several? Pick with `CUDA_VISIBLE_DEVICES=0`.
 - **Disk**: ~95 GB under `.cache/` (the 32B is ~67 GB of it), plus room under
   `results/`.
-- **HF token**: `HF_TOKEN=hf_...` in a repo-root `.env` or exported.
+- **HF token**: `export HF_TOKEN=hf_...`. It must be in the environment, not just
+  a `.env` file: nothing here auto-loads `.env`, so `set -a; source .env; set +a`
+  if you keep it in one. (Only the gated Llama-Vision run actually needs it; the
+  five default specs use public repos.)
+- **Cache**: the run pins its own weight cache to the repo's `.cache/` (where
+  prestage downloads), so you do NOT need to export `HF_HOME`/`HF_HUB_CACHE`, and
+  a stray one in your shell won't hijack the run. If the GPU node has no outbound
+  internet, `export HF_HUB_OFFLINE=1` so loads use the cache directly instead of
+  timing out.
 
 ## Step 1: build the environments
 
